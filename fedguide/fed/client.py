@@ -31,9 +31,14 @@ class FedGuideClient(fl.client.NumPyClient):
     def fit(self, parameters, config):
         self.set_parameters(parameters)
         loss = self.trainer.train_one_round()
+
+        cid = getattr(self, "cid", "unknown")
+        rnd = int(config.get("server_round", 0))
+        success = self.trainer.save_eval(cid, rnd)
+
         samples = self.trainer.n_steps
         new_params = self.get_parameters(config)
-        return new_params, samples, {"loss": loss}
+        return new_params, samples, {"loss": loss, "success": int(success)}
 
     def evaluate(self, parameters, config):
         return 0.0, len(parameters), {"eval_acc": 0.0}

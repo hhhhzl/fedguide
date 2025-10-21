@@ -4,6 +4,42 @@ from torch import nn
 from typing import Optional
 import logging
 import math
+import os, json, numpy as np
+from datetime import datetime
+
+
+def _to_numpy(x):
+    if isinstance(x, np.ndarray):
+        return x
+    if torch.is_tensor(x):
+        return x.detach().cpu().numpy()
+    return np.array(x, dtype=np.float32)
+
+
+def _unpack_reset(env):
+    out = env.reset()
+    if isinstance(out, tuple):
+        return out[0]  # (obs, info)
+    return out
+
+
+def _unpack_step(out):
+    if len(out) == 4:
+        obs, rew, done, info = out
+        terminated, truncated = done, False
+    else:
+        obs, rew, terminated, truncated, info = out
+    return obs, rew, bool(terminated), bool(truncated), (info or {})
+
+
+def _gate_indices(env):
+    grid = env.grid
+    mid = env.size // 2
+    row = grid[mid]
+    open_cols = np.where(row == 1)[0]
+    if len(open_cols) == 0:
+        return mid, 0, 0
+    return mid, int(open_cols.min()), int(open_cols.max())
 
 
 class LocalTrainer:
@@ -15,16 +51,16 @@ class LocalTrainer:
     """
 
     def __init__(
-        self,
-        agent,
-        env,
-        prior: Optional[nn.Module] = None,
-        lambda_local: float = 0.1,
-        lambda_guide: float = 0.1,
-        gamma: float = 0.99,
-        n_steps: int = 200,
-        device: Optional[str] = None,
-        grad_clip: float = 1.0,
+            self,
+            agent,
+            env,
+            prior: Optional[nn.Module] = None,
+            lambda_local: float = 0.1,
+            lambda_guide: float = 0.1,
+            gamma: float = 0.99,
+            n_steps: int = 200,
+            device: Optional[str] = None,
+            grad_clip: float = 1.0,
     ):
         self.agent = agent
         self.env = env
@@ -98,9 +134,9 @@ class LocalTrainer:
             kl_guide = (guide_logp - logps).mean()
 
         loss = (
-            pg_loss + 0.5 * value_loss
-            + self.lambda_local * kl_local
-            + self.lambda_guide * kl_guide
+                pg_loss + 0.5 * value_loss
+                + self.lambda_local * kl_local
+                + self.lambda_guide * kl_guide
         )
         return loss, pg_loss, value_loss, kl_local, kl_guide
 
@@ -117,3 +153,46 @@ class LocalTrainer:
         loss = self.agent.update(batch)
         self._last_log_probs = logps_old
         return loss
+
+    def eval_episode(self, max_steps=400, deterministic=True):
+        obs = _unpack_reset(self.env)
+        s = _to_numpy(obs).astype(np.float32)
+        traj = [s.copy()]
+
+        mid, jmin, jmax = _gate_indices(self.env)
+        passed_gate = False
+        reached_goal = False
+
+        prev_i, prev_j = int(np.clip(s[0], 0, self.env.size-1)), int(np.clip(s[1], 0, self.env.size-1))
+
+        for _ in range(max_steps):
+            a, _ = self.agent.act(torch.as_tensor(s, dtype=torch.float32, device=self.device),
+                                  deterministic=deterministic)
+            step_out = self.env.step(_to_numpy(a))
+            obs, rew, terminated, truncated, info = _unpack_step(step_out)
+            s = _to_numpy(obs).astype(np.float32)
+            traj.append(s.copy())
+
+            i, j = int(np.clip(s[0], 0, self.env.size-1)), int(np.clip(s[1], 0, self.env.size-1))
+            if not passed_gate:
+                cross_mid = (prev_i < mid and i >= mid) or (prev_i > mid and i <= mid)
+                if cross_mid and (jmin <= j <= jmax):
+                    passed_gate = True
+
+            if terminated or truncated:
+                reached_goal = True if (terminated and rew > 0) else reached_goal
+                break
+
+            prev_i, prev_j = i, j
+
+        return np.asarray(traj, dtype=np.float32), bool(passed_gate), bool(reached_goal)
+
+    def save_eval(self, cid: str, rnd: int, outdir="/tmp/fedguide"):
+        traj, passed_gate, reached_goal = self.eval_episode()
+        d = os.path.join(outdir, f"client_{cid}")
+        os.makedirs(d, exist_ok=True)
+        np.save(os.path.join(d, f"round_{rnd}_traj.npy"), traj)
+        meta = {"round": int(rnd), "passed_gate": bool(passed_gate), "reached_goal": bool(reached_goal)}
+        with open(os.path.join(d, f"round_{rnd}_meta.json"), "w") as f:
+            json.dump(meta, f)
+        return passed_gate

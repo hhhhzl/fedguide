@@ -13,14 +13,24 @@ import random, torch, numpy as np
 
 
 def client_fn(context: Context):
-    torch.manual_seed(42)
-    np.random.seed(42)
-    random.seed(42)
+    try:
+        cid = str(context.node_id)
+    except Exception:
+        cid = str(getattr(context, "client_id", "0"))
+
+    base = 42 + (abs(hash(cid)) % 10000)
+    torch.manual_seed(base)
+    np.random.seed(base)
+    random.seed(base)
+
     env = PointMazeNarrow()
     agent = PPOAgent(2, 2)
     prior = SimpleDiffusionPrior(state_dim=2, action_dim=2)
     trainer = LocalTrainer(agent, env, prior=prior, lambda_local=0.2, lambda_guide=0.1)
-    return FedGuideClient(agent, env, trainer).to_client()
+
+    c = FedGuideClient(agent, env, trainer).to_client()
+    setattr(c, "cid", cid)
+    return c
 
 
 def main():
