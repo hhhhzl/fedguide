@@ -11,9 +11,10 @@ def load_runs():
     for cdir in sorted(glob.glob(os.path.join(LOGDIR, "client_*"))):
         cid = os.path.basename(cdir).split("_")[-1]
         items = []
-        for j in sorted(glob.glob(os.path.join(cdir, "round_*_meta.json"))):
+        for j in sorted(glob.glob(os.path.join(cdir, "round_*_meta.json")), key=lambda x: int(os.path.basename(x).split("_")[1])):
             rnd = int(os.path.basename(j).split("_")[1])
-            with open(j, "r") as f: meta = json.load(f)
+            with open(j, "r") as f:
+                meta = json.load(f)
             traj = np.load(os.path.join(cdir, f"round_{rnd}_traj.npy"))
             items.append((rnd, traj, bool(meta.get("passed_gate", False)), bool(meta.get("reached_goal", False))))
         data[cid] = sorted(items, key=lambda x: x[0])
@@ -42,7 +43,8 @@ def main():
     plot_maze(ax, grid)
     colors = ["C0", "C1", "C2", "C3", "C4", "C5"]
     for k, (cid, items) in enumerate(sorted(data.items())):
-        if not items: continue
+        if not items:
+            continue
         rnd, traj, passed, goal = items[-1]
         ax.plot(traj[:, 0], traj[:, 1], color=colors[k % len(colors)],
                 label=f"client {cid} r{rnd} ({'✓' if passed else '×'})", lw=1.5, alpha=0.9)

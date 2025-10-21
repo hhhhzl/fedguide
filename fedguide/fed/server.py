@@ -4,13 +4,14 @@ import numpy as np
 from typing import List, Tuple
 from flwr.common import parameters_to_ndarrays, ndarrays_to_parameters
 from fedguide.fed.aggregator import ot_moe_aggregate
+from flwr.common import FitIns
 
 
 class FedGuideServer(fl.server.strategy.FedAvg):
     """Custom server strategy with OT-MoE and metric aggregation."""
 
-    def __init__(self, num_experts=2):
-        super().__init__()
+    def __init__(self, num_experts=2, **kwargs):
+        super().__init__(**kwargs)
         self.num_experts = num_experts
 
     def aggregate_fit(self, rnd, results, failures):
