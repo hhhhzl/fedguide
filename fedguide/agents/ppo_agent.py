@@ -3,6 +3,7 @@ import torch.nn as nn
 from torch.distributions import Normal
 import torch.nn.functional as F
 
+
 class PPOAgent:
     """Proximal Policy Optimization agent."""
 

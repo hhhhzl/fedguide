@@ -4,7 +4,7 @@ from flwr.common import Context
 from flwr.server import ServerConfig
 from fedguide.fed.server import FedGuideServer
 from fedguide.fed.client import FedGuideClient
-from fedguide.agents import BaseAgent, PPOAgent, SACAgent
+from fedguide.agents import PPOAgent, SACAgent, A2CAgent
 from fedguide.trainers.local_trainer import LocalTrainer
 from fedguide.envs.make_env import make_env
 from fedguide.envs.pointmaze_narrow import PointMazeNarrow
@@ -23,7 +23,7 @@ def client_fn(context: Context):
 
     env = PointMazeNarrow()
     agent = PPOAgent(2, 2)
-    _ppo_hp = dict(
+    _hp = dict(
         clip_eps=0.20,
         lr=5e-4,
         entropy_coef=0.02,
@@ -31,7 +31,7 @@ def client_fn(context: Context):
         gae_lambda=0.95,
         max_grad_norm=0.5,
     )
-    for k, v in _ppo_hp.items():
+    for k, v in _hp.items():
         if hasattr(agent, k):
             setattr(agent, k, v)
 
@@ -42,6 +42,7 @@ def client_fn(context: Context):
     trainer = LocalTrainer(
         agent,
         env,
+        n_steps=512,
         prior=prior,
         lambda_local=0.25,
         lambda_guide=0.2,
@@ -53,7 +54,9 @@ def client_fn(context: Context):
 
 
 def main():
-    config = ServerConfig(num_rounds=60)
+    config = ServerConfig(
+        num_rounds=80
+    )
     strategy = FedGuideServer(
         fraction_fit=1.0,
         min_fit_clients=5,

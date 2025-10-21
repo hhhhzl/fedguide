@@ -19,8 +19,9 @@ class PointMazeNarrow(gym.Env):
             "passage_width must be an integer >= 1"
 
         self.size = size
-        self.goal = np.array([size - 1, size - 1], dtype=np.float32)
-        self.state = np.zeros(2, dtype=np.float32)
+        self.goal = np.array([size - 4, size / 2], dtype=np.float32)
+        self.state = np.array([4, size / 2], dtype=np.float32)
+        # self.state = np.zeros(2, dtype=np.float32)
         self.observation_space = spaces.Box(0, size, shape=(2,), dtype=np.float32)
         self.action_space = spaces.Box(-1, 1, shape=(2,), dtype=np.float32)
 
@@ -37,7 +38,7 @@ class PointMazeNarrow(gym.Env):
     # ----------------------------------------------------------
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        self.state = np.array([0.5, 0.5], dtype=np.float32)
+        self.state = np.array([4, self.size / 2], dtype=np.float32)
         return self.state, {}
 
     def step(self, action):

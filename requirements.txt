@@ -3,7 +3,7 @@ torchvision==0.17.2
 torchaudio==2.2.2
 flwr[simulation]>=1.9.0
 gym==0.26.2
-gymnasium==0.29.1
+gymnasium[mujoco]==0.29.1
 pygame==2.5.2
 numpy==1.26.4
 scipy==1.13.1
