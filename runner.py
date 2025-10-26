@@ -71,7 +71,7 @@ def client_fn_builder(env_id: str, algo: str):
 
         prior = None
         try:
-            from fedguide.priors.diffusion_prior import DiffusionGuidance
+            from fedguide.guidance.diffusion_prior import DiffusionGuidance
             prior = DiffusionGuidance(state_dim=state_dim, action_dim=action_dim)
         except Exception:
             pass
