@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 
 
 class BasePrior(ABC):
-    """Abstract class for priors used in FedGuide."""
+    """Abstract class for guidance used in FedGuide."""
 
     def __init__(self):
         self.params = None

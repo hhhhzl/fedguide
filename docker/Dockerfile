@@ -18,21 +18,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# --- Python 3.9 ---
-RUN add-apt-repository -y ppa:deadsnakes/ppa \
-    && apt-get update && apt-get install -y --no-install-recommends \
-         python3.9 python3.9-venv python3.9-dev python3.9-distutils \
+# --- Python 3.10 ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 python3.10-venv python3.10-dev python3.10-distutils python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py \
-    && python3.9 /tmp/get-pip.py \
-    && rm /tmp/get-pip.py
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 2 && \
+    python3 -m pip install --no-cache-dir -U pip setuptools wheel
 
-RUN apt-get update && apt-get install -y python-is-python3 libffi-dev python3-dev \
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1 libglib2.0-0 libsm6 libxrender1 libxext6 && \
-    rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y python-is-python3 libffi-dev python3-dev
 
 # # --- Miniconda  ---
 # ARG MINICONDA_INSTALLER=Miniconda3-py39_24.1.2-0-Linux-x86_64.sh
@@ -51,7 +45,13 @@ COPY /docker/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 WORKDIR /workspace/fedguide
-COPY .. /workspace/fedguide
+COPY . /workspace/fedguide
+
+RUN chmod +x scripts/*.sh || true
+
+RUN /workspace/fedguide/scripts/install_mujoco_linux.sh
+RUN /workspace/fedguide/scripts/install_mujoco_py_linux.sh
+RUN /workspace/fedguide/scripts/setup.sh
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["bash"]
