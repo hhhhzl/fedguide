@@ -2,13 +2,12 @@
 import flwr as fl
 from flwr.common import Context
 from flwr.server import ServerConfig
-from fedguide.fed.server import FedGuideServer
+from fedguide.fed.fedguide.server import FedGuideServer
 from fedguide.fed.client import FedGuideClient
-from fedguide.agents import PPOAgent, SACAgent, A2CAgent
+from fedguide.agents import PPOAgent
 from fedguide.trainers.local_trainer import LocalTrainer
-from fedguide.envs.make_env import make_env
 from fedguide.envs.pointmaze_narrow import PointMazeNarrow
-from fedguide.priors.diffusion_prior import DiffusionGuidance, SimpleDiffusionPrior
+from fedguide.priors.diffusion_prior import DiffusionGuidance
 import random, torch, numpy as np
 from viz_clients import main as visual
 
