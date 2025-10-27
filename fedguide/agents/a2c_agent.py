@@ -1,26 +1,26 @@
-# a2c_agent.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
+from fedguide.agents import BaseAgent
 
 
-class A2CAgent:
-    """Advantage Actor-Critic agent (plug-and-play replacement for PPOAgent)."""
+class A2CAgent(BaseAgent):
+    """Advantage Actor-Critic agent."""
 
     def __init__(
-        self,
-        state_dim: int,
-        action_dim: int,
-        lr: float = 3e-4,
-        gamma: float = 0.99,
-        clip_eps: float = 0.2,      # kept for drop-in compatibility; unused
-        gae_lambda: float = 0.95,   # kept for drop-in compatibility; unused
-        entropy_coef: float = 0.01,
-        value_coef: float = 0.5,
-        max_grad_norm: float = 0.5,
-        init_std: float = 0.1,
+            self,
+            state_dim: int,
+            action_dim: int,
+            policy: nn.Module,
+            lr: float = 3e-4,
+            gamma: float = 0.99,
+            entropy_coef: float = 0.01,
+            value_coef: float = 0.5,
+            max_grad_norm: float = 0.5,
+            init_std: float = 0.1
     ):
+        super().__init__(policy, lr)
         self.gamma = gamma
         self.entropy_coef = entropy_coef
         self.value_coef = value_coef
@@ -94,13 +94,7 @@ class A2CAgent:
     # Update from on-policy batch (keeps same tuple layout)
     # ----------------------------------------------------------
     def update(self, batch):
-        """
-        batch = (states, actions, logps_old, returns, advs)
-        We ignore logps_old (no clipping in A2C) but keep the signature
-        to stay drop-in compatible with LocalTrainer.
-        """
         states, actions, _logps_old, returns, advs = batch
-
         # Evaluate current policy
         logps, entropy, values = self.evaluate(states, actions)
 
@@ -108,7 +102,6 @@ class A2CAgent:
         policy_loss = -(advs.detach() * logps).mean()
         value_loss = F.mse_loss(values, returns)
         loss = policy_loss + self.value_coef * value_loss - self.entropy_coef * entropy.mean()
-
         # Optimize
         self.optimizer.zero_grad()
         loss.backward()
@@ -117,11 +110,10 @@ class A2CAgent:
             self.max_grad_norm,
         )
         self.optimizer.step()
-
         return float(loss.detach().cpu().item())
 
     # ----------------------------------------------------------
-    # Critic accessor (used by LocalTrainer)
+    # Critic accessor
     # ----------------------------------------------------------
     def value_fn(self, state: torch.Tensor):
         return self.value(state)

@@ -2,11 +2,10 @@ import argparse, random, numpy as np, torch
 import gymnasium as gym
 import flwr as fl
 from flwr.common.context import Context
-from fedguide.fed.server import FedGuideServer
+from fedguide.fed.fedguide.server import FedGuideServer
 from fedguide.fed.client import FedGuideClient
 from fedguide.trainers.local_trainer import LocalTrainer
 from fedguide.agents import PPOAgent, A2CAgent
-from viz_clients import main as vis
 
 
 def is_box1d(space) -> bool:

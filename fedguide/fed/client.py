@@ -1,69 +1,138 @@
-import flwr as fl
+import time
+import logging
 import torch
-import numpy as np
+import flwr as fl
+from typing import Any, Dict, Optional, Callable, Iterable
+from fedguide.utils.logger import BaseLogger, MetricsBus, StdLogger, WandbLogger
+from fedguide.utils.seeds import set_all_seeds
 
 
-class FedGuideClient(fl.client.NumPyClient):
-    """Flower client wrapper for FedGuide"""
+class FedRLClient(fl.client.NumPyClient):
+    """Flower client wrapper for FedRL.
 
-    def __init__(self, agent, env, trainer, aggregate_mode: str = "policy"):
+    This keeps the existing (agent, env, trainer) design. The trainer is expected to
+    expose:
+      - train_one_round() -> loss
+      - save_eval(cid, rnd) -> success_flag (bool/int)
+      - n_steps (int)  # number of local samples/steps used this round
+    The agent is expected to expose:
+      - get_parameters() -> list[np.ndarray] or Flower-compatible
+      - set_parameters(params)
+      - optionally `.to(device)` to move to compute device
+    """
+
+    def __init__(
+        self,
+        agent: Any,
+        env: Any,
+        trainer: Any,
+        *,
+        run_name: Optional[str] = None,
+        seed: Optional[int] = None,
+        device: Optional[str] = "auto",
+        logger: Optional[BaseLogger] = None,
+        callbacks: Optional[Iterable[Callable[[Dict[str, Any]], None]]] = None,
+        use_wandb: bool = False,
+        wandb_project: Optional[str] = None,
+        logger_level: int = logging.INFO,
+    ):
+        super().__init__()
         self.agent = agent
         self.env = env
         self.trainer = trainer
-        self.cid = getattr(self, "cid", "unknown")
 
-        assert aggregate_mode in {"policy", "prior"}, "aggregate_mode must be 'policy' or 'prior'"
-        self.aggregate_mode = aggregate_mode
+        # Device & seed
+        self.device = device
+        if hasattr(self.agent, "to"):
+            try:
+                self.agent.to(self.device)
+            except Exception:
+                pass
+        set_all_seeds(seed, env)
 
-        # if self.aggregate_mode == "policy":
-        #     self._tx_params = list(self.agent.policy.parameters())
-        #     if len(self._tx_params) == 0:
-        #         raise RuntimeError("Policy has no parameters to aggregate.")
-        # else:  # prior
-        #     if not hasattr(self.trainer, "prior") or not hasattr(self.trainer.prior, "parameters"):
-        #         raise RuntimeError("Trainer.prior is missing or not an nn.Module.")
-        #     self._tx_params = [p for p in self.trainer.prior.parameters() if p.requires_grad]
-        #     if len(self._tx_params) == 0:
-        #         raise RuntimeError("Prior has no trainable parameters to aggregate.")
+        # Metrics/Logging
+        if logger is None:
+            if use_wandb:
+                logger = WandbLogger(run_name=run_name, project=wandb_project)
+            else:
+                logger = StdLogger(run_name or "fedrl", level=logger_level)
+        self.metrics = MetricsBus(logger=logger, callbacks=callbacks)
 
-    # ----------------------------
-    # Federated parameter
-    # ----------------------------
-    # def get_parameters(self, config):
-    #     return [p.detach().cpu().numpy() for p in self._tx_params]
-    #
-    # def set_parameters(self, parameters):
-    #     with torch.no_grad():
-    #         for p, np_p in zip(self._tx_params, parameters):
-    #             p.copy_(torch.as_tensor(np_p, dtype=torch.float32, device=p.device))
-    #     if hasattr(self.agent, "rebuild_optimizer"):
-    #         self.agent.rebuild_optimizer()
+        # Optional: allow trainer to push metrics via injected bus, without changing signatures
+        if hasattr(self.trainer, "set_metrics_bus"):
+            try:
+                self.trainer.set_metrics_bus(self.metrics)
+            except Exception:
+                pass
 
-    def get_parameters(self, config):
-        return [p.detach().cpu().numpy() for p in self.agent.policy.parameters()]
+    def get_parameters(self, config: Dict[str, Any]):
+        if hasattr(self.agent, "get_parameters"):
+            return self.agent.get_parameters()
+        state = getattr(self.agent, "state_dict", lambda: {})()
+        return [v.detach().cpu().numpy() for v in state.values()]
 
     def set_parameters(self, parameters):
-        """Load parameters without breaking gradient graph."""
-        with torch.no_grad():
-            for p, np_p in zip(self.agent.policy.parameters(), parameters):
-                tensor = torch.tensor(np_p, dtype=torch.float32, device=p.device)
-                p.copy_(tensor)
-        self.agent.rebuild_optimizer()
+        if hasattr(self.agent, "set_parameters"):
+            return self.agent.set_parameters(parameters)
+        sd = self.agent.state_dict()
+        new_sd = {}
+        for (k, v), arr in zip(sd.items(), parameters):
+            tensor = torch.tensor(arr, dtype=v.dtype, device=v.device)
+            new_sd[k] = tensor.view_as(v)
+        self.agent.load_state_dict(new_sd, strict=False)
 
-    # ----------------------------------------------------------
+    # -------------------------
     # Federated operations
-    # ----------------------------------------------------------
+    # -------------------------
     def fit(self, parameters, config):
+        start = time.time()
         self.set_parameters(parameters)
-        loss = self.trainer.train_one_round()
+
+        # Round/context
         rnd = int(config.get("server_round", 0))
+        cid = getattr(self, "cid", config.get("cid", "unknown"))
+        self.metrics.set_step(rnd)
 
-        cid = getattr(self, "cid", "unknown")
+        # Train one round
+        loss = self.trainer.train_one_round()
+
+        # Eval/save as the original code expects
         success = self.trainer.save_eval(cid, rnd)
+        samples = int(getattr(self.trainer, "n_steps", 0))
 
-        samples = self.trainer.n_steps
+        # Collect optional trainer-provided metrics if available
+        extra = {}
+        for key in ("return", "success_rate", "episode_len", "throughput"):
+            if hasattr(self.trainer, key):
+                try:
+                    extra[key] = getattr(self.trainer, key)
+                except Exception:
+                    pass
+        dur = time.time() - start
+
+        # Emit metrics
+        self.metrics.emit({
+            "round": rnd,
+            "client_id": str(cid),
+            "loss": float(loss) if loss is not None else float("nan"),
+            "success": int(bool(success)),
+            "samples": samples,
+            "device": str(self.device),
+            "duration_sec": dur,
+            **extra,
+        })
+
+        # Return new parameters + num_examples + metrics for FL server
         new_params = self.get_parameters(config)
-        return new_params, samples, {"loss": float(loss), "success": int(success)}
+        return new_params, samples, {"loss": float(loss) if loss is not None else float("nan"), "success": int(bool(success))}
 
     def evaluate(self, parameters, config):
-        return 0.0, len(parameters), {"eval_acc": 0.0}
+        # Keep the original behavior (NotImplemented). If needed, you can implement
+        # an evaluation pass similar to fit and emit metrics via self.metrics.
+        return NotImplemented
+
+    def __del__(self):
+        try:
+            self.metrics.close()
+        except Exception:
+            pass

@@ -1,4 +1,3 @@
-# fed/aggregator.py
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 from typing import List, Callable
