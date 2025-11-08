@@ -78,7 +78,7 @@ def _make_d4rl_datasets(
             "scaling": float(scale if "dyn_shift" in hetero_modes else 1.0),
             "state_split": "left" if i % 2 == 0 else "right"
         }
-    os.makedirs(save_json, exist_ok=True)
+    os.makedirs(os.path.dirname(save_json), exist_ok=True)
     json.dump(hetero_info, open(save_json, "w"), indent=2)
     print(f"[FedGuide] Saved D4RL heterogeneity metadata → {save_json}")
     return datasets
@@ -86,8 +86,6 @@ def _make_d4rl_datasets(
 
 if __name__ == "__main__":
     from fedguide.utils.herero import build_hetero_config, load_hetero_config
-    print("Here>>>>>>")
-
     build_hetero_config(
         env_name='reacher',
         num_clients=3,
@@ -100,6 +98,6 @@ if __name__ == "__main__":
     datasets = _make_d4rl_datasets(
         env_group="reacher",
         n_clients=3,
-        hetero_modes=("task", "state_region", "dyn_shift")
+        hetero_modes=("state_region", "dyn_shift")
     )
     print(len(datasets))
