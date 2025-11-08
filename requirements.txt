@@ -22,5 +22,5 @@ psutil==5.9.8
 PyYAML==6.0.2
 stable_baselines3==2.4.1
 wandb
-mujoco==3.3.2
+mujoco==3.3.6
 cython==0.29.22
