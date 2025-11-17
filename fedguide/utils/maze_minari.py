@@ -276,6 +276,8 @@ if __name__ == "__main__":
     print("\n passed unit tests\n")
 
 ### Sample Output:
+# Minari Maze Unit Tests
+
 # Test 1: Loading Minari dataset...
 #   Trajectory 0 keys: dict_keys(['s', 'a', 'r', 's_next', 'd'])
 #   s shape: (329, 8)
@@ -303,15 +305,17 @@ if __name__ == "__main__":
 #     Client 7: 536 trajs
 
 # Test 4: Testing TransitionDataset...
-#   Client 0 dataset size (transitions): 114877
-#   Sample transition keys ok: ['s', 'a', 'r', 's_', 'd']
-#   s shape: torch.Size([8]), a shape: torch.Size([2])
+
+# [TEST] Testing TrajectoryWindowDataset...
+# [TEST] Number of windows: 55640
+# [TEST] s shape: torch.Size([32, 8]), a shape: torch.Size([32, 2])
 
 # Test 5: Testing make_maze_minari_datasets...
-#   Generated 4 TransitionDatasets
-#     Client 0: 167395 transitions
-#     Client 1: 93573 transitions
-#     Client 2: 114065 transitions
-#     Client 3: 624967 transitions
+
+# [TEST] Testing full dataset creation...
+# [TEST] Client 0 dataset size: 9331
+# [TEST] Client 1 dataset size: 5162
+# [TEST] Client 2 dataset size: 6234
+# [TEST] Client 3 dataset size: 34913
 
 #  passed unit tests

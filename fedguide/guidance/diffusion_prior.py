@@ -85,19 +85,22 @@ class DiffusionGuidance(nn.Module):
     Models trajectories (s,a) pairs as continuous 1D time series.
     """
 
-    def __init__(self, state_dim, action_dim, hidden_dim=64, timesteps=1000):
+    def __init__(self, state_dim, action_dim, hidden_dim=64, timesteps=1000, horizon=32):
         super().__init__()
-        sample_size = state_dim + action_dim
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.traj_dim = state_dim + action_dim
+        self.horizon = horizon
 
         # Two-stage UNet required by diffusers
         self.model = UNet1DModel(
-            sample_size=sample_size,
-            in_channels=1,
-            out_channels=1,
+            sample_size=horizon,
+            in_channels=self.traj_dim,
+            out_channels=self.traj_dim,
             layers_per_block=2,
-            block_out_channels=(hidden_dim, hidden_dim * 2),
-            down_block_types=("DownBlock1D", "DownBlock1D"),
-            up_block_types=("UpBlock1D", "UpBlock1D"),
+            block_out_channels=(hidden_dim, hidden_dim, hidden_dim),
+            down_block_types=("DownBlock1D", "DownBlock1D", "DownBlock1D"),
+            up_block_types=("UpBlock1D", "UpBlock1D", "UpBlock1D"),
         )
         self.noise_scheduler = DDPMScheduler(num_train_timesteps=timesteps)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
