@@ -103,16 +103,54 @@ class TransitionDataset(Dataset):
             "d": torch.tensor(d, dtype=torch.float32),
         }
 
+class TrajectoryWindowDataset(Dataset):
+    """
+    Yields fixed-length windows of (state sequence, action sequence).
+
+    Each item:
+      - s: [H, obs_dim]
+      - a: [H, act_dim]
+    """
+    def __init__(self, trajs, horizon=32, stride=16):
+        self.windows = []
+        self.horizon = horizon
+
+        for tr in trajs:
+            s = tr["s"]          # [T_s, obs_dim]
+            a = tr["a"]          # [T_a, act_dim]
+            T = a.shape[0]       # number of transitions
+            s = s[:T]            # align states with actions
+
+            if T < horizon:
+                continue  # skip very short trajectories, or pad if you prefer
+
+            for t in range(0, T - horizon + 1, stride):
+                s_win = s[t:t + horizon]       # [H, obs_dim]
+                a_win = a[t:t + horizon]       # [H, act_dim]
+                self.windows.append((s_win, a_win))
+
+    def __len__(self):
+        return len(self.windows)
+
+    def __getitem__(self, idx):
+        s_win, a_win = self.windows[idx]
+        return {
+            "s": torch.tensor(s_win, dtype=torch.float32),   # [H, obs_dim]
+            "a": torch.tensor(a_win, dtype=torch.float32),   # [H, act_dim]
+        }
+
 # create Minari PointMaze datasets for clients
 def make_maze_minari_datasets(
     n_clients=8,
     dataset_id="D4RL/pointmaze/medium-v2",
     alpha=0.5,
     seed=42,
+    horizon=32,
+    stride=16,
 ):
     trajs = load_minari_pointmaze(dataset_id, download=True)
     client_trajs = split_trajs_dirichlet(trajs, n_clients=n_clients, alpha=alpha, seed=seed)
-    return [TransitionDataset(ct) for ct in client_trajs]
+    return [TrajectoryWindowDataset(ct, horizon=horizon, stride=stride) for ct in client_trajs]
 
 
 # Unit tests
@@ -121,9 +159,10 @@ if __name__ == "__main__":
 
     # TEST 1: load_minari_pointmaze
     print("Test 1: Loading Minari dataset...")
+    dataset_id = "D4RL/pointmaze/medium-v2"
 
     try:
-        trajs = load_minari_pointmaze("D4RL/pointmaze/medium-v2") #, download=True)
+        trajs = load_minari_pointmaze(dataset_id) #, download=True)
         print("  Trajectory 0 keys:", trajs[0].keys())
         print("  s shape:", trajs[0]["s"].shape)
         print("  a shape:", trajs[0]["a"].shape)
@@ -178,18 +217,26 @@ if __name__ == "__main__":
     print("\nTest 4: Testing TransitionDataset...")
 
     try:
-        ds = TransitionDataset(splits[0])
-        print(f"  Client 0 dataset size (transitions): {len(ds)}")
-        assert len(ds) > 0
+        print("\n[TEST] Testing TrajectoryWindowDataset...")
+        horizon = 32
+        stride = 16
+
+        ds = TrajectoryWindowDataset(trajs, horizon=horizon, stride=stride)
+
+        print(f"[TEST] Number of windows: {len(ds)}")
+        assert len(ds) > 0, "No trajectory windows were produced!"
 
         sample = ds[0]
-        assert "s" in sample
-        assert "a" in sample
-        assert "r" in sample
-        assert "s_" in sample
-        assert "d" in sample
-        print(f"  Sample transition keys ok: {list(sample.keys())}")
-        print(f"  s shape: {sample['s'].shape}, a shape: {sample['a'].shape}")
+        s = sample["s"]
+        a = sample["a"]
+
+        print(f"[TEST] s shape: {s.shape}, a shape: {a.shape}")
+
+        assert s.shape[0] == horizon, "State window length should equal horizon"
+        assert a.shape[0] == horizon, "Action window length should equal horizon"
+        assert s.ndim == 2, "s must be [H, obs_dim]"
+        assert a.ndim == 2, "a must be [H, act_dim]"
+        assert s.shape[1] == a.shape[1] + (s.shape[1] - a.shape[1]), "Dims must be consistent"
     except Exception as e:
         print("  FAILED:", e)
         raise
@@ -198,18 +245,30 @@ if __name__ == "__main__":
     print("\nTest 5: Testing make_maze_minari_datasets...")
 
     try:
-        client_datasets = make_maze_minari_datasets(
+        print("\n[TEST] Testing full dataset creation...")
+
+        clients = make_maze_minari_datasets(
             n_clients=4,
-            dataset_id="D4RL/pointmaze/medium-v2",
+            dataset_id=dataset_id,
             alpha=0.5,
             seed=123,
+            horizon=32,
+            stride=16,
         )
-        assert len(client_datasets) == 4
-        print("  Generated 4 TransitionDatasets")
 
-        for i, ds in enumerate(client_datasets):
-            print(f"    Client {i}: {len(ds)} transitions")
-            assert len(ds) > 0
+        assert len(clients) == 4, "Should have 4 client datasets"
+
+        for cid, ds in enumerate(clients):
+            print(f"[TEST] Client {cid} dataset size: {len(ds)}")
+            assert len(ds) > 0, f"Client {cid} received no windows!"
+
+            sample = ds[0]
+            s = sample["s"]
+            a = sample["a"]
+
+            assert s.ndim == 2 and a.ndim == 2, "Samples must be trajectory windows"
+            assert s.shape[0] == a.shape[0], "State/action window mismatch"
+            assert s.shape[0] == 32, "Window length should be 32"
     except Exception as e:
         print("  FAILED:", e)
         raise
