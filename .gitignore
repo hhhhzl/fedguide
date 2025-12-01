@@ -13,6 +13,7 @@ log
 /save
 /model
 /metrics
+/results
 
 .vscode/
 build

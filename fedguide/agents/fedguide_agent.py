@@ -214,19 +214,6 @@ class FedguideAgent(nn.Module):
         std = self.log_std.exp().clamp(min=1e-6)
         return torch.distributions.Normal(mu, std), mu
 
-    @torch.no_grad()
-    def select_action(self, state: torch.Tensor, deterministic: bool = False):
-        if not torch.is_tensor(state):
-            state = torch.as_tensor(state, dtype=torch.float32)
-        state = state.to(self.device)
-        if state.dim() == 1:
-            state = state.unsqueeze(0)
-        dist, mu = self._dist(state)
-        action = mu if deterministic else dist.sample()
-        logp = dist.log_prob(action).sum(dim=-1)
-        value = self.value_fn(state).squeeze(-1)
-        return action.cpu().numpy(), logp.cpu().numpy(), value.cpu().numpy()
-
     def evaluate(self, state, action):
         state = state.to(self.device).float()
         action = action.to(self.device).float()
@@ -274,20 +261,23 @@ class FedguideAgent(nn.Module):
 
     @torch.no_grad()
     def select_action(self, state, deterministic=False):
-        state = torch.as_tensor(state, dtype=torch.float32, device=self.device)
-        if state.dim() == 1: state = state.unsqueeze(0)
-        dist, mu = self.dist(state)
+        if not torch.is_tensor(state):
+            state = torch.as_tensor(state, dtype=torch.float32)
+        state = state.to(self.device)
+        if state.dim() == 1:
+            state = state.unsqueeze(0)
+        dist, mu = self._dist(state)
         action = mu if deterministic else dist.sample()
-        logp = dist.log_prob(action).sum(-1)
+        logp = dist.log_prob(action).sum(dim=-1)
         value = self.value_fn(state).squeeze(-1)
 
         # a -> a + ∇_a W_t
         if self.use_sampling_guidance and (self.guidance is not None) and hasattr(self.guidance, "calculate_guidance"):
             t = torch.rand(action.shape[0], device=self.device)
             g = self.guidance.calculate_guidance(action.clone(), t,
-                                                 condition=state)  # ∇_a W_t(s,a)  :contentReference[oaicite:5]{index=5}
+                                                 condition=state)  # ∇_a W_t(s,a)
             action = action + self.guidance_eta * g
-            logp = dist.log_prob(action).sum(-1)
+            logp = dist.log_prob(action).sum(dim=-1)
         return action.cpu().numpy(), logp.cpu().numpy(), value.cpu().numpy()
 
     # ========= update =========

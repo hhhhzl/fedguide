@@ -124,7 +124,27 @@ class FedGuideClient(FedRLClient):
             else:
                 flat_params.append(module_params)
         
-        return flat_params
+        # Verify return type - must be list of numpy arrays
+        # Make sure all are independent copies (not views) for serialization
+        import numpy as np
+        verified_params = []
+        for p in flat_params:
+            try:
+                if isinstance(p, np.ndarray):
+                    # Make a copy to ensure it's independent and C-contiguous
+                    verified_params.append(np.ascontiguousarray(p.copy()))
+                elif hasattr(p, 'numpy'):
+                    arr = p.numpy()
+                    verified_params.append(np.ascontiguousarray(arr.copy()))
+                else:
+                    # Try to convert to numpy
+                    arr = np.asarray(p)
+                    verified_params.append(np.ascontiguousarray(arr.copy()))
+            except Exception:
+                # Fallback: return original
+                verified_params.append(p)
+        
+        return verified_params
 
     def set_parameters(self, parameters):
         """Set parameters, handling both dict and list formats."""
@@ -170,148 +190,267 @@ class FedGuideClient(FedRLClient):
     
     def fit(self, parameters, config):
         """Override fit to handle module-based parameters and collect actions for metrics."""
-        import sys
-        import traceback
-        
         cid = getattr(self, "cid", config.get("cid", "unknown"))
         rnd = int(config.get("server_round", 0))
         
-        # Debug: print that fit was called
-        debug_msg = f"[Client {cid}] fit called for round {rnd}, parameters type: {type(parameters)}, has trainer: {hasattr(self, 'trainer')}\n"
-        sys.stderr.write(debug_msg)
-        sys.stderr.flush()
-        
-        # Also write to a debug file to ensure we can see it
-        try:
-            with open(f"/tmp/fedguide_debug_{cid}.log", "a") as f:
-                f.write(f"Round {rnd}: fit called, parameters type: {type(parameters)}\n")
-        except Exception:
-            pass
-        
-        try:
-            # Set parameters first
-            if parameters is not None:
-                try:
-                    self.set_parameters(parameters)
-                except Exception as e:
-                    msg = f"[Client {cid}] Warning: Failed to set parameters: {e}\n"
-                    sys.stderr.write(msg)
-                    sys.stderr.flush()
-                    # Continue anyway - agent will use current parameters
-            
-            if hasattr(self, "metrics"):
-                self.metrics.set_step(rnd)
-            
-            # Train one round
-            train_result = self.trainer.train_one_round()
-        except Exception as e:
-            error_msg = f"[Client {cid}] Error in fit (round {rnd}): {e}\n"
-            error_msg += traceback.format_exc()
-            sys.stderr.write(error_msg)
-            sys.stderr.flush()
-            # Re-raise to let Flower handle it
-            raise
-        
-        try:
-            # Extract loss and other metrics from trainer result
-            if isinstance(train_result, dict):
-                loss = train_result.get("loss", train_result.get("train/loss", None))
-                train_return = train_result.get("train/return", train_result.get("return", None))
-                eval_return = train_result.get("eval/return", None)
-            else:
-                loss = train_result
-                train_return = None
-                eval_return = None
-            
-            # Eval/save
-            success = self.trainer.save_eval(cid, rnd)
-            samples = int(getattr(self.trainer, "n_steps", 0))
-            
-            # Get parameters in module format for OT-MoE aggregation
-            # Get dict format directly from agent (not from get_parameters which returns list)
-            if hasattr(self.agent, "get_parameters"):
-                full_param_dict = self.agent.get_parameters()
-                mode = self.aggregate_mode
-                
-                def pick(keys):
-                    return {k: v for k, v in full_param_dict.items() if k in keys and k in full_param_dict}
-                
-                # Pick relevant modules based on aggregate_mode
-                if mode == "policy":
-                    param_dict = pick({"policy", "log_std"})
-                elif mode == "policy_value":
-                    param_dict = pick({"policy", "log_std", "value"})
-                elif mode == "prior":
-                    param_dict = pick({"prior_adapt"})
-                elif mode in ("policy+prior", "policy_prior", "policy-prior"):
-                    param_dict = pick({"policy", "log_std", "prior_adapt"})
-                elif mode in ("prior+guidance", "prior_guidance", "prior-guidance"):
-                    param_dict = pick({"prior_adapt", "guidance"})
-                elif mode == "all":
-                    param_dict = pick({"policy", "log_std", "prior_adapt", "guidance"})
+        # Set parameters first
+        # Handle parameters - Flower may pass Parameters object or list
+        if parameters is not None:
+            try:
+                # Convert Parameters object to list if needed
+                from flwr.common import parameters_to_ndarrays
+                if hasattr(parameters, 'tensors') or hasattr(parameters, 'tensor_type'):
+                    # It's a Parameters object, convert to list
+                    param_list = parameters_to_ndarrays(parameters)
+                    self.set_parameters(param_list)
                 else:
-                    param_dict = pick({"policy", "log_std"})
-            else:
-                param_dict = {}
+                    # It's already a list or dict
+                    self.set_parameters(parameters)
+            except Exception:
+                # Continue anyway - agent will use current parameters
+                pass
+        
+        if hasattr(self, "metrics"):
+            self.metrics.set_step(rnd)
+        
+        # Train one round
+        train_result = self.trainer.train_one_round()
+        
+        # Extract loss and other metrics from trainer result
+        if isinstance(train_result, dict):
+            # Try multiple possible loss keys (different agents/trainers may use different names)
+            # Note: FedguideAgent.update() returns dict with "loss/total", which becomes "train/loss/total" in trainer output
+            loss = None
+            for key in ["loss", "train/loss", "train/loss/total", "loss/total", "train/loss/policy", "train/loss/value"]:
+                if key in train_result:
+                    val = train_result[key]
+                    # Check if value is valid (not None, not nan, not inf)
+                    if val is not None:
+                        try:
+                            loss_float = float(val)
+                            # Check for nan: nan != nan is True
+                            # Check for inf
+                            if loss_float == loss_float and loss_float != float('inf') and loss_float != float('-inf'):
+                                loss = loss_float
+                                break
+                        except (TypeError, ValueError):
+                            continue
             
-            # Convert dict to modules format: {module_name: [numpy arrays]}
-            # This format is expected by FedGuideStrategy._modules_from_metrics
-            modules_dict = {}
-            if isinstance(param_dict, dict):
-                import torch
-                for module_name, module_params in param_dict.items():
-                    if isinstance(module_params, dict):
-                        # Convert state_dict to list of numpy arrays
-                        arrays = []
-                        for v in module_params.values():
-                            if isinstance(v, torch.Tensor):
-                                arrays.append(v.numpy())
-                            elif hasattr(v, "numpy"):
-                                arrays.append(v.numpy())
-                            else:
-                                arrays.append(v)
-                        modules_dict[module_name] = arrays
-                    elif isinstance(module_params, torch.Tensor):
-                        modules_dict[module_name] = [module_params.numpy()]
-                    elif hasattr(module_params, "numpy"):
-                        modules_dict[module_name] = [module_params.numpy()]
+            # If still None or invalid, try to use return as a proxy (negative return = higher loss)
+            if loss is None:
+                if "train/return" in train_result:
+                    train_return_val = train_result["train/return"]
+                    if train_return_val is not None:
+                        try:
+                            # Use negative return as loss (higher return = lower loss)
+                            loss = -float(train_return_val)
+                        except (TypeError, ValueError):
+                            loss = 0.0
                     else:
-                        modules_dict[module_name] = [module_params]
+                        loss = 0.0
+                else:
+                    loss = 0.0
+            elif isinstance(loss, float):
+                # Check for nan/inf
+                if loss != loss or loss == float('inf') or loss == float('-inf'):
+                    # Try to use return as fallback
+                    if "train/return" in train_result:
+                        train_return_val = train_result["train/return"]
+                        if train_return_val is not None:
+                            try:
+                                loss = -float(train_return_val)
+                            except (TypeError, ValueError):
+                                loss = 0.0
+                        else:
+                            loss = 0.0
+                    else:
+                        loss = 0.0
             
-            # Build metrics dict
-            fit_metrics = {
-                "loss": float(loss) if loss is not None else float("nan"),
-                "success": int(bool(success)),
-                "modules": modules_dict,  # Add modules for OT-MoE aggregation
-            }
-            if train_return is not None:
-                fit_metrics["train/return"] = float(train_return)
-            if eval_return is not None:
-                fit_metrics["eval/return"] = float(eval_return)
-            
-            # Get new parameters (as list for Flower compatibility)
-            # get_parameters now returns a list, so we can use it directly
-            new_params = self.get_parameters(config)
-            
-            # Collect actions for metrics visualization (if collector is available)
-            if self.metrics_collector is not None:
+            train_return = train_result.get("train/return", train_result.get("return", None))
+            eval_return = train_result.get("eval/return", None)
+        else:
+            # If train_result is not a dict, it should be a scalar loss value
+            if train_result is not None:
                 try:
-                    client_id = int(cid) if isinstance(cid, (int, str)) and str(cid).isdigit() else hash(cid) % 10000
-                    if hasattr(self.trainer, 'last_actions') and self.trainer.last_actions is not None:
-                        actions = self.trainer.last_actions
-                        self.metrics_collector.collect_client_actions(client_id, actions)
-                except Exception:
-                    pass
+                    loss = float(train_result)
+                    # Check for nan/inf
+                    if loss != loss or loss == float('inf') or loss == float('-inf'):
+                        loss = 0.0
+                except (TypeError, ValueError):
+                    loss = 0.0
+            else:
+                loss = 0.0
+            train_return = None
+            eval_return = None
+        
+        # Eval/save
+        success = self.trainer.save_eval(cid, rnd)
+        samples = int(getattr(self.trainer, "n_steps", 0))
+        
+        # Get parameters in module format for OT-MoE aggregation
+        # Get dict format directly from agent (not from get_parameters which returns list)
+        if hasattr(self.agent, "get_parameters"):
+            full_param_dict = self.agent.get_parameters()
+            mode = self.aggregate_mode
             
-            return new_params, samples, fit_metrics
-        except Exception as e:
-            import sys
-            import traceback
-            error_msg = f"[Client {cid}] Error in fit post-processing (round {rnd}): {e}\n"
-            error_msg += traceback.format_exc()
-            sys.stderr.write(error_msg)
-            sys.stderr.flush()
-            raise
+            def pick(keys):
+                return {k: v for k, v in full_param_dict.items() if k in keys and k in full_param_dict}
+            
+            # Pick relevant modules based on aggregate_mode
+            if mode == "policy":
+                param_dict = pick({"policy", "log_std"})
+            elif mode == "policy_value":
+                param_dict = pick({"policy", "log_std", "value"})
+            elif mode == "prior":
+                param_dict = pick({"prior_adapt"})
+            elif mode in ("policy+prior", "policy_prior", "policy-prior"):
+                param_dict = pick({"policy", "log_std", "prior_adapt"})
+            elif mode in ("prior+guidance", "prior_guidance", "prior-guidance"):
+                param_dict = pick({"prior_adapt", "guidance"})
+            elif mode == "all":
+                param_dict = pick({"policy", "log_std", "prior_adapt", "guidance"})
+            else:
+                param_dict = pick({"policy", "log_std"})
+        else:
+            param_dict = {}
+        
+        # Convert dict to modules format: {module_name: [numpy arrays]}
+        # This format is expected by FedGuideStrategy._modules_from_metrics
+        modules_dict = {}
+        if isinstance(param_dict, dict):
+            import torch
+            import json
+            import numpy as np
+            for module_name, module_params in param_dict.items():
+                if isinstance(module_params, dict):
+                    # Convert state_dict to list of numpy arrays
+                    arrays = []
+                    for v in module_params.values():
+                        if isinstance(v, torch.Tensor):
+                            arrays.append(v.numpy().tolist())
+                        elif hasattr(v, "numpy"):
+                            arrays.append(v.numpy().tolist())
+                        elif isinstance(v, np.ndarray):
+                            arrays.append(v.tolist())
+                        else:
+                            arrays.append(v)
+                    modules_dict[module_name] = arrays
+                elif isinstance(module_params, torch.Tensor):
+                    modules_dict[module_name] = [module_params.numpy().tolist()]
+                elif hasattr(module_params, "numpy"):
+                    modules_dict[module_name] = [module_params.numpy().tolist()]
+                elif isinstance(module_params, np.ndarray):
+                    modules_dict[module_name] = [module_params.tolist()]
+                else:
+                    modules_dict[module_name] = [module_params]
+        
+        # Serialize modules_dict to JSON string for Flower metrics compatibility
+        # Flower metrics only support basic types (int, float, str, bytes, bool, list)
+        # Server will deserialize it using json.loads
+        modules_json = json.dumps(modules_dict) if modules_dict else None
+        
+        # Ensure loss is a valid float (not None, not nan, not inf)
+        if loss is None:
+            loss = 0.0
+        else:
+            try:
+                loss = float(loss)
+                # Check for nan/inf
+                if loss != loss or loss == float('inf') or loss == float('-inf'):
+                    loss = 0.0
+            except (TypeError, ValueError):
+                loss = 0.0
+        
+        # Print client loss for debugging
+        print(f"[FedGuideClient {cid}] Round {rnd}: loss = {loss}, train_return = {train_return}, eval_return = {eval_return}, success = {success}")
+        
+        # Build metrics dict
+        fit_metrics = {
+            "loss": loss,
+            "success": int(bool(success)),
+        }
+        if modules_json is not None:
+            fit_metrics["modules"] = modules_json  # JSON string for OT-MoE aggregation
+        if train_return is not None:
+            fit_metrics["train/return"] = float(train_return)
+        if eval_return is not None:
+            fit_metrics["eval/return"] = float(eval_return)
+        
+        # Get new parameters (as list)
+        new_params_list = self.get_parameters(config)
+        
+        # Ensure new_params_list is a list, not a dict
+        if isinstance(new_params_list, dict):
+            import numpy as np
+            new_params_list = [np.asarray(v) for v in new_params_list.values()]
+        
+        # Verify it's a list
+        if not isinstance(new_params_list, list):
+            import numpy as np
+            new_params_list = [np.asarray(new_params_list)] if not isinstance(new_params_list, list) else new_params_list
+        
+        # Collect actions for metrics visualization (if collector is available)
+        if self.metrics_collector is not None:
+            try:
+                client_id = int(cid) if isinstance(cid, (int, str)) and str(cid).isdigit() else hash(cid) % 10000
+                if hasattr(self.trainer, 'last_actions') and self.trainer.last_actions is not None:
+                    actions = self.trainer.last_actions
+                    self.metrics_collector.collect_client_actions(client_id, actions)
+            except Exception:
+                pass
+        
+        # Also pass actions through Flower metrics for server-side collection
+        # This allows the server to collect actions even if collector is not shared
+        if hasattr(self.trainer, 'last_actions') and self.trainer.last_actions is not None:
+            try:
+                import json
+                import numpy as np
+                actions = self.trainer.last_actions
+                # Convert to list for JSON serialization
+                if isinstance(actions, np.ndarray):
+                    actions_list = actions.tolist()
+                elif isinstance(actions, (list, tuple)):
+                    actions_list = [a.tolist() if isinstance(a, np.ndarray) else a for a in actions]
+                else:
+                    actions_list = actions
+                # Store in metrics as JSON string (Flower only allows basic types)
+                fit_metrics["client_actions"] = json.dumps(actions_list)
+                # Also store client_id for mapping
+                mapped_id = abs(hash(cid)) % (getattr(self, '_num_clients', 100) if hasattr(self, '_num_clients') else 100)
+                fit_metrics["client_id_mapped"] = mapped_id
+            except Exception as e:
+                # Silently fail if serialization fails
+                pass
+        
+        # Evaluate policy on grid and pass through metrics for server-side visualization
+        # This allows server to collect client_metrics even if collector is not shared
+        if self.metrics_collector is not None:
+            try:
+                import json
+                import numpy as np
+                # Evaluate agent on grid
+                grid_metrics = self.metrics_collector.evaluate_on_grid(
+                    agent=self.agent,
+                    client_id=mapped_id if 'mapped_id' in locals() else None,
+                    round_num=rnd
+                )
+                # Serialize grid metrics to JSON (Flower only allows basic types)
+                # Convert numpy arrays to lists and flatten for JSON
+                serialized_metrics = {}
+                for key, value in grid_metrics.items():
+                    if isinstance(value, np.ndarray):
+                        # Flatten and convert to list
+                        serialized_metrics[key] = json.dumps(value.tolist())
+                    else:
+                        serialized_metrics[key] = json.dumps(value)
+                # Store in fit_metrics with prefix to identify as client metrics
+                for key, value in serialized_metrics.items():
+                    fit_metrics[f"client_grid_{key}"] = value
+            except Exception as e:
+                # Silently fail if evaluation fails
+                pass
+        
+        return new_params_list, samples, fit_metrics
 
 
 # --------- client_fn_builder ----------
@@ -333,7 +472,7 @@ def client_fn_builder(
     use_wandb: bool = False,
     wandb_project: Optional[str] = None,
     run_name: Optional[str] = None,
-    metrics_collector: Optional[Any] = None,  # Bandit2DMetricsCollector instance
+    metrics_collector: Optional[Any] = None,  # Bandit2DMetricsCollector instance (for backward compatibility)
     num_clients: Optional[int] = None,  # Total number of clients for ID mapping
 ):
 
@@ -457,6 +596,27 @@ def client_fn_builder(
             online_prior=online_prior,
         )
 
+        # Get collector from global variable if not passed directly
+        # Note: This works because the module is imported before client_fn is called
+        # Use nonlocal to modify the outer scope variable
+        nonlocal metrics_collector
+        if metrics_collector is None:
+            try:
+                # Try to import and access global collector from run script
+                # Use importlib to ensure we get the module even if it's already imported
+                import importlib
+                try:
+                    run_module = importlib.import_module('scripts.envs.bandit2d.run_fedguide_bandit2d')
+                    metrics_collector = getattr(run_module, '_metrics_collector_global', None)
+                except (ImportError, AttributeError):
+                    try:
+                        run_module = importlib.import_module('scripts.envs.bandit2d.run_fedkl_bandit2d')
+                        metrics_collector = getattr(run_module, '_metrics_collector_global', None)
+                    except (ImportError, AttributeError):
+                        pass
+            except Exception:
+                pass
+        
         # client
         client = FedGuideClient(
             agent=agent,
@@ -471,6 +631,17 @@ def client_fn_builder(
         )
         # Store client_id for metrics collection
         client.cid = cid
-        return client.to_client() if hasattr(client, "to_client") else client
+        
+        # Register agent with metrics collector for visualization
+        if metrics_collector is not None:
+            # Map Flower client ID to sequential ID for metrics
+            if num_clients is not None:
+                mapped_id = abs(hash(cid)) % num_clients
+            else:
+                mapped_id = abs(hash(cid)) % 100
+            metrics_collector.register_client_agent(mapped_id, agent)
+        
+        # Convert NumPyClient to Client
+        return client.to_client()
 
     return client_fn
