@@ -69,6 +69,7 @@ class FedguideAgent(nn.Module):
         self.online_guidance = online_guidance
         self.online_guidance_steps = online_guidance_steps
         self.online_prior = online_prior
+        self.prior_lr = prior_lr
         self.prior_reg_coef = prior_reg_coef
 
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -155,24 +156,65 @@ class FedguideAgent(nn.Module):
             return
         sd = torch.load(ckpt_path, map_location="cpu")
         try:
+            # Check if this is SimpleDiffusionPrior or DiffusionGuidance
+            is_simple_prior = False
+            if isinstance(sd, dict):
+                # SimpleDiffusionPrior format: has "prior" key or "state_dim" but no "unet"
+                if "prior" in sd or ("state_dim" in sd and "unet" not in sd):
+                    is_simple_prior = True
+                # Also check if it's a direct state dict with encoder/decoder keys
+                elif not ("unet" in sd or "scheduler_config" in sd):
+                    # Check if keys suggest SimpleDiffusionPrior structure
+                    if any("encoder" in k or "decoder" in k for k in sd.keys()):
+                        is_simple_prior = True
+            
             # Handle different checkpoint formats
             if isinstance(sd, dict):
-                # Check if it's a pretrain checkpoint with "unet" key
-                if "unet" in sd:
-                    # Load UNet weights into prior.model
-                    self.prior.model.load_state_dict(sd["unet"], strict=False)
-                    print(f"[FedguideAgent] loaded pretrained UNet from: {ckpt_path}")
-                # Check if it's a nested format with "prior" key
-                elif "prior" in sd and isinstance(sd["prior"], dict):
-                    self.prior.load_state_dict(sd["prior"], strict=False)
-                    print(f"[FedguideAgent] loaded pretrained prior from: {ckpt_path}")
-                # Otherwise try to load directly as prior state_dict
+                if is_simple_prior:
+                    # SimpleDiffusionPrior format
+                    if "prior" in sd:
+                        self.prior.load_state_dict(sd["prior"], strict=False)
+                        print(f"[FedguideAgent] loaded pretrained SimpleDiffusionPrior from: {ckpt_path}")
+                    elif "state_dim" in sd:
+                        # Try loading as full state dict (may have extra metadata)
+                        try:
+                            self.prior.load_state_dict(sd, strict=False)
+                        except Exception:
+                            # If that fails, try extracting just the prior state dict
+                            # by filtering out metadata keys
+                            prior_sd = {k: v for k, v in sd.items() 
+                                      if k not in ["state_dim", "action_dim", "hidden_dim", "timesteps"]}
+                            self.prior.load_state_dict(prior_sd, strict=False)
+                        print(f"[FedguideAgent] loaded pretrained SimpleDiffusionPrior from: {ckpt_path}")
+                    else:
+                        # Direct state dict
+                        self.prior.load_state_dict(sd, strict=False)
+                        print(f"[FedguideAgent] loaded pretrained SimpleDiffusionPrior from: {ckpt_path}")
                 else:
-                    self.prior.load_state_dict(sd, strict=False)
-                    print(f"[FedguideAgent] loaded pretrained prior from: {ckpt_path}")
+                    # DiffusionGuidance format
+                    # Check if it's a pretrain checkpoint with "unet" key
+                    if "unet" in sd:
+                        # Load UNet weights into prior.model
+                        self.prior.model.load_state_dict(sd["unet"], strict=False)
+                        print(f"[FedguideAgent] loaded pretrained UNet from: {ckpt_path}")
+                    # Check if it's a nested format with "prior" key
+                    elif "prior" in sd and isinstance(sd["prior"], dict):
+                        self.prior.load_state_dict(sd["prior"], strict=False)
+                        print(f"[FedguideAgent] loaded pretrained prior from: {ckpt_path}")
+                    # Otherwise try to load directly as prior state_dict
+                    else:
+                        self.prior.load_state_dict(sd, strict=False)
+                        print(f"[FedguideAgent] loaded pretrained prior from: {ckpt_path}")
             else:
-                self.prior.load_state_dict(sd, strict=False)
-                print(f"[FedguideAgent] loaded pretrained prior from: {ckpt_path}")
+                # Direct state dict - try to determine type by checking if prior has model attribute
+                if hasattr(self.prior, "model"):
+                    # DiffusionGuidance
+                    self.prior.model.load_state_dict(sd, strict=False)
+                    print(f"[FedguideAgent] loaded pretrained UNet from: {ckpt_path}")
+                else:
+                    # SimpleDiffusionPrior
+                    self.prior.load_state_dict(sd, strict=False)
+                    print(f"[FedguideAgent] loaded pretrained SimpleDiffusionPrior from: {ckpt_path}")
         except Exception as e:
             print(f"[FedguideAgent] load prior failed ({ckpt_path}): {e}")
             import traceback
@@ -411,25 +453,39 @@ class FedguideAgent(nn.Module):
             return
         s, a = s[mask], a[mask]
 
-        if hasattr(self.guidance, "update_wt"):
-            gd = {"states": s.detach(), "actions": a.detach(), "weights": torch.relu(adv[mask]).detach()}
+        # Check if guidance is SimpleDiffusionPrior (has update method with states, actions, lr signature)
+        from fedguide.guidance.diffusion_prior import SimpleDiffusionPrior
+        if isinstance(self.guidance, SimpleDiffusionPrior):
+            # SimpleDiffusionPrior uses update(states, actions, lr) method
             try:
-                self.guidance.update_wt(gd)
-            except TypeError:
-                pass
+                # Use prior_lr for online training (same as online_prior_step)
+                guidance_lr = getattr(self, "prior_lr", 1e-4)
+                self.guidance.update(s.detach(), a.detach(), lr=guidance_lr)
+            except Exception as e:
+                print(f"[FedguideAgent] SimpleDiffusionPrior.update() failed: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            # SDICE_Critic or other guidance types with update_wt/update_v0 methods
+            if hasattr(self.guidance, "update_wt"):
+                gd = {"states": s.detach(), "actions": a.detach(), "weights": torch.relu(adv[mask]).detach()}
+                try:
+                    self.guidance.update_wt(gd)
+                except TypeError:
+                    pass
 
-        if "r" in batch and "s_next" in batch and "done" in batch and hasattr(self.guidance, "update_v0"):
-            gd2 = {
-                "states": s.detach(),
-                "actions": a.detach(),
-                "rewards": batch["r"][mask].to(self.device).detach(),
-                "next_states": batch["s_next"][mask].to(self.device).detach(),
-                "dones": batch["done"][mask].float().to(self.device).detach(),
-            }
-            try:
-                self.guidance.update_v0(gd2)
-            except TypeError:
-                pass
+            if "r" in batch and "s_next" in batch and "done" in batch and hasattr(self.guidance, "update_v0"):
+                gd2 = {
+                    "states": s.detach(),
+                    "actions": a.detach(),
+                    "rewards": batch["r"][mask].to(self.device).detach(),
+                    "next_states": batch["s_next"][mask].to(self.device).detach(),
+                    "dones": batch["done"][mask].float().to(self.device).detach(),
+                }
+                try:
+                    self.guidance.update_v0(gd2)
+                except TypeError:
+                    pass
 
     def online_prior_step(self, batch: Dict[str, torch.Tensor]):
         if not self.online_prior or self.prior is None or self.prior_opt is None:

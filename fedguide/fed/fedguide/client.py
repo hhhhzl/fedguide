@@ -526,17 +526,57 @@ def client_fn_builder(
             
             # Load prior if checkpoint exists
             if os.path.isfile(prior_path):
-                from fedguide.guidance.diffusion_prior import DiffusionGuidance
-                # Default hyperparameters (should match pretrain settings)
-                prior = DiffusionGuidance(
-                    state_dim=state_dim,
-                    action_dim=action_dim,
-                    hidden_dim=256,  # Default from pretrain_bandit2d.py
-                    timesteps=1000,
-                    horizon=64,  # Default from pretrain_bandit2d.py
-                )
-                prior_ckpt = prior_path
-                print(f"[Client {cid} (mapped to {client_id})] Found pretrained prior at: {prior_path}")
+                # Try to detect model type from checkpoint
+                sd = torch.load(prior_path, map_location="cpu")
+                is_simple_prior = False
+                
+                if isinstance(sd, dict):
+                    # SimpleDiffusionPrior format: has "prior" key or "state_dim" but no "unet"
+                    if "prior" in sd or ("state_dim" in sd and "unet" not in sd):
+                        is_simple_prior = True
+                    # Also check if it's a direct state dict with encoder/decoder keys
+                    elif not ("unet" in sd or "scheduler_config" in sd):
+                        # Check if keys suggest SimpleDiffusionPrior structure
+                        if any("encoder" in k or "decoder" in k for k in sd.keys()):
+                            is_simple_prior = True
+                
+                if is_simple_prior:
+                    # Load SimpleDiffusionPrior
+                    from fedguide.guidance.diffusion_prior import SimpleDiffusionPrior
+                    
+                    # Extract hyperparameters from checkpoint if available
+                    if isinstance(sd, dict) and "prior" in sd:
+                        hidden_dim = sd.get("hidden_dim", 256)
+                        timesteps = sd.get("timesteps", 1000)
+                    elif isinstance(sd, dict) and "state_dim" in sd:
+                        hidden_dim = sd.get("hidden_dim", 256)
+                        timesteps = sd.get("timesteps", 1000)
+                    else:
+                        # Default hyperparameters (should match pretrain settings)
+                        hidden_dim = 256
+                        timesteps = 1000
+                    
+                    prior = SimpleDiffusionPrior(
+                        state_dim=state_dim,
+                        action_dim=action_dim,
+                        hidden_dim=hidden_dim,
+                        timesteps=timesteps
+                    )
+                    prior_ckpt = prior_path
+                    print(f"[Client {cid} (mapped to {client_id})] Found pretrained SimpleDiffusionPrior at: {prior_path}")
+                else:
+                    # Load DiffusionGuidance
+                    from fedguide.guidance.diffusion_prior import DiffusionGuidance
+                    # Default hyperparameters (should match pretrain settings)
+                    prior = DiffusionGuidance(
+                        state_dim=state_dim,
+                        action_dim=action_dim,
+                        hidden_dim=256,  # Default from pretrain_bandit2d.py
+                        timesteps=1000,
+                        horizon=64,  # Default from pretrain_bandit2d.py
+                    )
+                    prior_ckpt = prior_path
+                    print(f"[Client {cid} (mapped to {client_id})] Found pretrained DiffusionGuidance at: {prior_path}")
             else:
                 print(f"[Client {cid} (mapped to {client_id})] No pretrained prior found at: {prior_path} (will train from scratch)")
             
