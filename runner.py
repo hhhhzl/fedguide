@@ -23,6 +23,12 @@ def make_env(env_id: str, seed: int):
         env.reset(seed=seed)
         return env
 
+    if env_id.lower() in ["bandit2d", "bandit_2d", "2dbandit"]:
+        from fedguide.envs.bandit2d import Bandit2D
+        env = Bandit2D(K=4, sigma=0.2, seed=seed)
+        env.reset(seed=seed)
+        return env
+
     env = gym.make(env_id)
     env.reset(seed=seed)
 

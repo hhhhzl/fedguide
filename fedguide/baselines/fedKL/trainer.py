@@ -101,6 +101,9 @@ class FedKLTrainer:
         # Local policy snapshot (for local KL penalty)
         self.local_policy_snapshot = None
         self.local_log_std_snapshot = None
+        
+        # Store last rollout actions for metrics collection
+        self.last_actions = None
     
     def collect_rollouts(self) -> int:
         """Collect n_steps of experience."""
@@ -313,6 +316,9 @@ class FedKLTrainer:
         
         # Get data from buffer
         states, actions, _, _, log_probs, _ = self.buffer.get()
+        
+        # Store actions for metrics collection
+        self.last_actions = np.array(actions)
         
         # Update policy
         loss = self.update_policy(states, actions, log_probs, advantages, returns)
