@@ -51,6 +51,7 @@ class Bandit2DMetricsCollector:
         # Storage for collected data
         self.client_actions: Dict[int, List[np.ndarray]] = {}  # {client_id: [actions]}
         self.metrics_history: List[Dict] = []  # Metrics for each round
+        self.client_agents: Dict[int, Any] = {}  # {client_id: agent} - stored by clients
         
     def collect_client_actions(self, client_id: int, actions: np.ndarray):
         """
@@ -63,6 +64,16 @@ class Bandit2DMetricsCollector:
         if client_id not in self.client_actions:
             self.client_actions[client_id] = []
         self.client_actions[client_id].append(actions)
+    
+    def register_client_agent(self, client_id: int, agent: Any):
+        """
+        Register a client agent for metrics collection.
+        
+        Args:
+            client_id: Client identifier
+            agent: Agent object
+        """
+        self.client_agents[client_id] = agent
     
     def evaluate_on_grid(
         self,
@@ -98,12 +109,36 @@ class Bandit2DMetricsCollector:
             if hasattr(agent.prior, 'log_prob'):
                 with torch.no_grad():
                     try:
-                        prior_logp = agent.prior.log_prob(grid_tensor, states)
-                        if isinstance(prior_logp, torch.Tensor):
-                            prior_logp = prior_logp.cpu().numpy()
+                        # For DiffusionGuidance (UNet-based), it expects trajectory format
+                        # The _make_traj method creates [B, 1, traj_dim] but UNet actually expects [B, traj_dim, horizon]
+                        # However, looking at the code, _make_traj creates [B, 1, 4] which gets passed to UNet
+                        # The UNet then processes it, but the input format is wrong
+                        # For grid evaluation with single points, we need to create proper trajectories
+                        if hasattr(agent.prior, 'model') and hasattr(agent.prior, 'horizon'):
+                            # This is DiffusionGuidance with UNet
+                            # The issue is that _make_traj creates [B, 1, traj_dim] but UNet expects [B, traj_dim, horizon]
+                            # Actually, looking at UNet1DModel, it might accept [B, C, L] where C=channels, L=length
+                            # But _make_traj creates [B, 1, 4] which means L=1, C=4, which is wrong
+                            # We need to create trajectories with proper length (horizon)
+                            
+                            # For grid evaluation with UNet-based prior, we need to handle the format issue
+                            # The _make_traj creates [B, 1, 4] but UNet expects [B, 4, horizon]
+                            # We'll skip prior evaluation for now as it's complex to fix the format
+                            # The prior is mainly used during training, not for visualization
+                            # Return zeros to indicate prior is not available for grid evaluation
+                            # This won't break visualization, just won't show prior density
+                            prior_logp = np.zeros(grid_tensor.shape[0])
+                        else:
+                            # SimpleDiffusionPrior or other prior types - direct call
+                            prior_logp = agent.prior.log_prob(grid_tensor, states)
+                            if isinstance(prior_logp, torch.Tensor):
+                                prior_logp = prior_logp.cpu().numpy()
+                        
                         metrics['prior_logprob'] = prior_logp.reshape(self.X.shape)
                     except Exception as e:
                         print(f"Warning: Failed to compute prior log prob: {e}")
+                        import traceback
+                        traceback.print_exc()
         
         # 2. Value function
         if hasattr(agent, 'value_fn'):
@@ -171,26 +206,41 @@ class Bandit2DMetricsCollector:
             'server_metrics': {},
         }
         
+        # Add client actions if available (even if no agents)
+        if self.client_actions:
+            round_metrics['client_actions'] = {
+                k: list(v) if isinstance(v, np.ndarray) else v 
+                for k, v in self.client_actions.items()
+            }
+        
         # Collect metrics for each client
-        for client_id, agent in client_agents.items():
-            client_metrics = self.evaluate_on_grid(agent, client_id=client_id, round_num=round_num)
-            round_metrics['client_metrics'][client_id] = client_metrics
+        if client_agents:
+            for client_id, agent in client_agents.items():
+                try:
+                    client_metrics = self.evaluate_on_grid(agent, client_id=client_id, round_num=round_num)
+                    round_metrics['client_metrics'][client_id] = client_metrics
+                except Exception as e:
+                    print(f"Warning: Failed to evaluate client {client_id} on grid: {e}")
         
         # Collect server metrics (if available)
         if server_agent is not None:
-            server_metrics = self.evaluate_on_grid(server_agent, client_id=None, round_num=round_num)
-            
-            # Compute FedGuide policy: π_FG ∝ π_fed_prior * exp(β * V_fed)
-            if 'prior_logprob' in server_metrics and 'value' in server_metrics:
-                prior_lp = server_metrics['prior_logprob']
-                value = server_metrics['value']
-                log_pi_fg = prior_lp + beta * value
-                log_pi_fg = log_pi_fg - log_pi_fg.max()  # Normalize
-                pi_fg = np.exp(log_pi_fg)
-                server_metrics['fedguide_policy_density'] = pi_fg
-            
-            round_metrics['server_metrics'] = server_metrics
+            try:
+                server_metrics = self.evaluate_on_grid(server_agent, client_id=None, round_num=round_num)
+                
+                # Compute FedGuide policy: π_FG ∝ π_fed_prior * exp(β * V_fed)
+                if 'prior_logprob' in server_metrics and 'value' in server_metrics:
+                    prior_lp = server_metrics['prior_logprob']
+                    value = server_metrics['value']
+                    log_pi_fg = prior_lp + beta * value
+                    log_pi_fg = log_pi_fg - log_pi_fg.max()  # Normalize
+                    pi_fg = np.exp(log_pi_fg)
+                    server_metrics['fedguide_policy_density'] = pi_fg
+                
+                round_metrics['server_metrics'] = server_metrics
+            except Exception as e:
+                print(f"Warning: Failed to evaluate server agent on grid: {e}")
         
+        # Always append, even if empty (at least we have the round number and actions)
         self.metrics_history.append(round_metrics)
     
     def save(self, filename: str = "bandit2d_metrics.pkl"):

@@ -38,7 +38,8 @@ class FedguideTrainer:
         self.eval_episodes = eval_episodes
         self.writer = writer
 
-        self._obs = self.env.reset()
+        reset_result = self.env.reset()
+        self._obs = reset_result[0] if isinstance(reset_result, tuple) else reset_result
         self.last_actions = None  # Store last rollout actions for metrics collection
 
     # ---------------- Rollout + GAE ----------------
@@ -58,7 +59,8 @@ class FedguideTrainer:
 
             self._obs = next_obs
             if d:
-                self._obs = self.env.reset()
+                reset_result = self.env.reset()
+                self._obs = reset_result[0] if isinstance(reset_result, tuple) else reset_result
 
         states = torch.stack(obs_buf)
         actions = torch.stack(act_buf)
@@ -152,7 +154,8 @@ class FedguideTrainer:
         return out
 
     def _eval_episode(self) -> float:
-        obs = self.env.reset()
+        reset_result = self.env.reset()
+        obs = reset_result[0] if isinstance(reset_result, tuple) else reset_result
         ep_ret = 0.0
         done = False
         while not done:
@@ -161,3 +164,41 @@ class FedguideTrainer:
             obs, r, done, _trunc, _info = self.env.step(a)
             ep_ret += r
         return ep_ret
+
+    def save_eval(self, cid: str, rnd: int, outdir="./results/fedguide") -> bool:
+        """Save evaluation trajectory and metadata.
+        
+        For Bandit2D environment, this is a simplified version that doesn't
+        track passed_gate or reached_goal (those are maze-specific concepts).
+        """
+        import os
+        import json
+        
+        # Run evaluation episode and collect trajectory
+        reset_result = self.env.reset()
+        obs = reset_result[0] if isinstance(reset_result, tuple) else reset_result
+        traj = [obs.copy() if hasattr(obs, 'copy') else np.array(obs)]
+        ep_ret = 0.0
+        done = False
+        
+        while not done:
+            a, _, _ = self.agent.select_action(obs, deterministic=True)
+            a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
+            obs, r, done, _trunc, _info = self.env.step(a)
+            ep_ret += r
+            traj.append(obs.copy() if hasattr(obs, 'copy') else np.array(obs))
+        
+        # Save trajectory and metadata
+        d = os.path.join(outdir, f"client_{cid}")
+        os.makedirs(d, exist_ok=True)
+        np.save(os.path.join(d, f"round_{rnd}_traj.npy"), np.asarray(traj, dtype=np.float32))
+        meta = {
+            "round": int(rnd),
+            "ep_return": float(ep_ret),
+            "ep_length": len(traj),
+        }
+        with open(os.path.join(d, f"round_{rnd}_meta.json"), "w") as f:
+            json.dump(meta, f)
+        
+        # Return True to indicate success (for compatibility with base.py interface)
+        return True

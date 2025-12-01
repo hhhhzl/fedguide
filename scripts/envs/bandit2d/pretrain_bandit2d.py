@@ -5,11 +5,12 @@ import argparse
 import sys
 import os
 import torch
+from torch.utils.data import DataLoader
 
 # Add scripts directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from fedguide.guidance.pretrain import pretrain_one_client
+from fedguide.guidance.diffusion_prior import SimpleDiffusionPrior
 from generate_bandit2d_data import generate_bandit2d_datasets
 
 
@@ -22,6 +23,8 @@ def main():
     parser.add_argument("--K", type=int, default=4, help="Number of peaks")
     parser.add_argument("--sigma", type=float, default=0.2)
     parser.add_argument("--local_radius", type=float, default=0.3)
+    parser.add_argument("--overlap_factor", type=float, default=1.33,
+                        help="Overlap factor for sectors (1.33 = 30%% overlap, 1.5 = 50%% overlap)")
     parser.add_argument("--seed", type=int, default=42)
     
     # Device
@@ -56,16 +59,10 @@ def main():
     parser.add_argument('--alpha', type=float, default=0.5)
     parser.add_argument('--hidden_dim', type=int, default=256)
     
-    # Trajectory args (for window dataset, not used for bandit but needed for pretrain)
-    # Note: traj_horizon must be >= 64 for UNet1D with 3 downsampling blocks to work properly
-    parser.add_argument('--traj_horizon', type=int, default=64)
-    parser.add_argument('--traj_stride', type=int, default=1)
-    
     args = parser.parse_args()
     
     # Set env name for pretrain (used for saving models)
     args.env = "Bandit2D"
-    args.using_minari = "False"  # Use TrajectoryDataset format
     
     # Generate datasets
     print("Generating datasets...")
@@ -75,47 +72,105 @@ def main():
         samples_per_client=args.samples_per_client,
         sigma=args.sigma,
         local_radius=args.local_radius,
-        seed=args.seed
+        seed=args.seed,
+        overlap_factor=args.overlap_factor
     )
     
     print(f"\nStarting pretrain for {len(datasets)} clients...")
     
+    # Get dimensions from environment
+    from fedguide.envs.bandit2d import Bandit2D
+    env = Bandit2D(K=args.K, sigma=args.sigma, seed=args.seed)
+    obs_dim = int(env.observation_space.shape[0])
+    act_dim = int(env.action_space.shape[0])
+    
     # Pretrain each client
-    n_gpus = torch.cuda.device_count()
-    if n_gpus == 0:
-        print("No GPU detected. Running sequentially on CPU.")
-        for client_id in range(args.num_clients):
-            args.device = "cpu"
-            print(f"\n[Pretrain] Client {client_id}")
-            pretrain_one_client(args, client_id, datasets[client_id])
-    else:
-        # Use GPU if available
-        import torch.multiprocessing as mp
-        try:
-            mp.set_start_method("spawn", force=True)
-        except RuntimeError:
-            pass
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    
+    for client_id in range(args.num_clients):
+        print(f"\n[Pretrain] Client {client_id}")
         
-        from fedguide.guidance.pretrain import _worker
+        # Create SimpleDiffusionPrior
+        prior = SimpleDiffusionPrior(
+            state_dim=obs_dim,
+            action_dim=act_dim,
+            hidden_dim=args.dg_hidden_dim,
+            timesteps=args.num_train_timesteps
+        ).to(device)
         
-        # Distribute clients across GPUs
-        parts = [[] for _ in range(n_gpus)]
-        for k, cid in enumerate(range(args.num_clients)):
-            parts[k % n_gpus].append(cid)
+        # Create dataloader
+        loader = DataLoader(datasets[client_id], batch_size=args.batch_size, shuffle=True, drop_last=True)
         
-        for gid, cids in enumerate(parts):
-            print(f"[FedGuide] GPU {gid} <- clients {cids}")
+        # Create optimizer
+        optimizer = torch.optim.AdamW(prior.parameters(), lr=args.lr, weight_decay=args.weight_decay)
         
-        procs = []
-        for gpu_id, client_indices in enumerate(parts):
-            if not client_indices:
-                continue
-            p = mp.Process(target=_worker, args=(gpu_id, args, datasets, client_indices))
-            p.start()
-            procs.append(p)
+        # Save directory
+        save_dir = os.path.join("./model/models_prior", args.env, f"client_{client_id}")
+        os.makedirs(save_dir, exist_ok=True)
         
-        for p in procs:
-            p.join()
+        # Training loop
+        print(f"[Client {client_id}] Start prior pretrain...")
+        for epoch in range(1, args.n_behavior_epochs + 1):
+            prior.train()
+            total_loss = 0.0
+            n_batches = 0
+            
+            for batch in loader:
+                # Handle batch format
+                if isinstance(batch, dict):
+                    a = batch.get("a", batch.get("actions")).to(device)
+                else:
+                    x = batch.to(device)
+                    # For bandit2d, obs and action are the same, use only action part
+                    a = x[:, obs_dim:obs_dim + act_dim]
+                
+                if a.dim() == 1:
+                    a = a.unsqueeze(-1)
+                s = torch.zeros_like(a)
+                
+                optimizer.zero_grad()
+                
+                # Use log_prob and negative log-likelihood loss (like debug_pretrain.py)
+                lp = prior.log_prob(a, s)
+                loss = -lp.mean()
+                
+                # Backward
+                loss.backward()
+                optimizer.step()
+                
+                total_loss += loss.item()
+                n_batches += 1
+            
+            avg_loss = total_loss / max(1, n_batches)
+            
+            if epoch % 10 == 0:
+                print(f"[Client {client_id}] epoch {epoch}/{args.n_behavior_epochs} | prior_loss={avg_loss:.6f}")
+            
+            if (epoch % args.save_interval == 0) or (epoch == args.n_behavior_epochs):
+                ckpt_dir = os.path.join(save_dir, f"ckpt_epoch{epoch}")
+                os.makedirs(ckpt_dir, exist_ok=True)
+                prior.eval()
+                torch.save({
+                    "prior": prior.state_dict(),
+                    "state_dim": obs_dim,
+                    "action_dim": act_dim,
+                    "hidden_dim": args.dg_hidden_dim,
+                    "timesteps": args.num_train_timesteps,
+                }, os.path.join(ckpt_dir, "torch_prior.pth"))
+                prior.train()
+        
+        # Save final model
+        final_dir = os.path.join(save_dir, "final")
+        os.makedirs(final_dir, exist_ok=True)
+        prior.eval()
+        torch.save({
+            "prior": prior.state_dict(),
+            "state_dim": obs_dim,
+            "action_dim": act_dim,
+            "hidden_dim": args.dg_hidden_dim,
+            "timesteps": args.num_train_timesteps,
+        }, os.path.join(final_dir, "torch_prior.pth"))
+        print(f"[Client {client_id}] Saved final model to {final_dir}")
     
     print("\n[Pretrain] All clients finished.")
 

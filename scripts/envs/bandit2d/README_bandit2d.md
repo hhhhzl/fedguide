@@ -9,7 +9,7 @@ This guide explains how to run federated learning experiments on the 2D Bandit e
 - **Reward formula**: `R(a) = max_{i=1..K} exp(-||a - μ_i||² / (2σ²))`
 - **Client heterogeneity**: Each client i only sees data near μ_i
 
-## Quick Start
+## Quick Start (use client = 4 as example)
 
 ### 1. Generate Dataset (Optional, pretrain will auto-generate)
 
@@ -28,9 +28,9 @@ python scripts/envs/bandit2d/generate_bandit2d_data.py \
 ```bash
 python scripts/envs/bandit2d/pretrain_bandit2d.py \
     --num_clients 4 \
-    --samples_per_client 1000 \
-    --n_behavior_epochs 300 \
-    --batch_size 128 \
+    --samples_per_client 10000 \
+    --n_behavior_epochs 200 \
+    --batch_size 512 \
     --lr 1e-4 \
     --device cuda
 ```
@@ -61,7 +61,32 @@ python scripts/envs/bandit2d/run_fedkl_bandit2d.py \
     --cpus_per_client 2
 ```
 
-### 5. Visualize
+### 5. Visualize Prior Models
+
+After pretraining, you can visualize the prior models:
+
+**Visualize aggregated prior (recommended):**
+```bash
+python scripts/envs/bandit2d/visualize_prior_aggregated.py \
+    --base_path ./model/models_prior/Bandit2D \
+    --client_ids 0 1 2 3 \
+    --ckpt_dir final \
+    --show_peaks \
+    --output_path ./prior_aggregated.png
+```
+
+**Visualize aggregated + individual client priors:**
+```bash
+python scripts/envs/bandit2d/visualize_prior_aggregated.py \
+    --base_path ./model/models_prior/Bandit2D \
+    --client_ids 0 1 2 3 \
+    --ckpt_dir final \
+    --show_peaks \
+    --show_individual \
+    --output_path ./prior_comparison.png
+```
+
+### 6. Visualize Training Results
 ```bash
 python scripts/envs/bandit2d/visualize_bandit2d.py \
     --metrics_path ./metrics/bandit2d_fedguide/bandit2d_metrics.pkl \
@@ -102,6 +127,7 @@ python scripts/envs/bandit2d/visualize_bandit2d.py \
 2. **Environment registration**: Bandit2D environment is automatically registered, can be used directly with `env_id="Bandit2D"`
 3. **Data format**: Dataset uses `TrajectoryDataset` format, returns concatenated `[obs, action]`
 4. **Model path**: Pretrain models are automatically saved, FedGuide will attempt to load them (loading logic needs to be implemented)
+5. **Prior visualization**: After pretraining, use `visualize_prior_aggregated.py` to visualize the aggregated prior model, which represents the global prior distribution learned from all clients
 
 ## Verify Environment
 
