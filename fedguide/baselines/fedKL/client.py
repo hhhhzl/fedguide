@@ -1,8 +1,8 @@
 """
 FedKL Client Implementation
 
-This module implements the FedKL client that extends FedRLClient
-and provides client function builder for easy instantiation.
+This module implements the FedKL client that extends FedRLClient.
+Only the policy parameters are aggregated; value networks remain local.
 """
 
 from __future__ import annotations
@@ -15,12 +15,10 @@ import torch
 try:
     import gymnasium as gym
 except Exception:
-    import gym  # fallback to classic gym if needed
+    import gym
 
 from fedguide.fed.client import FedRLClient
 
-
-# --------- Helpers ---------
 def _is_box1d(space) -> bool:
     try:
         from gymnasium.spaces import Box
@@ -51,8 +49,11 @@ class FedKLClient(FedRLClient):
     """
     FedKL Client implementation.
     
-    This client extends FedRLClient and only aggregates the policy parameters,
-    keeping the value network local. The KL penalties are handled in the trainer.
+    Key design principles:
+    - Only POLICY parameters are aggregated across clients
+    - VALUE networks remain LOCAL to each client
+    - This is because value functions are environment-specific and don't
+      generalize well across different client distributions
     """
     
     def __init__(
@@ -61,7 +62,6 @@ class FedKLClient(FedRLClient):
         env: Any,
         trainer: Any,
         *,
-        aggregate_mode: str = "policy",  #no need for this really
         run_name: Optional[str] = None,
         seed: Optional[int] = None,
         device: Optional[str] = "auto",
@@ -85,70 +85,55 @@ class FedKLClient(FedRLClient):
             wandb_project=wandb_project,
             logger_level=(logger_level or 20),
         )
-        self.aggregate_mode = aggregate_mode
-        self.metrics_collector = metrics_collector
-    
     def get_parameters(self, config: Dict[str, Any]):
-        """Get parameters for federated aggregation (policy only by default)."""
+        """
+        Get parameters for federated aggregation.
+        
+        Returns only policy parameters (policy network + log_std).
+        Value network parameters are excluded and remain local.
+        """
         if not hasattr(self.agent, "get_parameters"):
             return super().get_parameters(config)
         
+        # Get all parameters from agent
         full_params = self.agent.get_parameters()
         
-        # FedKL only aggregates policy parameters, not value network
-        mode = self.aggregate_mode
-        def pick(keys):
-            return {k: v for k, v in full_params.items() if k in keys and k in full_params}
-
-        if mode == "policy":
-            return pick({"policy", "log_std"})
-        else:
-            return pick({"policy", "log_std"})
+        # Filter to only include policy-related parameters
+        policy_params = {}
+        for key, value in full_params.items():
+            # Include policy network weights and log_std
+            if key.startswith("policy.") or key == "log_std":
+                policy_params[key] = value
+        
+        return policy_params
     
     def set_parameters(self, parameters):
-        """Set parameters from federated aggregation."""
+        """
+        Set parameters from federated aggregation.
+        
+        Only updates policy parameters. Value network is not modified
+        during aggregation (remains local).
+        """
         if not hasattr(self.agent, "set_parameters"):
             return super().set_parameters(parameters)
         
         if not isinstance(parameters, dict):
             return super().set_parameters(parameters)
         
-        filtered_params = {
-            k: v for k, v in parameters.items()
-            if k.startswith("policy.") or k == "log_std"
-        }
+        # Filter out any value parameters that might have been included
+        policy_params = {}
+        for key, value in parameters.items():
+            if key.startswith("policy.") or key == "log_std":
+                policy_params[key] = value
         
-        if filtered_params:
-            self.agent.set_parameters(filtered_params)
-    
-    def fit(self, parameters, config):
-        """Override fit to collect actions for metrics."""
-        # Call parent fit
-        result = super().fit(parameters, config)
-        
-        # Collect actions for metrics visualization (if collector is available)
-        if self.metrics_collector is not None:
-            try:
-                # Get client ID
-                cid = getattr(self, "cid", config.get("cid", "unknown"))
-                client_id = int(cid) if isinstance(cid, (int, str)) and str(cid).isdigit() else hash(cid) % 10000
-                
-                # Get actions from trainer's last rollout
-                if hasattr(self.trainer, 'last_actions') and self.trainer.last_actions is not None:
-                    actions = self.trainer.last_actions
-                    self.metrics_collector.collect_client_actions(client_id, actions)
-            except Exception as e:
-                # Silently fail if collection fails
-                pass
-        
-        return result
+        if policy_params:
+            self.agent.set_parameters(policy_params)
 
-# --------- client_fn_builder ----------
+
 def client_fn_builder(
     env_id: str,
     algo: str = "fedkl",
     *,
-    aggregate_mode: str = "policy",
     n_steps: int = 2048,
     gamma: float = 0.99,
     gae_lambda: float = 0.95,
@@ -157,13 +142,11 @@ def client_fn_builder(
     value_coef: float = 0.5,
     update_epochs: int = 10,
     minibatch_size: int = 64,
-    lambda_global: float = 0.1,  # Global KL penalty
-    lambda_local: float = 0.05,  # Local KL penalty
+    lambda_global: float = 0.1,  # Global KL penalty (divergence from global policy)
+    lambda_local: float = 0.05,  # Local KL penalty (divergence from start of round)
     max_grad_norm: float = 0.5,
-    # Network architecture
     hidden_dim: int = 256,
     lr: float = 3e-4,
-    # Logging
     use_wandb: bool = False,
     wandb_project: Optional[str] = None,
     run_name: Optional[str] = None,
@@ -174,56 +157,62 @@ def client_fn_builder(
     
     Args:
         env_id: Environment ID (e.g., "HalfCheetah-v4")
-        algo: Algorithm name (default: "fedkl")
-        aggregate_value: Whether to aggregate value network
-        n_steps: Number of steps per rollout
+        algo: Algorithm name
+        n_steps: Steps per rollout before policy update
         gamma: Discount factor
-        gae_lambda: GAE lambda
-        clip_eps: PPO clip epsilon
-        entropy_coef: Entropy coefficient
+        gae_lambda: GAE lambda for advantage estimation
+        clip_eps: PPO clipping parameter
+        entropy_coef: Entropy bonus coefficient
         value_coef: Value loss coefficient
-        update_epochs: Number of policy update epochs
-        minibatch_size: Minibatch size for updates
-        lambda_global: Global KL penalty coefficient
-        lambda_local: Local KL penalty coefficient
+        update_epochs: Number of epochs to update policy per round
+        minibatch_size: Minibatch size for SGD updates
+        lambda_global: Penalty for KL(local_policy || global_policy)
+        lambda_local: Penalty for KL(current_policy || policy_at_round_start)
         max_grad_norm: Maximum gradient norm for clipping
-        hidden_dim: Hidden layer dimension
+        hidden_dim: Neural network hidden dimension
         lr: Learning rate
-        use_wandb: Use wandb logging
+        use_wandb: Enable wandb logging
         wandb_project: Wandb project name
         run_name: Run name prefix
+        
+    Returns:
+        client_fn: Function that creates FedKLClient instances
     """
     
     def client_fn(context) -> Any:
-        # Import here to avoid circular imports
         from fedguide.baselines.fedKL.agent import FedKLAgent
         from fedguide.baselines.fedKL.trainer import FedKLTrainer
         
-        # 1) per-client seed
+        # Generate client-specific seed
         cid = str(getattr(context, "client_id", None) or getattr(context, "node_id", None) or "0")
-        base = 42 + (abs(hash(cid)) % 10000)
-        random.seed(base)
-        np.random.seed(base)
-        torch.manual_seed(base)
+        base_seed = 42 + (abs(hash(cid)) % 10000)
         
-        # 2) env
-        env = _make_env(env_id, seed=base)
-        obs_space, act_space = env.observation_space, env.action_space
-        assert _is_box1d(obs_space) and _is_box1d(act_space), "Only support 1D Box spaces."
+        # Set all random seeds
+        random.seed(base_seed)
+        np.random.seed(base_seed)
+        torch.manual_seed(base_seed)
+        
+        # Create environment
+        env = _make_env(env_id, seed=base_seed)
+        obs_space = env.observation_space
+        act_space = env.action_space
+        
+        assert _is_box1d(obs_space) and _is_box1d(act_space), \
+            "FedKL currently only supports 1D Box spaces"
         
         state_dim = int(obs_space.shape[0])
         action_dim = int(act_space.shape[0])
         
-        # 3) agent
+        # Create agent
         agent = FedKLAgent(
             state_dim=state_dim,
             action_dim=action_dim,
             hidden_dim=hidden_dim,
             lr=lr,
-            device="cpu",  # Will be moved to correct device by client
+            device="cpu",
         )
         
-        # 4) trainer
+        # Create trainer
         trainer = FedKLTrainer(
             agent=agent,
             env=env,
@@ -241,20 +230,18 @@ def client_fn_builder(
             device="cpu",
         )
         
-        # 5) client
+        # Create client
         client = FedKLClient(
             agent=agent,
             env=env,
             trainer=trainer,
-            aggregate_mode=aggregate_mode,
             run_name=run_name or f"{env_id}-{algo}-cid{cid}",
-            seed=base,
+            seed=base_seed,
             use_wandb=use_wandb,
             wandb_project=wandb_project,
             metrics_collector=metrics_collector,
         )
-        # Store client_id for metrics collection
-        client.cid = cid
+        
         return client.to_client() if hasattr(client, "to_client") else client
     
     return client_fn
