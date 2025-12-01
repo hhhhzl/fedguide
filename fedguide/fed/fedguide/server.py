@@ -210,3 +210,7 @@ class FedGuideStrategy(Strategy):
             flat.extend(arrs)
         layout = {"order": order}
         return flat, layout
+
+
+# Alias for compatibility
+FedGuideServer = FedGuideStrategy

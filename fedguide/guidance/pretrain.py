@@ -1,7 +1,7 @@
 import os
 import argparse
 import gymnasium as gym
-import d4rl
+# import d4rl
 import torch
 from torch.utils.data import DataLoader
 from accelerate import Accelerator
@@ -41,30 +41,71 @@ def _split_batch(batch, obs_dim, act_dim, device):
     return s, a, r, s_next, d
 
 
-def train_prior_one_epoch(unet, noise_scheduler, loader, accelerator, act_dim):
+def train_prior_one_epoch(unet, noise_scheduler, loader, accelerator, optimizer, act_dim):
     unet.train()
-    optimizer = accelerator.optimizer
     total, n = 0.0, 0
+
     for batch in loader:
         if isinstance(batch, dict):
             s = batch.get("s", batch.get("observations")).to(accelerator.device)
             a = batch.get("a", batch.get("actions")).to(accelerator.device)
         else:
             x = batch.to(accelerator.device)
+            # Fallback: flat [B, obs+act] – D4RL case
             s = x[:, :-act_dim]
             a = x[:, -act_dim:]
 
-        noise = torch.randn_like(a)
-        timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (a.shape[0],), device=a.device,
-                                  dtype=torch.long)
-        noisy_a = noise_scheduler.add_noise(a, noise, timesteps)
-        x_in = torch.cat([s, noisy_a], dim=-1).unsqueeze(1)
-        model_pred = unet(x_in, timesteps).sample  # [B,1,s+a]
-        pred_noise_on_a = model_pred[:, :, -act_dim:].squeeze(1)  # [B,A]
-        loss = torch.mean((pred_noise_on_a - noise) ** 2)
+        # --------- CASE 1: trajectory windows [B, H, dim] ---------
+        if s.dim() == 3 and a.dim() == 3:
+            B, H, _ = s.shape
+
+            noise = torch.randn_like(a)  # [B, H, act_dim]
+            timesteps = torch.randint(
+                0,
+                noise_scheduler.config.num_train_timesteps,
+                (B,),
+                device=a.device,
+                dtype=torch.long,
+            )
+
+            noisy_a = noise_scheduler.add_noise(a, noise, timesteps.view(B, 1, 1))
+
+            # concatenate along feature dim, then permute to [B, C, T]
+            x = torch.cat([s, noisy_a], dim=-1)      # [B, H, obs+act]
+            x = x.permute(0, 2, 1)                   # [B, C=obs+act, T=H]
+
+            out = unet(x, timesteps)
+            # diffusers UNet1DModel returns either tensor or object; be safe
+            model_pred = out.sample if hasattr(out, "sample") else out
+
+            # bring back to [B, H, obs+act]
+            model_pred = model_pred.permute(0, 2, 1)        # [B, H, obs+act]
+            pred_noise_on_a = model_pred[:, :, -act_dim:]   # [B, H, act_dim]
+
+            loss = torch.mean((pred_noise_on_a - noise) ** 2)
+
+        # --------- CASE 2: single-step [B, dim] (legacy / D4RL) ---------
+        else:
+            noise = torch.randn_like(a)
+            timesteps = torch.randint(
+                0,
+                noise_scheduler.config.num_train_timesteps,
+                (a.shape[0],),
+                device=a.device,
+                dtype=torch.long,
+            )
+            noisy_a = noise_scheduler.add_noise(a, noise, timesteps)
+
+            x = torch.cat([s, noisy_a], dim=-1).unsqueeze(1)  # [B, 1, obs+act]
+            out = unet(x, timesteps)
+            model_pred = out.sample if hasattr(out, "sample") else out  # [B, 1, obs+act]
+            pred_noise_on_a = model_pred[:, :, -act_dim:].squeeze(1)    # [B, act_dim]
+            loss = torch.mean((pred_noise_on_a - noise) ** 2)
+
+        optimizer.zero_grad()
         accelerator.backward(loss)
         optimizer.step()
-        optimizer.zero_grad()
+
         total += loss.item()
         n += 1
     return total / max(1, n)
@@ -97,13 +138,34 @@ def train_guidance_one_epoch(
         if do_update_wt and hasattr(sdice, "update_wt"):
             sdice.update_wt({"s": s, "a": a})
 
-
 def pretrain_one_client(args, client_id, dataset):
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    _env = gym.make(args.env)
-    obs_dim = int(_env.observation_space.shape[0])
-    act_dim = int(_env.action_space.shape[0])
-    _env.close()
+
+    # -------------------
+    # Minari case (maze)
+    # -------------------
+    if "True" in args.using_minari:
+        # using maze minari to get dims
+        sample = dataset[0]
+        # s: [H, obs_dim], a: [H, act_dim]
+        obs_dim = sample["s"].shape[-1]
+        act_dim = sample["a"].shape[-1]
+    else:
+        try:
+            if args.env.lower() in ["bandit2d", "bandit_2d", "2dbandit"]:
+                from fedguide.envs.bandit2d import Bandit2D
+                _env = Bandit2D(K=4, sigma=0.2, seed=0)
+                _env.reset(seed=0)
+                obs_dim = int(_env.observation_space.shape[0])
+                act_dim = int(_env.action_space.shape[0])
+            else:
+                # Try gym.make for standard environments
+                _env = gym.make(args.env)
+                obs_dim = int(_env.observation_space.shape[0])
+                act_dim = int(_env.action_space.shape[0])
+                _env.close()
+        except Exception as e:
+            raise RuntimeError(f"Failed to create environment '{args.env}': {e}")
 
     # dataloader
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=True)
@@ -114,10 +176,14 @@ def pretrain_one_client(args, client_id, dataset):
         action_dim=act_dim,
         hidden_dim=args.dg_hidden_dim,
         timesteps=args.num_train_timesteps,
+        horizon=args.traj_horizon,
     ).to(device)
     unet = prior.model
     noise_scheduler = prior.noise_scheduler
-    noise_scheduler.set_format("pt")
+
+    # Older code used set_format, but not all diffusers versions have this
+    if hasattr(noise_scheduler, "set_format"):
+        noise_scheduler.set_format("pt")
 
     accelerator = Accelerator()
     optimizer = torch.optim.AdamW(unet.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -150,7 +216,7 @@ def pretrain_one_client(args, client_id, dataset):
     # ====== train prior + guidance：off / warmup / interleave  ======
     print(f"[Client {client_id}] Start prior pretrain: mode={args.guidance_mode}")
     for epoch in range(1, args.n_behavior_epochs + 1):
-        prior_loss = train_prior_one_epoch(unet, noise_scheduler, loader, accelerator, act_dim)
+        prior_loss = train_prior_one_epoch(unet, noise_scheduler, loader, accelerator, optimizer, act_dim)
         if args.guidance_mode == "interleave" and sdice is not None:
             if epoch % args.guidance_interval == 0:
                 if args.guidance_scale_warmup_epochs > 0:
@@ -222,24 +288,46 @@ def main(args):
     except RuntimeError:
         pass
 
-    if "reacher" in args.env:
-        from fedguide.utils.herero import build_hetero_config
-        build_hetero_config(
-            env_name='reacher',
-            num_clients=args.num_clients,
-            hetero_type="both"
+    # Using Minari Maze datasets
+    using_minari = "True" in args.using_minari
+
+    # Unified dataset loader
+    from fedguide.datasets import make_datasets, DatasetType, build_hetero_config
+
+    if using_minari:
+        print("Using Minari dataset loader")
+        args.env_group = "maze"
+        datasets = make_datasets(
+            dataset_type=DatasetType.MINARI,
+            n_clients=args.num_clients,
+            dataset_id=args.minari_dataset_id,
+            alpha=args.dirichlet_alpha,
+            seed=args.seed,
+            horizon=args.traj_horizon,
+            stride=args.traj_stride,
         )
+    else:
+        # D4RL Loader
+        print("Using D4RL dataset loader")
 
-    from fedguide.utils.datasets import _make_d4rl_datasets
+        # Applying Reacher
+        if "reacher" in args.env and not using_minari:
+            build_hetero_config(
+                env_name='reacher',
+                num_clients=args.num_clients,
+                hetero_type="both"
+            )
 
-    args.env_group = args.env.split("-")[0] if "-" in args.env else "reacher"
-    args.hetero_modes = getattr(args, "hetero_modes", ["task", "state_region", "dyn_shift"])
-    datasets = _make_d4rl_datasets(
-        env_group=args.env_group,
-        n_clients=args.num_clients,
-        hetero_modes=tuple(args.hetero_modes),
-        save_json=f"./configs/clients/{args.env_group}_d4rl.json"
-    )
+        args.env_group = args.env.split("-")[0]
+        args.hetero_modes = getattr(args, "hetero_modes", ["task", "state_region", "dyn_shift"])
+
+        datasets = make_datasets(
+            dataset_type=DatasetType.D4RL,
+            n_clients=args.num_clients,
+            env_group=args.env_group,
+            hetero_modes=tuple(args.hetero_modes),
+            save_json=f"./configs/clients/{args.env_group}_d4rl.json"
+        )
 
     n_clients = len(datasets)
     n_gpus = torch.cuda.device_count()
@@ -280,12 +368,20 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cuda")
 
+    # minari
+    parser.add_argument("--using_minari", type=str, default="True")
+    parser.add_argument("--minari_dataset_id", type=str, default="D4RL/pointmaze/medium-v2")
+    parser.add_argument("--dirichlet_alpha", type=float, default=0.5)
+    parser.add_argument("--num_clients", type=int, default=8)
+    parser.add_argument("--traj_horizon", type=int, default=64)
+    parser.add_argument("--traj_stride", type=int, default=16)
+
     # prior
-    parser.add_argument('--num_train_timesteps', type=int, default=1000)
+    parser.add_argument('--num_train_timesteps', type=int, default=1000) #1000
     parser.add_argument('--dg_hidden_dim', type=int, default=256)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--batch_size', type=int, default=256)
-    parser.add_argument('--n_behavior_epochs', type=int, default=2000)
+    parser.add_argument('--n_behavior_epochs', type=int, default=1500) # 1500
     parser.add_argument('--save_interval', type=int, default=200)
     parser.add_argument('--weight_decay', type=float, default=1e-4)
 

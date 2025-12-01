@@ -24,3 +24,4 @@ stable_baselines3==2.4.1
 wandb
 mujoco==3.3.6
 cython==0.29.22
+minari==0.5.3

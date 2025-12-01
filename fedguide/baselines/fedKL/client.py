@@ -28,6 +28,15 @@ def _is_box1d(space) -> bool:
 
 
 def _make_env(env_id: str, seed: Optional[int] = None):
+    # Support for Bandit2D custom environment
+    if env_id.lower() in ["bandit2d", "bandit_2d", "2dbandit"]:
+        from fedguide.envs.bandit2d import Bandit2D
+        env = Bandit2D(K=4, sigma=0.2, seed=seed)
+        if seed is not None:
+            env.reset(seed=seed)
+        return env
+    
+    # Standard gymnasium environments
     env = gym.make(env_id)
     try:
         env.reset(seed=seed)
@@ -61,6 +70,7 @@ class FedKLClient(FedRLClient):
         use_wandb: bool = False,
         wandb_project: Optional[str] = None,
         logger_level: int = None,
+        metrics_collector: Optional[Any] = None,  # Bandit2DMetricsCollector instance
     ):
         super().__init__(
             agent=agent,
@@ -75,7 +85,6 @@ class FedKLClient(FedRLClient):
             wandb_project=wandb_project,
             logger_level=(logger_level or 20),
         )
-    
     def get_parameters(self, config: Dict[str, Any]):
         """
         Get parameters for federated aggregation.
@@ -141,6 +150,7 @@ def client_fn_builder(
     use_wandb: bool = False,
     wandb_project: Optional[str] = None,
     run_name: Optional[str] = None,
+    metrics_collector: Optional[Any] = None,  # Bandit2DMetricsCollector instance
 ):
     """
     Build client function for FedKL.
@@ -229,6 +239,7 @@ def client_fn_builder(
             seed=base_seed,
             use_wandb=use_wandb,
             wandb_project=wandb_project,
+            metrics_collector=metrics_collector,
         )
         
         return client.to_client() if hasattr(client, "to_client") else client
