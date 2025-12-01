@@ -1,3 +1,22 @@
+"""
+DEPRECATED: This module has been moved to fedguide.datasets.heterogeneity
+Please update your imports to use: from fedguide.datasets import build_hetero_config, load_hetero_config
+"""
+import warnings
+warnings.warn(
+    "fedguide.utils.herero is deprecated. "
+    "Please use fedguide.datasets.heterogeneity instead.",
+    DeprecationWarning,
+    stacklevel=2
+)
+
+# Re-export from new location for backward compatibility
+from fedguide.datasets.heterogeneity import (
+    build_hetero_config,
+    load_hetero_config,
+)
+
+# Keep original imports for backward compatibility
 import numpy as np
 import json, os
 from gymnasium.wrappers import TimeLimit

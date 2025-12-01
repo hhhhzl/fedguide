@@ -30,6 +30,15 @@ def _is_box1d(space) -> bool:
 
 
 def _make_env(env_id: str, seed: Optional[int] = None):
+    # Support for Bandit2D custom environment
+    if env_id.lower() in ["bandit2d", "bandit_2d", "2dbandit"]:
+        from fedguide.envs.bandit2d import Bandit2D
+        env = Bandit2D(K=4, sigma=0.2, seed=seed)
+        if seed is not None:
+            env.reset(seed=seed)
+        return env
+    
+    # Standard gymnasium environments
     env = gym.make(env_id)
     try:
         env.reset(seed=seed)
@@ -84,10 +93,7 @@ class FedKLClient(FedRLClient):
         
         full_params = self.agent.get_parameters()
         
-        if self.aggregate_value:
-            # Return all parameters
-            return full_params
-        
+        # FedKL only aggregates policy parameters, not value network
         mode = self.aggregate_mode
         def pick(keys):
             return {k: v for k, v in full_params.items() if k in keys and k in full_params}
@@ -105,14 +111,13 @@ class FedKLClient(FedRLClient):
         if not isinstance(parameters, dict):
             return super().set_parameters(parameters)
         
-        # If not aggregating value, remove value parameters
-        parameters = {
+        filtered_params = {
             k: v for k, v in parameters.items()
-            if k in ["policy", "log_std"]
+            if k.startswith("policy.") or k == "log_std"
         }
         
-        if parameters:
-            self.agent.set_parameters(parameters)
+        if filtered_params:
+            self.agent.set_parameters(filtered_params)
     
 
 # --------- client_fn_builder ----------
