@@ -61,6 +61,15 @@ python scripts/envs/bandit2d/run_fedkl_bandit2d.py \
     --cpus_per_client 2
 ```
 
+### 5. Visualize
+```bash
+python scripts/envs/bandit2d/visualize_bandit2d.py \
+    --metrics_path ./metrics/bandit2d_fedguide/bandit2d_metrics.pkl \
+    --metrics_fedkl_path ./metrics/bandit2d_fedkl/bandit2d_metrics.pkl \
+    --output_path /data/figures/bandit2d_comparison.png \
+    --comparison
+```
+
 ## Parameter Description
 
 ### Dataset Generation Parameters

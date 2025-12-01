@@ -4,6 +4,7 @@ Run FedKL baseline for 2D Bandit environment.
 import argparse
 from fedguide.baselines.fedKL.server import run_fedkl_server
 from fedguide.baselines.fedKL.client import client_fn_builder
+from fedguide.utils.bandit2d_metrics import Bandit2DMetricsCollector
 
 
 def main():
@@ -32,7 +33,24 @@ def main():
     parser.add_argument("--wandb_project", type=str, default=None)
     parser.add_argument("--run_name", type=str, default=None)
     
+    # Metrics collection
+    parser.add_argument("--metrics_dir", type=str, default="./metrics/bandit2d_fedkl",
+                       help="Directory to save metrics for visualization")
+    parser.add_argument("--collect_metrics_every", type=int, default=10,
+                       help="Collect metrics every N rounds (0 to disable)")
+    
     args = parser.parse_args()
+    
+    # Create metrics collector
+    metrics_collector = None
+    if args.collect_metrics_every > 0:
+        metrics_collector = Bandit2DMetricsCollector(
+            save_dir=args.metrics_dir,
+            grid_size=200,
+            bounds=(-1.5, 1.5)
+        )
+        print(f"Metrics collection enabled: saving to {args.metrics_dir}")
+        print(f"  Collecting metrics every {args.collect_metrics_every} rounds")
     
     # Build client function
     client_fn = client_fn_builder(
@@ -52,6 +70,7 @@ def main():
         use_wandb=args.use_wandb,
         wandb_project=args.wandb_project,
         run_name=args.run_name or "bandit2d-fedkl",
+        metrics_collector=metrics_collector,
     )
     
     print(f"Starting FedKL training:")
@@ -71,6 +90,14 @@ def main():
     )
     
     print("\nTraining completed!")
+    
+    # Save metrics if collector was used
+    if metrics_collector is not None:
+        metrics_collector.save("bandit2d_metrics.pkl")
+        print(f"\nMetrics saved to {args.metrics_dir}/bandit2d_metrics.pkl")
+        print("  To visualize, run:")
+        print(f"    python scripts/envs/bandit2d/visualize_bandit2d.py --metrics_path {args.metrics_dir}/bandit2d_metrics.pkl")
+    
     return history
 
 

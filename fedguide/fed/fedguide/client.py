@@ -56,6 +56,7 @@ class FedGuideClient(FedRLClient):
         use_wandb: bool = False,
         wandb_project: Optional[str] = None,
         logger_level: int = None,
+        metrics_collector: Optional[Any] = None,  # Bandit2DMetricsCollector instance
     ):
         super().__init__(
             agent=agent,
@@ -71,6 +72,7 @@ class FedGuideClient(FedRLClient):
             logger_level=(logger_level or 20),
         )
         self.aggregate_mode = (aggregate_mode or "policy").lower()
+        self.metrics_collector = metrics_collector
 
     def get_parameters(self, config: Dict[str, Any]):
         if not hasattr(self.agent, "get_parameters"):
@@ -118,6 +120,28 @@ class FedGuideClient(FedRLClient):
         filtered = {k: v for k, v in parameters.items() if k in allowed}
         if filtered:
             self.agent.set_parameters(filtered)
+    
+    def fit(self, parameters, config):
+        """Override fit to collect actions for metrics."""
+        # Call parent fit
+        result = super().fit(parameters, config)
+        
+        # Collect actions for metrics visualization (if collector is available)
+        if self.metrics_collector is not None:
+            try:
+                # Get client ID
+                cid = getattr(self, "cid", config.get("cid", "unknown"))
+                client_id = int(cid) if isinstance(cid, (int, str)) and str(cid).isdigit() else hash(cid) % 10000
+                
+                # Get actions from trainer's last rollout
+                if hasattr(self.trainer, 'last_actions') and self.trainer.last_actions is not None:
+                    actions = self.trainer.last_actions
+                    self.metrics_collector.collect_client_actions(client_id, actions)
+            except Exception as e:
+                # Silently fail if collection fails
+                pass
+        
+        return result
 
 
 # --------- client_fn_builder ----------
@@ -139,6 +163,7 @@ def client_fn_builder(
     use_wandb: bool = False,
     wandb_project: Optional[str] = None,
     run_name: Optional[str] = None,
+    metrics_collector: Optional[Any] = None,  # Bandit2DMetricsCollector instance
 ):
 
     def client_fn(context) -> Any:
@@ -195,7 +220,10 @@ def client_fn_builder(
             seed=base,
             use_wandb=use_wandb,
             wandb_project=wandb_project,
+            metrics_collector=metrics_collector,
         )
+        # Store client_id for metrics collection
+        client.cid = cid
         return client.to_client() if hasattr(client, "to_client") else client
 
     return client_fn

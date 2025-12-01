@@ -39,6 +39,7 @@ class FedguideTrainer:
         self.writer = writer
 
         self._obs = self.env.reset()
+        self.last_actions = None  # Store last rollout actions for metrics collection
 
     # ---------------- Rollout + GAE ----------------
     def _rollout(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
@@ -99,6 +100,9 @@ class FedguideTrainer:
     def train_one_round(self) -> Dict[str, float]:
         t0 = time.time()
         states, actions, logps_old, returns, extras = self._rollout()
+        
+        # Store actions for metrics collection
+        self.last_actions = actions.cpu().numpy() if isinstance(actions, torch.Tensor) else actions
 
         batch = {
             "s": states,
