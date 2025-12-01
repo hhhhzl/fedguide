@@ -153,38 +153,41 @@ class FedKLAgent:
         
         return params
     
-    def set_parameters(self, params: Dict[str, np.ndarray]):
-        """Set parameters from federated aggregation."""
-        # Update policy
-        policy_state = {}
-        for name, param in self.policy.named_parameters():
-            key = f"policy.{name}"
-            if key in params:
-                print("in set_parameters", key)
-                policy_state[name] = torch.FloatTensor(params[key]).to(self.device)
-        
-        # Load policy state
-        for name, param in self.policy.named_parameters():
-            if name in policy_state:
-                param.data = policy_state[name]
-        
-        # Update log_std
-        if "log_std" in params:
-            self.log_std.data = torch.FloatTensor(params["log_std"]).to(self.device)
-        
-        # Update value (if provided)
-        value_state = {}
-        for name, param in self.value.named_parameters():
-            key = f"value.{name}"
-            if key in params:
-                value_state[name] = torch.FloatTensor(params[key]).to(self.device)
-        
-        for name, param in self.value.named_parameters():
-            if name in value_state:
-                param.data = value_state[name]
-        
-        # Update global policy reference after receiving new parameters
-        self.update_global_policy()
+def set_parameters(self, params: Dict[str, np.ndarray]):
+    """Set parameters from federated aggregation."""
+    # Update policy network
+    policy_state = {}
+    for name, param in self.policy.named_parameters():
+        key = f"policy.{name}"
+        if key in params:
+            policy_state[name] = torch.FloatTensor(params[key]).to(self.device)
+    
+    # Apply policy parameters
+    for name, param in self.policy.named_parameters():
+        if name in policy_state:
+            param.data.copy_(policy_state[name])
+    
+    # Update log_std
+    if "log_std" in params:
+        self.log_std.data.copy_(
+            torch.FloatTensor(params["log_std"]).to(self.device)
+        )
+    
+    # Update value network (if provided, though typically not aggregated)
+    value_state = {}
+    for name, param in self.value.named_parameters():
+        key = f"value.{name}"
+        if key in params:
+            value_state[name] = torch.FloatTensor(params[key]).to(self.device)
+    
+    for name, param in self.value.named_parameters():
+        if name in value_state:
+            param.data.copy_(value_state[name])
+    
+    # IMPORTANT: Update global policy reference after receiving new parameters
+    # This ensures KL divergence is computed against the updated global policy
+    self.update_global_policy()
+
     
     def to(self, device: str):
         """Move agent to device."""
