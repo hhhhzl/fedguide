@@ -57,7 +57,8 @@ def main():
     parser.add_argument('--hidden_dim', type=int, default=256)
     
     # Trajectory args (for window dataset, not used for bandit but needed for pretrain)
-    parser.add_argument('--traj_horizon', type=int, default=1)
+    # Note: traj_horizon must be >= 64 for UNet1D with 3 downsampling blocks to work properly
+    parser.add_argument('--traj_horizon', type=int, default=64)
     parser.add_argument('--traj_stride', type=int, default=1)
     
     args = parser.parse_args()

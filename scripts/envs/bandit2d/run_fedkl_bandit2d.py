@@ -2,6 +2,8 @@
 Run FedKL baseline for 2D Bandit environment.
 """
 import argparse
+import os
+import pickle
 from fedguide.baselines.fedKL.server import run_fedkl_server
 from fedguide.baselines.fedKL.client import client_fn_builder
 from fedguide.utils.bandit2d_metrics import Bandit2DMetricsCollector
@@ -97,6 +99,16 @@ def main():
         print(f"\nMetrics saved to {args.metrics_dir}/bandit2d_metrics.pkl")
         print("  To visualize, run:")
         print(f"    python scripts/envs/bandit2d/visualize_bandit2d.py --metrics_path {args.metrics_dir}/bandit2d_metrics.pkl")
+    
+    # Save training history for reward curve plotting
+    os.makedirs(args.metrics_dir, exist_ok=True)
+    history_path = os.path.join(args.metrics_dir, "training_history.pkl")
+    with open(history_path, 'wb') as f:
+        pickle.dump(history, f)
+    print(f"\nTraining history saved to {history_path}")
+    print("  To plot reward curves, run:")
+    print(f"    python scripts/envs/bandit2d/plot_reward_curves.py \\")
+    print(f"        --fedkl_history {history_path}")
     
     return history
 

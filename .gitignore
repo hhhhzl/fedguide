@@ -11,6 +11,8 @@ log
 
 /cache
 /save
+/model
+/metrics
 
 .vscode/
 build

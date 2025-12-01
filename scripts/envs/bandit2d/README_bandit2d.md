@@ -29,8 +29,8 @@ python scripts/envs/bandit2d/generate_bandit2d_data.py \
 python scripts/envs/bandit2d/pretrain_bandit2d.py \
     --num_clients 4 \
     --samples_per_client 1000 \
-    --n_behavior_epochs 1500 \
-    --batch_size 256 \
+    --n_behavior_epochs 300 \
+    --batch_size 128 \
     --lr 1e-4 \
     --device cuda
 ```

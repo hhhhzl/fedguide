@@ -155,13 +155,28 @@ class FedguideAgent(nn.Module):
             return
         sd = torch.load(ckpt_path, map_location="cpu")
         try:
-            if isinstance(sd, dict) and "prior" in sd and isinstance(sd["prior"], dict):
-                self.prior.load_state_dict(sd["prior"], strict=False)
+            # Handle different checkpoint formats
+            if isinstance(sd, dict):
+                # Check if it's a pretrain checkpoint with "unet" key
+                if "unet" in sd:
+                    # Load UNet weights into prior.model
+                    self.prior.model.load_state_dict(sd["unet"], strict=False)
+                    print(f"[FedguideAgent] loaded pretrained UNet from: {ckpt_path}")
+                # Check if it's a nested format with "prior" key
+                elif "prior" in sd and isinstance(sd["prior"], dict):
+                    self.prior.load_state_dict(sd["prior"], strict=False)
+                    print(f"[FedguideAgent] loaded pretrained prior from: {ckpt_path}")
+                # Otherwise try to load directly as prior state_dict
+                else:
+                    self.prior.load_state_dict(sd, strict=False)
+                    print(f"[FedguideAgent] loaded pretrained prior from: {ckpt_path}")
             else:
                 self.prior.load_state_dict(sd, strict=False)
-            print(f"[FedguideAgent] loaded pretrained prior from: {ckpt_path}")
+                print(f"[FedguideAgent] loaded pretrained prior from: {ckpt_path}")
         except Exception as e:
             print(f"[FedguideAgent] load prior failed ({ckpt_path}): {e}")
+            import traceback
+            traceback.print_exc()
 
     def _maybe_load_guidance(self, ckpt_path: Optional[str]):
         if ckpt_path is None:
