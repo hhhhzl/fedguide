@@ -2,6 +2,8 @@
 Run FedGuide federated training for 2D Bandit environment.
 """
 import argparse
+import os
+import pickle
 import flwr as fl
 from flwr.server import ServerConfig
 from fedguide.fed.fedguide.server import FedGuideServer
@@ -60,6 +62,7 @@ def main():
         wandb_project=args.wandb_project,
         run_name=args.run_name or "bandit2d-fedguide",
         metrics_collector=metrics_collector,
+        num_clients=args.num_clients,  # Pass num_clients for ID mapping
     )
     
     # Create strategy
@@ -95,6 +98,16 @@ def main():
         print(f"\nMetrics saved to {args.metrics_dir}/bandit2d_metrics.pkl")
         print("  To visualize, run:")
         print(f"    python scripts/envs/bandit2d/visualize_bandit2d.py --metrics_path {args.metrics_dir}/bandit2d_metrics.pkl")
+    
+    # Save training history for reward curve plotting
+    os.makedirs(args.metrics_dir, exist_ok=True)
+    history_path = os.path.join(args.metrics_dir, "training_history.pkl")
+    with open(history_path, 'wb') as f:
+        pickle.dump(history, f)
+    print(f"\nTraining history saved to {history_path}")
+    print("  To plot reward curves, run:")
+    print(f"    python scripts/envs/bandit2d/plot_reward_curves.py \\")
+    print(f"        --fedguide_history {history_path}")
     
     return history
 

@@ -41,7 +41,7 @@ def _split_batch(batch, obs_dim, act_dim, device):
     return s, a, r, s_next, d
 
 
-def train_prior_one_epoch(unet, noise_scheduler, loader, accelerator, optimizer, act_dim):
+def train_prior_one_epoch(unet, noise_scheduler, loader, accelerator, optimizer, act_dim, horizon=8):
     unet.train()
     total, n = 0.0, 0
 
@@ -96,10 +96,13 @@ def train_prior_one_epoch(unet, noise_scheduler, loader, accelerator, optimizer,
             )
             noisy_a = noise_scheduler.add_noise(a, noise, timesteps)
 
-            x = torch.cat([s, noisy_a], dim=-1).unsqueeze(1)  # [B, 1, obs+act]
+            # Use horizon parameter (required for UNet1D padding in single-step case)
+            x = torch.cat([s, noisy_a], dim=-1)  # [B, obs+act]
+            x = x.unsqueeze(-1).repeat(1, 1, horizon)  # [B, obs+act, horizon]
+            
             out = unet(x, timesteps)
-            model_pred = out.sample if hasattr(out, "sample") else out  # [B, 1, obs+act]
-            pred_noise_on_a = model_pred[:, :, -act_dim:].squeeze(1)    # [B, act_dim]
+            model_pred = out.sample if hasattr(out, "sample") else out  # [B, obs+act, horizon]
+            pred_noise_on_a = model_pred[:, -act_dim:, :].mean(dim=-1)  # [B, act_dim]
             loss = torch.mean((pred_noise_on_a - noise) ** 2)
 
         optimizer.zero_grad()
@@ -216,7 +219,7 @@ def pretrain_one_client(args, client_id, dataset):
     # ====== train prior + guidance：off / warmup / interleave  ======
     print(f"[Client {client_id}] Start prior pretrain: mode={args.guidance_mode}")
     for epoch in range(1, args.n_behavior_epochs + 1):
-        prior_loss = train_prior_one_epoch(unet, noise_scheduler, loader, accelerator, optimizer, act_dim)
+        prior_loss = train_prior_one_epoch(unet, noise_scheduler, loader, accelerator, optimizer, act_dim, horizon=args.traj_horizon)
         if args.guidance_mode == "interleave" and sdice is not None:
             if epoch % args.guidance_interval == 0:
                 if args.guidance_scale_warmup_epochs > 0:

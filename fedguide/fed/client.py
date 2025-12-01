@@ -94,7 +94,18 @@ class FedRLClient(fl.client.NumPyClient):
         self.metrics.set_step(rnd)
 
         # Train one round
-        loss = self.trainer.train_one_round()
+        train_result = self.trainer.train_one_round()
+        
+        # Extract loss and other metrics from trainer result
+        if isinstance(train_result, dict):
+            loss = train_result.get("loss", train_result.get("train/loss", None))
+            # Extract return metrics if available
+            train_return = train_result.get("train/return", train_result.get("return", None))
+            eval_return = train_result.get("eval/return", None)
+        else:
+            loss = train_result
+            train_return = None
+            eval_return = None
 
         # Eval/save as the original code expects
         success = self.trainer.save_eval(cid, rnd)
@@ -102,10 +113,21 @@ class FedRLClient(fl.client.NumPyClient):
 
         # Collect optional trainer-provided metrics if available
         extra = {}
-        for key in ("return", "success_rate", "episode_len", "throughput"):
+        for key in ("return", "return_", "success_rate", "episode_len", "throughput"):
             if hasattr(self.trainer, key):
                 try:
-                    extra[key] = getattr(self.trainer, key)
+                    value = getattr(self.trainer, key)
+                    # Handle property access
+                    if callable(value) and not isinstance(value, (int, float, str, list, dict)):
+                        try:
+                            value = value()
+                        except TypeError:
+                            pass
+                    # Normalize return_ to return
+                    if key == "return_":
+                        extra["return"] = value
+                    else:
+                        extra[key] = value
                 except Exception:
                     pass
         dur = time.time() - start
@@ -122,9 +144,21 @@ class FedRLClient(fl.client.NumPyClient):
             **extra,
         })
 
+        # Build metrics dict for Flower server (include return for reward curve plotting)
+        fit_metrics = {
+            "loss": float(loss) if loss is not None else float("nan"),
+            "success": int(bool(success)),
+        }
+        if train_return is not None:
+            fit_metrics["train/return"] = float(train_return)
+        if eval_return is not None:
+            fit_metrics["eval/return"] = float(eval_return)
+        if "return" in extra:
+            fit_metrics["return"] = float(extra["return"])
+
         # Return new parameters + num_examples + metrics for FL server
         new_params = self.get_parameters(config)
-        return new_params, samples, {"loss": float(loss) if loss is not None else float("nan"), "success": int(bool(success))}
+        return new_params, samples, fit_metrics
 
     def evaluate(self, parameters, config):
         # Keep the original behavior (NotImplemented). If needed, you can implement

@@ -47,7 +47,7 @@ class FedGuideClient(FedRLClient):
         env: Any,
         trainer: Any,
         *,
-        aggregate_mode: str = "policy",  # 'policy' | 'prior' | 'policy+prior' | 'policy_value' | 'all'
+        aggregate_mode: str = "policy",  # 'policy' | 'prior' | 'policy+prior' | 'prior+guidance' | 'policy_value' | 'all'
         run_name: Optional[str] = None,
         seed: Optional[int] = None,
         device: Optional[str] = "auto",
@@ -75,6 +75,10 @@ class FedGuideClient(FedRLClient):
         self.metrics_collector = metrics_collector
 
     def get_parameters(self, config: Dict[str, Any]):
+        """Get parameters as a list for Flower compatibility.
+        
+        The dict format is also stored in metrics["modules"] for OT-MoE aggregation.
+        """
         if not hasattr(self.agent, "get_parameters"):
             return super().get_parameters(config)
 
@@ -84,25 +88,66 @@ class FedGuideClient(FedRLClient):
         def pick(keys):
             return {k: v for k, v in full.items() if k in keys and k in full}
 
+        # Get parameters as dict first
         if mode == "policy":
-            return pick({"policy", "log_std"})
+            param_dict = pick({"policy", "log_std"})
         elif mode == "policy_value":
-            return pick({"policy", "log_std", "value"})
+            param_dict = pick({"policy", "log_std", "value"})
         elif mode == "prior":
-            return pick({"prior_adapt"})
+            param_dict = pick({"prior_adapt"})
         elif mode in ("policy+prior", "policy_prior", "policy-prior"):
-            return pick({"policy", "log_std", "prior_adapt"})
+            param_dict = pick({"policy", "log_std", "prior_adapt"})
+        elif mode in ("prior+guidance", "prior_guidance", "prior-guidance"):
+            param_dict = pick({"prior_adapt", "guidance"})
         elif mode == "all":
-            return full
+            param_dict = pick({"policy", "log_std", "prior_adapt", "guidance"})
         else:
-            return pick({"policy", "log_std"})
+            param_dict = pick({"policy", "log_std"})
+        
+        # Convert dict to list for Flower compatibility
+        # The dict format is used in metrics["modules"] for OT-MoE aggregation
+        import torch
+        flat_params = []
+        for module_params in param_dict.values():
+            if isinstance(module_params, dict):
+                for v in module_params.values():
+                    if isinstance(v, torch.Tensor):
+                        flat_params.append(v.numpy())
+                    elif hasattr(v, "numpy"):
+                        flat_params.append(v.numpy())
+                    else:
+                        flat_params.append(v)
+            elif isinstance(module_params, torch.Tensor):
+                flat_params.append(module_params.numpy())
+            elif hasattr(module_params, "numpy"):
+                flat_params.append(module_params.numpy())
+            else:
+                flat_params.append(module_params)
+        
+        return flat_params
 
     def set_parameters(self, parameters):
+        """Set parameters, handling both dict and list formats."""
         if not hasattr(self.agent, "set_parameters"):
             return super().set_parameters(parameters)
 
         mode = self.aggregate_mode
+        
+        # If parameters is a list (from server's flattened format), try to reconstruct dict
+        # using layout from previous round's metrics, or skip if not available
         if not isinstance(parameters, dict):
+            # For module-based aggregation modes, we need dict format
+            # If we receive a list, we can't easily reconstruct without layout
+            # Skip setting for now - agent will use its current parameters
+            # This is OK for the first round when there are no aggregated parameters yet
+            if mode in ("prior+guidance", "prior_guidance", "prior-guidance", "prior", "all"):
+                # For first round, parameters might be None or empty list - that's OK
+                if parameters is None or (isinstance(parameters, list) and len(parameters) == 0):
+                    return
+                # For subsequent rounds, we'd need layout to reconstruct - skip for now
+                # TODO: Implement layout-based reconstruction if needed
+                return
+            # For non-module modes, use parent's implementation
             return super().set_parameters(parameters)
 
         allowed = set()
@@ -114,34 +159,159 @@ class FedGuideClient(FedRLClient):
             allowed = {"prior_adapt"}
         elif mode in ("policy+prior", "policy_prior", "policy-prior"):
             allowed = {"policy", "log_std", "prior_adapt"}
+        elif mode in ("prior+guidance", "prior_guidance", "prior-guidance"):
+            allowed = {"prior_adapt", "guidance"}
         elif mode == "all":
-            allowed = {"policy", "log_std", "value", "prior_adapt", "guidance"}
+            allowed = {"policy", "log_std", "prior_adapt", "guidance"}
 
         filtered = {k: v for k, v in parameters.items() if k in allowed}
         if filtered:
             self.agent.set_parameters(filtered)
     
     def fit(self, parameters, config):
-        """Override fit to collect actions for metrics."""
-        # Call parent fit
-        result = super().fit(parameters, config)
+        """Override fit to handle module-based parameters and collect actions for metrics."""
+        import sys
+        import traceback
         
-        # Collect actions for metrics visualization (if collector is available)
-        if self.metrics_collector is not None:
-            try:
-                # Get client ID
-                cid = getattr(self, "cid", config.get("cid", "unknown"))
-                client_id = int(cid) if isinstance(cid, (int, str)) and str(cid).isdigit() else hash(cid) % 10000
+        cid = getattr(self, "cid", config.get("cid", "unknown"))
+        rnd = int(config.get("server_round", 0))
+        
+        # Debug: print that fit was called
+        debug_msg = f"[Client {cid}] fit called for round {rnd}, parameters type: {type(parameters)}, has trainer: {hasattr(self, 'trainer')}\n"
+        sys.stderr.write(debug_msg)
+        sys.stderr.flush()
+        
+        # Also write to a debug file to ensure we can see it
+        try:
+            with open(f"/tmp/fedguide_debug_{cid}.log", "a") as f:
+                f.write(f"Round {rnd}: fit called, parameters type: {type(parameters)}\n")
+        except Exception:
+            pass
+        
+        try:
+            # Set parameters first
+            if parameters is not None:
+                try:
+                    self.set_parameters(parameters)
+                except Exception as e:
+                    msg = f"[Client {cid}] Warning: Failed to set parameters: {e}\n"
+                    sys.stderr.write(msg)
+                    sys.stderr.flush()
+                    # Continue anyway - agent will use current parameters
+            
+            if hasattr(self, "metrics"):
+                self.metrics.set_step(rnd)
+            
+            # Train one round
+            train_result = self.trainer.train_one_round()
+        except Exception as e:
+            error_msg = f"[Client {cid}] Error in fit (round {rnd}): {e}\n"
+            error_msg += traceback.format_exc()
+            sys.stderr.write(error_msg)
+            sys.stderr.flush()
+            # Re-raise to let Flower handle it
+            raise
+        
+        try:
+            # Extract loss and other metrics from trainer result
+            if isinstance(train_result, dict):
+                loss = train_result.get("loss", train_result.get("train/loss", None))
+                train_return = train_result.get("train/return", train_result.get("return", None))
+                eval_return = train_result.get("eval/return", None)
+            else:
+                loss = train_result
+                train_return = None
+                eval_return = None
+            
+            # Eval/save
+            success = self.trainer.save_eval(cid, rnd)
+            samples = int(getattr(self.trainer, "n_steps", 0))
+            
+            # Get parameters in module format for OT-MoE aggregation
+            # Get dict format directly from agent (not from get_parameters which returns list)
+            if hasattr(self.agent, "get_parameters"):
+                full_param_dict = self.agent.get_parameters()
+                mode = self.aggregate_mode
                 
-                # Get actions from trainer's last rollout
-                if hasattr(self.trainer, 'last_actions') and self.trainer.last_actions is not None:
-                    actions = self.trainer.last_actions
-                    self.metrics_collector.collect_client_actions(client_id, actions)
-            except Exception as e:
-                # Silently fail if collection fails
-                pass
-        
-        return result
+                def pick(keys):
+                    return {k: v for k, v in full_param_dict.items() if k in keys and k in full_param_dict}
+                
+                # Pick relevant modules based on aggregate_mode
+                if mode == "policy":
+                    param_dict = pick({"policy", "log_std"})
+                elif mode == "policy_value":
+                    param_dict = pick({"policy", "log_std", "value"})
+                elif mode == "prior":
+                    param_dict = pick({"prior_adapt"})
+                elif mode in ("policy+prior", "policy_prior", "policy-prior"):
+                    param_dict = pick({"policy", "log_std", "prior_adapt"})
+                elif mode in ("prior+guidance", "prior_guidance", "prior-guidance"):
+                    param_dict = pick({"prior_adapt", "guidance"})
+                elif mode == "all":
+                    param_dict = pick({"policy", "log_std", "prior_adapt", "guidance"})
+                else:
+                    param_dict = pick({"policy", "log_std"})
+            else:
+                param_dict = {}
+            
+            # Convert dict to modules format: {module_name: [numpy arrays]}
+            # This format is expected by FedGuideStrategy._modules_from_metrics
+            modules_dict = {}
+            if isinstance(param_dict, dict):
+                import torch
+                for module_name, module_params in param_dict.items():
+                    if isinstance(module_params, dict):
+                        # Convert state_dict to list of numpy arrays
+                        arrays = []
+                        for v in module_params.values():
+                            if isinstance(v, torch.Tensor):
+                                arrays.append(v.numpy())
+                            elif hasattr(v, "numpy"):
+                                arrays.append(v.numpy())
+                            else:
+                                arrays.append(v)
+                        modules_dict[module_name] = arrays
+                    elif isinstance(module_params, torch.Tensor):
+                        modules_dict[module_name] = [module_params.numpy()]
+                    elif hasattr(module_params, "numpy"):
+                        modules_dict[module_name] = [module_params.numpy()]
+                    else:
+                        modules_dict[module_name] = [module_params]
+            
+            # Build metrics dict
+            fit_metrics = {
+                "loss": float(loss) if loss is not None else float("nan"),
+                "success": int(bool(success)),
+                "modules": modules_dict,  # Add modules for OT-MoE aggregation
+            }
+            if train_return is not None:
+                fit_metrics["train/return"] = float(train_return)
+            if eval_return is not None:
+                fit_metrics["eval/return"] = float(eval_return)
+            
+            # Get new parameters (as list for Flower compatibility)
+            # get_parameters now returns a list, so we can use it directly
+            new_params = self.get_parameters(config)
+            
+            # Collect actions for metrics visualization (if collector is available)
+            if self.metrics_collector is not None:
+                try:
+                    client_id = int(cid) if isinstance(cid, (int, str)) and str(cid).isdigit() else hash(cid) % 10000
+                    if hasattr(self.trainer, 'last_actions') and self.trainer.last_actions is not None:
+                        actions = self.trainer.last_actions
+                        self.metrics_collector.collect_client_actions(client_id, actions)
+                except Exception:
+                    pass
+            
+            return new_params, samples, fit_metrics
+        except Exception as e:
+            import sys
+            import traceback
+            error_msg = f"[Client {cid}] Error in fit post-processing (round {rnd}): {e}\n"
+            error_msg += traceback.format_exc()
+            sys.stderr.write(error_msg)
+            sys.stderr.flush()
+            raise
 
 
 # --------- client_fn_builder ----------
@@ -164,11 +334,19 @@ def client_fn_builder(
     wandb_project: Optional[str] = None,
     run_name: Optional[str] = None,
     metrics_collector: Optional[Any] = None,  # Bandit2DMetricsCollector instance
+    num_clients: Optional[int] = None,  # Total number of clients for ID mapping
 ):
 
     def client_fn(context) -> Any:
-        # 1) per-client seed
+        # 1) per-client seed and ID mapping
         cid = str(getattr(context, "client_id", None) or getattr(context, "node_id", None) or "0")
+        
+        # Map Flower's client ID to 0, 1, 2, 3... for pretrained model loading
+        if num_clients is not None:
+            mapped_client_id = abs(hash(cid)) % num_clients
+        else:
+            mapped_client_id = abs(hash(cid)) % 100
+        
         base = 42 + (abs(hash(cid)) % 10000)
         random.seed(base)
         np.random.seed(base)
@@ -183,8 +361,75 @@ def client_fn_builder(
         state_dim = int(obs_space.shape[0])
         action_dim = int(act_space.shape[0])
 
+        # 3) Load pretrained prior and guidance models
         prior, guidance = None, None
-        # Todo: load prior and guidance
+        prior_ckpt, guidance_ckpt = None, None
+        
+        import os
+        # Map env_id to pretrain model directory name
+        env_name_map = {
+            "bandit2d": "Bandit2D",
+            "bandit_2d": "Bandit2D",
+            "2dbandit": "Bandit2D",
+        }
+        env_name = env_name_map.get(env_id.lower(), env_id)
+        
+        # Build checkpoint paths using mapped client ID (0, 1, 2, 3...)
+        try:
+            # Use mapped_client_id instead of raw cid for model path
+            client_id = mapped_client_id
+            # Use relative path to match pretrain script: ./model/models_prior
+            base_dir = "./model/models_prior"
+            client_dir = os.path.join(base_dir, env_name, f"client_{client_id}", "final")
+            
+            prior_path = os.path.join(client_dir, "torch_prior.pth")
+            guidance_path = os.path.join(client_dir, "guidance_sdice.pth")
+            
+            # Load prior if checkpoint exists
+            if os.path.isfile(prior_path):
+                from fedguide.guidance.diffusion_prior import DiffusionGuidance
+                # Default hyperparameters (should match pretrain settings)
+                prior = DiffusionGuidance(
+                    state_dim=state_dim,
+                    action_dim=action_dim,
+                    hidden_dim=256,  # Default from pretrain_bandit2d.py
+                    timesteps=1000,
+                    horizon=64,  # Default from pretrain_bandit2d.py
+                )
+                prior_ckpt = prior_path
+                print(f"[Client {cid} (mapped to {client_id})] Found pretrained prior at: {prior_path}")
+            else:
+                print(f"[Client {cid} (mapped to {client_id})] No pretrained prior found at: {prior_path} (will train from scratch)")
+            
+            # Load guidance if checkpoint exists (optional - only if pretrained with guidance_mode)
+            if os.path.isfile(guidance_path):
+                from fedguide.guidance.model import SDICE_Critic
+                # Create args object for SDICE_Critic
+                class _C:
+                    pass
+                c = _C()
+                c.device = "cuda" if torch.cuda.is_available() else "cpu"
+                c.q_ensemble_num = 0
+                c.value_lr = 1e-4
+                c.wt_lr = 1e-4
+                c.weight_decay = 1e-4
+                c.use_lr_schedule = 0
+                c.train_epoch = 1
+                c.min_value_lr = 1e-5
+                c.M = 8
+                c.alpha = 0.5
+                c.hidden_dim = 256
+                
+                guidance = SDICE_Critic(adim=action_dim, sdim=state_dim, args=c)
+                guidance_ckpt = guidance_path
+                print(f"[Client {cid} (mapped to {client_id})] Found pretrained guidance at: {guidance_path}")
+            else:
+                # Guidance is optional - only created if pretrained with guidance_mode != "off"
+                print(f"[Client {cid} (mapped to {client_id})] No pretrained guidance found at: {guidance_path} (optional, will use prior only)")
+        except Exception as e:
+            print(f"[Client {cid} (mapped to {mapped_client_id})] Failed to load pretrained models: {e}")
+            prior, guidance = None, None
+            prior_ckpt, guidance_ckpt = None, None
 
         # 4) agent
         agent = FedguideAgent(
@@ -192,6 +437,8 @@ def client_fn_builder(
             action_dim=action_dim,
             prior=prior,
             guidance=guidance,
+            prior_ckpt=prior_ckpt,
+            guidance_ckpt=guidance_ckpt,
             # lr=3e-4, clip_eps=0.2, entropy_coef=0.02, value_coef=0.5, ...
         )
 
