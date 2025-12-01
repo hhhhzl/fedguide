@@ -8,6 +8,8 @@ from flwr.server.strategy import Strategy
 from flwr.common import (
     FitRes,
     EvaluateRes,
+    FitIns,
+    EvaluateIns,
     Parameters,
     Scalar,
     parameters_to_ndarrays,
@@ -125,6 +127,7 @@ class FedGuideStrategy(Strategy):
         """Configure the next round of training."""
         # Sample clients
         num_available = len(client_manager.all())
+        
         if num_available < self.min_available_clients:
             return []
         
@@ -137,15 +140,23 @@ class FedGuideStrategy(Strategy):
             min_num_clients=self.min_fit_clients
         )
         
-        # Create configs
-        configs = []
+        # Create client instructions with FitIns objects
+        # Flower expects: List[Tuple[ClientProxy, FitIns]]
+        client_instructions = []
         for client in sampled_clients:
             if self.on_fit_config_fn is not None:
                 fit_config = self.on_fit_config_fn(server_round)
             else:
                 fit_config = {"server_round": server_round}
-            configs.append((client, fit_config))
-        return configs
+            
+            # Create FitIns with parameters and config
+            fit_ins = FitIns(
+                parameters=parameters,  # Current global parameters
+                config=fit_config,
+            )
+            client_instructions.append((client, fit_ins))
+        
+        return client_instructions
 
     def aggregate_fit(
             self,
@@ -158,29 +169,139 @@ class FedGuideStrategy(Strategy):
 
         modules_list: List[Tuple[Dict[str, List[np.ndarray]], int]] = []
         for _, fitres in results:
-            mods = _modules_from_metrics(fitres.metrics)
+            # Handle both FitRes object and dict (in case of serialization issues)
+            if isinstance(fitres, dict):
+                metrics = fitres.get("metrics", {})
+                num_examples = fitres.get("num_examples", 0)
+                parameters = fitres.get("parameters", None)
+            else:
+                metrics = fitres.metrics
+                num_examples = fitres.num_examples
+                parameters = fitres.parameters
+            
+            mods = _modules_from_metrics(metrics)
             if mods is None:
                 modules_list = []
                 break
-            modules_list.append((mods, fitres.num_examples))
+            modules_list.append((mods, num_examples))
 
+        # Aggregate loss and other metrics from all clients
+        # Also collect client actions and grid metrics from metrics for server-side metrics collection
+        total_loss = 0.0
+        total_examples = 0
+        aggregated_metrics: Dict[str, Scalar] = {"server_round": server_round}
+        collected_actions: Dict[int, Any] = {}  # {mapped_client_id: actions}
+        collected_client_metrics: Dict[int, Dict[str, Any]] = {}  # {mapped_client_id: {metric_name: value}}
+        
+        for _, fitres in results:
+            # Handle both FitRes object and dict (in case of serialization issues)
+            if isinstance(fitres, dict):
+                metrics = fitres.get("metrics", {})
+                num_examples = fitres.get("num_examples", 0)
+            else:
+                metrics = fitres.metrics
+                num_examples = fitres.num_examples
+            
+            # Aggregate loss (weighted by num_examples)
+            if "loss" in metrics:
+                try:
+                    loss_val = float(metrics["loss"])
+                    # Check for nan/inf
+                    if loss_val == loss_val and loss_val != float('inf') and loss_val != float('-inf'):
+                        total_loss += loss_val * num_examples
+                        total_examples += num_examples
+                except (TypeError, ValueError):
+                    pass
+            
+            # Collect client actions from metrics (passed from client fit method)
+            if "client_actions" in metrics and "client_id_mapped" in metrics:
+                try:
+                    import json
+                    import numpy as np
+                    client_id_mapped = int(metrics["client_id_mapped"])
+                    actions_json = metrics["client_actions"]
+                    if isinstance(actions_json, str):
+                        actions = json.loads(actions_json)
+                        # Convert back to numpy array for consistency
+                        actions = np.array(actions)
+                        collected_actions[client_id_mapped] = actions
+                except Exception as e:
+                    # Silently fail if deserialization fails
+                    pass
+            
+            # Collect client grid metrics (policy, value, prior evaluations on grid)
+            if "client_id_mapped" in metrics:
+                try:
+                    import json
+                    import numpy as np
+                    client_id_mapped = int(metrics["client_id_mapped"])
+                    client_grid_metrics = {}
+                    # Look for metrics with prefix "client_grid_"
+                    for key, value in metrics.items():
+                        if key.startswith("client_grid_"):
+                            metric_name = key[len("client_grid_"):]
+                            if isinstance(value, str):
+                                try:
+                                    # Deserialize JSON string back to numpy array
+                                    data = json.loads(value)
+                                    if isinstance(data, list):
+                                        # Try to reshape if it's a 2D grid
+                                        arr = np.array(data)
+                                        # Assume grid_size x grid_size if it's a square number
+                                        if arr.size > 0:
+                                            grid_size = int(np.sqrt(arr.size))
+                                            if grid_size * grid_size == arr.size:
+                                                arr = arr.reshape(grid_size, grid_size)
+                                        client_grid_metrics[metric_name] = arr
+                                    else:
+                                        client_grid_metrics[metric_name] = np.array(data)
+                                except Exception:
+                                    pass
+                    if client_grid_metrics:
+                        collected_client_metrics[client_id_mapped] = client_grid_metrics
+                except Exception as e:
+                    # Silently fail if deserialization fails
+                    pass
+        
+        # Add aggregated loss to metrics
+        if total_examples > 0:
+            aggregated_loss = total_loss / total_examples
+            aggregated_metrics["loss"] = aggregated_loss
+        else:
+            aggregated_metrics["loss"] = 0.0
+        
+        # Store collected actions and client metrics in strategy instance for evaluate_fn to access
+        # This allows evaluate_fn to access client data even though collector is not shared
+        if not hasattr(self, '_collected_actions'):
+            self._collected_actions = {}
+        self._collected_actions[server_round] = collected_actions
+        
+        if not hasattr(self, '_collected_client_metrics'):
+            self._collected_client_metrics = {}
+        self._collected_client_metrics[server_round] = collected_client_metrics
+        
         if modules_list:
             new_global = self._aggregate_by_modules(modules_list)
             flat, layout = self._flatten_module_dict(new_global)
             params = ndarrays_to_parameters(flat)
-            metrics: Dict[str, Scalar] = {
-                "layout": json.dumps(layout),
-                "server_round": server_round,
-            }
-            return params, metrics
+            aggregated_metrics["layout"] = json.dumps(layout)
+            return params, aggregated_metrics
 
         # 2) FedAvg
-        weighted = [
-            (parameters_to_ndarrays(fitres.parameters), fitres.num_examples)
-            for _, fitres in results
-        ]
+        weighted = []
+        for _, fitres in results:
+            # Handle both FitRes object and dict (in case of serialization issues)
+            if isinstance(fitres, dict):
+                parameters = fitres.get("parameters", None)
+                num_examples = fitres.get("num_examples", 0)
+            else:
+                parameters = fitres.parameters
+                num_examples = fitres.num_examples
+            
+            if parameters is not None:
+                weighted.append((parameters_to_ndarrays(parameters), num_examples))
         fedavg = self._fedavg_arrays(weighted)
-        return ndarrays_to_parameters(fedavg), {"server_round": server_round}
+        return ndarrays_to_parameters(fedavg), aggregated_metrics
 
     def configure_evaluate(
             self,
@@ -206,15 +327,23 @@ class FedGuideStrategy(Strategy):
             min_num_clients=self.min_evaluate_clients
         )
         
-        # Create configs
-        configs = []
+        # Create client instructions with EvaluateIns objects
+        # Flower expects: List[Tuple[ClientProxy, EvaluateIns]]
+        client_instructions = []
         for client in sampled_clients:
             if self.on_evaluate_config_fn is not None:
                 eval_config = self.on_evaluate_config_fn(server_round)
             else:
                 eval_config = {"server_round": server_round}
-            configs.append((client, eval_config))
-        return configs
+            
+            # Create EvaluateIns with parameters and config
+            eval_ins = EvaluateIns(
+                parameters=parameters,  # Current global parameters
+                config=eval_config,
+            )
+            client_instructions.append((client, eval_ins))
+        
+        return client_instructions
 
     def aggregate_evaluate(
             self,
@@ -262,7 +391,36 @@ class FedGuideStrategy(Strategy):
             self,
             server_round: int,
             parameters: Parameters,
-    ):
+    ) -> Optional[Tuple[float, Dict[str, Scalar]]]:
+        """Evaluate the current global model on the server side.
+        
+        This calls the evaluate_fn if provided, which can be used for metrics collection.
+        """
+        if self.evaluate_fn is not None:
+            # Call evaluate_fn with current parameters
+            # evaluate_fn signature: (server_round: int, parameters: Parameters, config: Dict[str, Scalar])
+            config = {}
+            if self.on_evaluate_config_fn is not None:
+                config = self.on_evaluate_config_fn(server_round)
+            
+            # Pass collected actions and client metrics to evaluate_fn through config
+            # This allows evaluate_fn to access client data collected in aggregate_fit
+            if hasattr(self, '_collected_actions') and server_round in self._collected_actions:
+                config['_collected_actions'] = self._collected_actions[server_round]
+            if hasattr(self, '_collected_client_metrics') and server_round in self._collected_client_metrics:
+                config['_collected_client_metrics'] = self._collected_client_metrics[server_round]
+            
+            try:
+                result = self.evaluate_fn(server_round, parameters, config)
+                # evaluate_fn can return (loss, metrics) or None
+                if result is not None and isinstance(result, tuple) and len(result) == 2:
+                    return result
+            except Exception as e:
+                print(f"[FedGuideStrategy.evaluate] Error calling evaluate_fn: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # Return None if no evaluate_fn or if it returns None
         return None
 
     # ---- aggregate implementation ----

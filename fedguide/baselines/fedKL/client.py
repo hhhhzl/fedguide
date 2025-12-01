@@ -150,7 +150,8 @@ def client_fn_builder(
     use_wandb: bool = False,
     wandb_project: Optional[str] = None,
     run_name: Optional[str] = None,
-    metrics_collector: Optional[Any] = None,  # Bandit2DMetricsCollector instance
+    metrics_collector: Optional[Any] = None,  # Bandit2DMetricsCollector instance (for backward compatibility)
+    num_clients: Optional[int] = None,  # Total number of clients for ID mapping
 ):
     """
     Build client function for FedKL.
@@ -230,6 +231,27 @@ def client_fn_builder(
             device="cpu",
         )
         
+        # Get collector from global variable if not passed directly
+        # Note: This works because the module is imported before client_fn is called
+        # Use nonlocal to modify the outer scope variable
+        nonlocal metrics_collector
+        if metrics_collector is None:
+            try:
+                # Try to import and access global collector from run script
+                # Use importlib to ensure we get the module even if it's already imported
+                import importlib
+                try:
+                    run_module = importlib.import_module('scripts.envs.bandit2d.run_fedkl_bandit2d')
+                    metrics_collector = getattr(run_module, '_metrics_collector_global', None)
+                except (ImportError, AttributeError):
+                    try:
+                        run_module = importlib.import_module('scripts.envs.bandit2d.run_fedguide_bandit2d')
+                        metrics_collector = getattr(run_module, '_metrics_collector_global', None)
+                    except (ImportError, AttributeError):
+                        pass
+            except Exception:
+                pass
+        
         # Create client
         client = FedKLClient(
             agent=agent,
@@ -241,6 +263,15 @@ def client_fn_builder(
             wandb_project=wandb_project,
             metrics_collector=metrics_collector,
         )
+        
+        # Register agent with metrics collector for visualization
+        if metrics_collector is not None:
+            # Map Flower client ID to sequential ID for metrics
+            if num_clients is not None:
+                mapped_id = abs(hash(cid)) % num_clients
+            else:
+                mapped_id = abs(hash(cid)) % 100
+            metrics_collector.register_client_agent(mapped_id, agent)
         
         return client.to_client() if hasattr(client, "to_client") else client
     
