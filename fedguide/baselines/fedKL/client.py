@@ -62,7 +62,7 @@ class FedKLClient(FedRLClient):
         *,
         run_name: Optional[str] = None,
         seed: Optional[int] = None,
-        device: Optional[str] = "auto",
+        device: Optional[str] = "auto",  #fix this
         logger: Optional[Any] = None,
         callbacks: Optional[Iterable[Callable[[Dict[str, Any]], None]]] = None,
         use_wandb: bool = False,
@@ -91,7 +91,24 @@ class FedKLClient(FedRLClient):
             return super().get_parameters(config)
         
         # Get parameters as list from agent
-        flat_params = self.agent.get_parameters()
+        flat_params = []
+        param_dict = self.agent.get_parameters()
+        for module_params in param_dict.values():
+            if isinstance(module_params, dict):
+                for v in module_params.values():
+                    if isinstance(v, torch.Tensor):
+                        flat_params.append(v.numpy())
+                    elif hasattr(v, "numpy"):
+                        flat_params.append(v.numpy())
+                    else:
+                        flat_params.append(v)
+            elif isinstance(module_params, torch.Tensor):
+                flat_params.append(module_params.numpy())
+            elif hasattr(module_params, "numpy"):
+                flat_params.append(module_params.numpy())
+            else:
+                flat_params.append(module_params)
+        
         
         # Verify return type - must be list of numpy arrays
         # Make sure all are independent copies (not views) for serialization
@@ -114,15 +131,38 @@ class FedKLClient(FedRLClient):
         
         return verified_params
     
+    def list_to_parameter_dict(self, lst):
+        """Convert flat list from server into FedGuide-style parameter dict."""
+        param_dict = {}
+
+        # 1) Policy parameters
+        policy_state = self.agent.policy.state_dict()
+        new_policy_state = {}
+
+        idx = 0
+        for k, v in policy_state.items():
+            new_policy_state[k] = torch.tensor(lst[idx], dtype=v.dtype)
+            idx += 1
+        param_dict["policy"] = new_policy_state
+
+        # 2) log_std (last item)
+        param_dict["log_std"] = torch.tensor(lst[idx])
+
+        return param_dict
+
     def set_parameters(self, parameters):
         """Set parameters, handling both dict and list formats (same as FedGuide)."""
         if not hasattr(self.agent, "set_parameters"):
             return super().set_parameters(parameters)
-        
-        # FedKL only uses list format (no module-based aggregation like FedGuide)
-        # Just pass directly to agent
+            # If agent has dict-based API (FedGuide style)
+
+        # If parameters is a list, convert it
+        if isinstance(parameters, list):
+            parameters = self.list_to_parameter_dict(parameters)
+        # Now pass the dict to the agent
         self.agent.set_parameters(parameters)
-    
+      
+
     def fit(self, parameters, config):
         """Override fit to handle parameters and collect actions for metrics (matches FedGuide)."""
         cid = getattr(self, "cid", config.get("cid", "unknown"))
@@ -136,14 +176,13 @@ class FedKLClient(FedRLClient):
                 if hasattr(parameters, 'tensors') or hasattr(parameters, 'tensor_type'):
                     # It's a Parameters object, convert to list
                     param_list = parameters_to_ndarrays(parameters)
-                    self.set_parameters(param_list)
                 else:
                     # It's already a list or dict
-                    self.set_parameters(parameters)
-            except Exception:
+                    param_list = parameters
+                self.set_parameters(param_list)
+            except Exception as e:
                 # Continue anyway - agent will use current parameters
-                pass
-        
+                print("Parameter loading failed in fit():", e)
         if hasattr(self, "metrics"):
             self.metrics.set_step(rnd)
         
@@ -435,7 +474,7 @@ def client_fn_builder(
             if hasattr(metrics_collector, 'register_client_agent'):
                 metrics_collector.register_client_agent(mapped_id, agent)
         
-        # Convert NumPyClient to Client (same as FedGuide)
+        # Convert NumPyClient to Client 
         return client.to_client()
     
     return client_fn
