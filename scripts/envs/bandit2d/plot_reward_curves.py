@@ -60,6 +60,29 @@ def extract_rewards_from_metrics_file(metrics_path: str) -> Optional[Dict[int, f
     except Exception:
         return None
 
+def summarize_curve(label: str, rounds, means, stds):
+    """Print simple numeric summary for a reward curve."""
+    if not rounds:
+        print(f"[SUMMARY] {label}: no data")
+        return
+
+    rounds = np.array(rounds, dtype=np.float32)
+    means = np.array(means, dtype=np.float32)
+    stds = np.array(stds, dtype=np.float32)
+
+    final_mean = means[-1]
+    final_std = stds[-1]
+    best_mean = means.max()
+
+    # Simple discrete AUC normalized by number of rounds
+    auc = float(means.mean())
+
+    print(
+        f"[SUMMARY] {label}: "
+        f"final = {final_mean:.3f} ± {final_std:.3f}, "
+        f"best = {best_mean:.3f}, "
+        f"mean-over-rounds (AUC proxy) = {auc:.3f}"
+    )
 
 def plot_reward_curves(
     fedguide_history_path: Optional[str] = None,
@@ -118,6 +141,8 @@ def plot_reward_curves(
             rewards = fedguide_rewards[rnd]
             means.append(np.mean(rewards))
             stds.append(np.std(rewards))
+
+        summarize_curve("FedGuide", rounds, means, stds)
         
         means = np.array(means)
         stds = np.array(stds)
@@ -147,6 +172,8 @@ def plot_reward_curves(
             rewards = fedkl_rewards[rnd]
             means.append(np.mean(rewards))
             stds.append(np.std(rewards))
+
+        summarize_curve("FedKL", rounds, means, stds)
         
         means = np.array(means)
         stds = np.array(stds)

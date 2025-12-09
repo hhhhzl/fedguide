@@ -40,7 +40,7 @@ python scripts/envs/bandit2d/pretrain_bandit2d.py \
 ### 3. Run FedGuide
 
 ```bash
-python scripts/envs/bandit2d/run_fedguide_bandit2d.py \
+python3 scripts/envs/bandit2d/run_fedguide_bandit2d.py \
     --num_clients 4 \
     --rounds 60 \
     --n_steps 200 \
@@ -52,7 +52,7 @@ python scripts/envs/bandit2d/run_fedguide_bandit2d.py \
 ### 4. Run FedKL Baseline
 
 ```bash
-python scripts/envs/bandit2d/run_fedkl_bandit2d.py \
+python3 scripts/envs/bandit2d/run_fedkl_bandit2d.py \
     --num_clients 4 \
     --rounds 60 \
     --n_steps 200 \
@@ -67,32 +67,37 @@ After pretraining, you can visualize the prior models:
 
 **Visualize aggregated prior (recommended):**
 ```bash
-python scripts/envs/bandit2d/visualize_prior_aggregated.py \
+python3 scripts/envs/bandit2d/visualize_prior_aggregated.py \
     --base_path ./model/models_prior/Bandit2D \
     --client_ids 0 1 2 3 \
     --ckpt_dir final \
-    --show_peaks \
     --output_path ./prior_aggregated.png
 ```
 
 **Visualize aggregated + individual client priors:**
 ```bash
-python scripts/envs/bandit2d/visualize_prior_aggregated.py \
+python3 scripts/envs/bandit2d/visualize_prior_aggregated.py \
     --base_path ./model/models_prior/Bandit2D \
     --client_ids 0 1 2 3 \
     --ckpt_dir final \
-    --show_peaks \
-    --show_individual \
     --output_path ./prior_comparison.png
 ```
 
 ### 6. Visualize Training Results
 ```bash
-python scripts/envs/bandit2d/visualize_bandit2d.py \
+python3 scripts/envs/bandit2d/visualize_bandit2d.py \
     --metrics_path ./metrics/bandit2d_fedguide/bandit2d_metrics.pkl \
     --metrics_fedkl_path ./metrics/bandit2d_fedkl/bandit2d_metrics.pkl \
-    --output_path /data/figures/bandit2d_comparison.png \
+    --fedguide_history ./metrics/bandit2d_fedguide/training_history.pkl \
+    --fedkl_history ./metrics/bandit2d_fedkl/training_history.pkl \
+    --output_path ./data/figures/bandit2d_comparison.png \
     --comparison
+```
+
+```bash
+python3 scripts/envs/bandit2d/calc_summary.py \
+    --history_path ./metrics/bandit2d_fedkl/training_history.pkl \
+    --label FedKL
 ```
 
 ## Parameter Description
