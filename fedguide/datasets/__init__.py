@@ -32,11 +32,31 @@ except (ImportError, RuntimeError, OSError):
 # Backward compatibility aliases
 # _make_d4rl_datasets = make_d4rl_datasets
 
+# Minari dataset loaders
+try:
+    from fedguide.datasets.minari_loader import (
+        load_minari_dataset,
+        load_minari_pointmaze,
+        load_minari_maze2d,
+        load_minari_antmaze,
+        make_minari_datasets,
+        make_maze2d_minari_datasets,
+        make_antmaze_minari_datasets,
+        make_maze_minari_datasets,  # backward compatibility alias
+    )
+except (ImportError, RuntimeError, OSError):
+    load_minari_dataset = None
+    load_minari_pointmaze = None
+    load_minari_maze2d = None
+    load_minari_antmaze = None
+    make_minari_datasets = None
+    make_maze2d_minari_datasets = None
+    make_antmaze_minari_datasets = None
+    make_maze_minari_datasets = None
+
 __all__ = [
     "make_datasets",
     # "make_d4rl_datasets",
-    # "make_minari_datasets",
-    # "make_maze_minari_datasets",  # backward compatibility
     # "_make_d4rl_datasets",  # backward compatibility
     "DatasetType",
     "TrajectoryDataset",
@@ -46,4 +66,13 @@ __all__ = [
     "load_hetero_config",
     "split_trajs_dirichlet",
     "traj_category",
+    # Minari loaders
+    "load_minari_dataset",
+    "load_minari_pointmaze",
+    "load_minari_maze2d",
+    "load_minari_antmaze",
+    "make_minari_datasets",
+    "make_maze2d_minari_datasets",
+    "make_antmaze_minari_datasets",
+    "make_maze_minari_datasets",  # backward compatibility
 ]

@@ -223,3 +223,114 @@ register(
     }
 )
 
+
+# FigureEight environments
+def figureeight_env_v1(render='drgb'):
+    """FigureEight1 environment configuration from flow.benchmarks.figureeight1"""
+    try:
+        from flow.benchmarks.figureeight1 import flow_params as flow_params_v1
+        # flow_params_v1 should be a dictionary with all necessary parameters
+        # If it's already a dict, return it directly
+        if isinstance(flow_params_v1, dict):
+            # Make a copy and update render settings
+            params = deepcopy(flow_params_v1)
+            if 'sim' in params and hasattr(params['sim'], 'render'):
+                params['sim'].render = render
+            elif 'sim' in params:
+                params['sim'] = deepcopy(params['sim'])
+                params['sim'].render = render
+            return params
+        # If it's a function or callable, call it
+        elif callable(flow_params_v1):
+            return flow_params_v1(render=render)
+        else:
+            return flow_params_v1
+    except ImportError as e:
+        raise ImportError(
+            "flow.benchmarks.figureeight1 not found. "
+            "Make sure flow is properly installed with benchmarks."
+        ) from e
+
+
+def figureeight_env_v2(render='drgb'):
+    """FigureEight2 environment configuration from flow.benchmarks.figureeight2"""
+    try:
+        from flow.benchmarks.figureeight2 import flow_params as flow_params_v2
+        # flow_params_v2 should be a dictionary with all necessary parameters
+        if isinstance(flow_params_v2, dict):
+            params = deepcopy(flow_params_v2)
+            if 'sim' in params and hasattr(params['sim'], 'render'):
+                params['sim'].render = render
+            elif 'sim' in params:
+                params['sim'] = deepcopy(params['sim'])
+                params['sim'].render = render
+            return params
+        elif callable(flow_params_v2):
+            return flow_params_v2(render=render)
+        else:
+            return flow_params_v2
+    except ImportError as e:
+        raise ImportError(
+            "flow.benchmarks.figureeight2 not found. "
+            "Make sure flow is properly installed with benchmarks."
+        ) from e
+
+
+# Reference scores for FigureEight (adjust these based on actual performance)
+FIGUREEIGHT1_RANDOM_SCORE = 0.0
+FIGUREEIGHT1_EXPERT_SCORE = 1.0
+FIGUREEIGHT2_RANDOM_SCORE = 0.0
+FIGUREEIGHT2_EXPERT_SCORE = 1.0
+
+# Register FigureEight1 environment
+register(
+    id='flow-figureeight1-v0',
+    entry_point='d4rl.flow:flow_register',
+    max_episode_steps=1500,  # Adjust based on actual horizon
+    kwargs={
+        'flow_params': figureeight_env_v1(render=False),
+        'dataset_url': None,  # Add dataset URL if available
+        'ref_min_score': FIGUREEIGHT1_RANDOM_SCORE,
+        'ref_max_score': FIGUREEIGHT1_EXPERT_SCORE,
+    }
+)
+
+# Register FigureEight1 with rendering
+register(
+    id='flow-figureeight1-render-v0',
+    entry_point='d4rl.flow:flow_register',
+    max_episode_steps=1500,
+    kwargs={
+        'flow_params': figureeight_env_v1(render='drgb'),
+        'dataset_url': None,
+        'ref_min_score': FIGUREEIGHT1_RANDOM_SCORE,
+        'ref_max_score': FIGUREEIGHT1_EXPERT_SCORE,
+    }
+)
+
+# Register FigureEight2 environment
+register(
+    id='flow-figureeight2-v0',
+    entry_point='d4rl.flow:flow_register',
+    max_episode_steps=1500,  # Adjust based on actual horizon
+    kwargs={
+        'flow_params': figureeight_env_v2(render=False),
+        'dataset_url': None,  # Add dataset URL if available
+        'ref_min_score': FIGUREEIGHT2_RANDOM_SCORE,
+        'ref_max_score': FIGUREEIGHT2_EXPERT_SCORE,
+    }
+)
+
+# Register FigureEight2 with rendering
+register(
+    id='flow-figureeight2-render-v0',
+    entry_point='d4rl.flow:flow_register',
+    max_episode_steps=1500,
+    kwargs={
+        'flow_params': figureeight_env_v2(render='drgb'),
+        'dataset_url': None,
+        'ref_min_score': FIGUREEIGHT2_RANDOM_SCORE,
+        'ref_max_score': FIGUREEIGHT2_EXPERT_SCORE,
+    }
+)
+

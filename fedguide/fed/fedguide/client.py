@@ -25,18 +25,36 @@ def _is_box1d(space) -> bool:
 
 
 def _make_env(env_id: str, seed: Optional[int] = None):
+    # Import d4rl to register all d4rl environments (maze2d, antmaze, flow, etc.)
+    try:
+        import d4rl
+    except ImportError:
+        pass  # d4rl not available, continue with other options
+
+    # Handle custom environments
     if env_id.lower() in ["bandit2d", "bandit_2d", "2dbandit"]:
         from fedguide.envs.bandit2d import Bandit2D
         env = Bandit2D(K=4, sigma=0.2, seed=seed)
         if seed is not None:
             env.reset(seed=seed)
         return env
-    
+
+    # Use gym.make for standard gym/gymnasium/d4rl environments
+    # This works for: maze2d, antmaze, flow, and other registered environments
     env = gym.make(env_id)
     try:
         env.reset(seed=seed)
     except TypeError:
+        # Some environments may not support seed parameter in reset
         pass
+    except Exception as e:
+        # If it's a flow environment and not registered, provide helpful error
+        if "flow" in env_id.lower() or "figureeight" in env_id.lower():
+            raise ValueError(
+                f"Flow environment {env_id} not registered. "
+                "Make sure flow figureeight environments are registered in d4rl.flow"
+            ) from e
+        raise
     return env
 
 
@@ -458,7 +476,7 @@ def client_fn_builder(
     env_id: str,
     algo: str = "ppo",
     *,
-    aggregate_mode: str = "policy",
+    aggregate_mode: str = "prior+guidance",
     n_steps: int = 200,
     gamma: float = 0.99,
     gae_lambda: float = 0.95,

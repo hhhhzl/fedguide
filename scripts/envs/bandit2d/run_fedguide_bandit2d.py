@@ -124,7 +124,7 @@ def main():
                 # Add client metrics from collected grid evaluations
                 if collected_client_metrics:
                     # Aggregate client metrics to compute server_metrics
-                    server_prior_logprob = None
+                    server_prior_prob = None
                     server_value = None
                     server_policy_density = None
                     
@@ -139,10 +139,11 @@ def main():
                         # Aggregate for server_metrics
                         if 'prior_logprob' in client_grid_metrics:
                             prior_lp = np.array(client_grid_metrics['prior_logprob'])
-                            if server_prior_logprob is None:
-                                server_prior_logprob = prior_lp.copy()
+                            prior_prob = np.exp(prior_lp)
+                            if server_prior_prob is None:
+                                server_prior_prob = prior_prob.copy()
                             else:
-                                server_prior_logprob = server_prior_logprob + prior_lp
+                                server_prior_prob = server_prior_prob + prior_prob
                         
                         if 'value' in client_grid_metrics:
                             value = np.array(client_grid_metrics['value'])
@@ -161,8 +162,11 @@ def main():
                     # Average the aggregated metrics
                     num_clients = len(collected_client_metrics)
                     if num_clients > 0:
-                        if server_prior_logprob is not None:
-                            server_prior_logprob = server_prior_logprob / num_clients
+                        if server_prior_prob is not None:
+                            server_prior_prob = server_prior_prob / num_clients
+                            server_prior_logprob = np.log(server_prior_prob + 1e-12)
+                        else:
+                            server_prior_logprob = None
                         if server_value is not None:
                             server_value = server_value / num_clients
                         if server_policy_density is not None:

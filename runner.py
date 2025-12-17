@@ -17,6 +17,13 @@ def is_box1d(space) -> bool:
 
 
 def make_env(env_id: str, seed: int):
+    # Import d4rl to register all d4rl environments (maze2d, antmaze, flow, etc.)
+    try:
+        import d4rl
+    except ImportError:
+        pass  # d4rl not available, continue with other options
+
+    # Handle custom environments
     if env_id.lower() in ["pointmazenarrow", "pointmaze_narrow", "pointnarrow", "pointmaze-narrow"]:
         from fedguide.envs.pointmaze_narrow import PointMazeNarrow
         env = PointMazeNarrow()
@@ -29,9 +36,21 @@ def make_env(env_id: str, seed: int):
         env.reset(seed=seed)
         return env
 
-    env = gym.make(env_id)
-    env.reset(seed=seed)
+    # Try gym.make for standard gym/gymnasium/d4rl environments
+    # This works for: maze2d, antmaze, flow, and other registered environments
+    try:
+        env = gym.make(env_id)
+        env.reset(seed=seed)
+    except Exception as e:
+        # If it's a flow environment and not registered, provide helpful error
+        if "flow" in env_id.lower() or "figureeight" in env_id.lower():
+            raise ValueError(
+                f"Flow environment {env_id} not registered. "
+                "Make sure flow figureeight environments are registered in d4rl.flow"
+            ) from e
+        raise
 
+    # Apply wrappers for compatibility
     try:
         from gymnasium.wrappers import TransformObservation, ClipAction
         if is_box1d(env.observation_space):
