@@ -451,6 +451,24 @@ def sample_synthetic_bandit2d_data(env, n_samples=5000, local_radius=0.3, n_clie
     
     return np.stack(data_actions, axis=0)
 
+def compute_bandit_stats(actions, env, reward_threshold=0.8):
+    """
+    Compute simple quantitative metrics for Bandit2D samples.
+
+    actions: np.ndarray of shape [N, 2]
+    env: Bandit2D instance (has env.compute_reward)
+    reward_threshold: reward above which we consider an action "good"
+                      (since max reward is 1.0, 0.8 means 'close to a peak').
+    Returns:
+        mean_reward, high_reward_fraction
+    """
+    actions = np.asarray(actions)
+    rewards = np.array([env.compute_reward(a) for a in actions], dtype=np.float32)
+
+    mean_reward = float(rewards.mean())
+    high_reward_frac = float((rewards >= reward_threshold).mean())
+
+    return mean_reward, high_reward_frac
 
 def visualize_data_vs_prior(
         data_actions,
@@ -829,6 +847,19 @@ def main():
         use_mixture_sampling=True,  # Use mixture sampling for global distribution
         client_priors=priors,
     )
+
+    def summarize(label, actions, threshold=0.8):
+        mean_r, frac = compute_bandit_stats(actions, env, reward_threshold=threshold)
+        print(
+            f"[BANDIT2D METRICS] {label}: "
+            f"mean_reward = {mean_r:.3f}, "
+            f"high-reward coverage (R ≥ {threshold}) = {frac * 100:.1f}% "
+            f"over {len(actions)} samples"
+        )
+
+    summarize("Synthetic offline data", data_actions, threshold=0.8)
+    summarize("FedAvg aggregated prior", prior_actions_fedavg, threshold=0.8)
+    summarize("OT-MoE aggregated prior", prior_actions_otmoe, threshold=0.8)
 
     print("Generating sampling-based visualization (data vs priors).")
     visualize_data_vs_priors(

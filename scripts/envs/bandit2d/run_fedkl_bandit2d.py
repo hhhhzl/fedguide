@@ -21,7 +21,7 @@ def main():
     
     # Training args
     parser.add_argument("--n_steps", type=int, default=200)
-    parser.add_argument("--lambda_global", type=float, default=0.1)
+    parser.add_argument("--lambda_global", type=float, default=15.0)
     parser.add_argument("--lambda_local", type=float, default=0.05)
     parser.add_argument("--update_epochs", type=int, default=10)
     parser.add_argument("--minibatch_size", type=int, default=64)
@@ -268,6 +268,18 @@ def main():
     # Save training history for reward curve plotting
     os.makedirs(args.metrics_dir, exist_ok=True)
     history_path = os.path.join(args.metrics_dir, "training_history.pkl")
+    # Debug: Check history contents
+    print(f"\nTraining history debug info:")
+    print(f"  history type: {type(history)}")
+    if hasattr(history, 'losses_distributed'):
+        print(f"  losses_distributed: {len(history.losses_distributed) if history.losses_distributed else 0} entries")
+    if hasattr(history, 'metrics_distributed_fit'):
+        print(f"  metrics_distributed_fit: {len(history.metrics_distributed_fit) if history.metrics_distributed_fit else 0} entries")
+    if hasattr(history, 'metrics_centralized'):
+        print(f"  metrics_centralized: {len(history.metrics_centralized) if history.metrics_centralized else 0} entries")
+    if hasattr(history, '__dict__'):
+        print(f"  history attributes: {list(history.__dict__.keys())}")
+    
     with open(history_path, 'wb') as f:
         pickle.dump(history, f)
     print(f"\nTraining history saved to {history_path}")

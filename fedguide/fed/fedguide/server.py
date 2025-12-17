@@ -189,6 +189,12 @@ class FedGuideStrategy(Strategy):
         # Also collect client actions and grid metrics from metrics for server-side metrics collection
         total_loss = 0.0
         total_examples = 0
+
+        total_train_return = 0.0
+        count_train_return = 0
+        total_eval_return = 0.0
+        count_eval_return = 0
+
         aggregated_metrics: Dict[str, Scalar] = {"server_round": server_round}
         collected_actions: Dict[int, Any] = {}  # {mapped_client_id: actions}
         collected_client_metrics: Dict[int, Dict[str, Any]] = {}  # {mapped_client_id: {metric_name: value}}
@@ -210,6 +216,25 @@ class FedGuideStrategy(Strategy):
                     if loss_val == loss_val and loss_val != float('inf') and loss_val != float('-inf'):
                         total_loss += loss_val * num_examples
                         total_examples += num_examples
+                except (TypeError, ValueError):
+                    pass
+
+            # agg returns (simple average over clients that reported them)
+            if "train/return" in metrics:
+                try:
+                    train_return = float(metrics["train/return"])
+                    if train_return == train_return:  # not NaN
+                        total_train_return += train_return
+                        count_train_return += 1
+                except (TypeError, ValueError):
+                    pass
+
+            if "eval/return" in metrics:
+                try:
+                    eval_return = float(metrics["eval/return"])
+                    if eval_return == eval_return:  # not NaN
+                        total_eval_return += eval_return
+                        count_eval_return += 1
                 except (TypeError, ValueError):
                     pass
             
@@ -269,13 +294,23 @@ class FedGuideStrategy(Strategy):
             aggregated_metrics["loss"] = aggregated_loss
         else:
             aggregated_metrics["loss"] = 0.0
-        
-        # Store collected actions and client metrics in strategy instance for evaluate_fn to access
-        # This allows evaluate_fn to access client data even though collector is not shared
+
+        # agg returns to metrics (same as FedKL)
+        if count_train_return > 0:
+            aggregated_metrics["train/return"] = total_train_return / count_train_return
+
+        if count_eval_return > 0:
+            aggregated_metrics["eval/return"] = total_eval_return / count_eval_return
+
+        # add sample count / client count
+        aggregated_metrics["total_samples"] = total_examples
+        aggregated_metrics["num_clients"] = len(results)
+
+        # Store collected actions and client metrics in strategy instance
         if not hasattr(self, '_collected_actions'):
             self._collected_actions = {}
         self._collected_actions[server_round] = collected_actions
-        
+
         if not hasattr(self, '_collected_client_metrics'):
             self._collected_client_metrics = {}
         self._collected_client_metrics[server_round] = collected_client_metrics
