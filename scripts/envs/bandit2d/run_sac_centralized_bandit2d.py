@@ -176,7 +176,9 @@ def main():
                        help="Number of episodes for evaluation (increased for more stable evaluation)")
     
     # Output args
-    parser.add_argument("--output_dir", type=str, default="./results/sac_centralized_bandit2d",
+    parser.add_argument("--output_dir", type=str, default=f"./model/policy/bandit2d/sac",
+                       help="Directory to save results")
+    parser.add_argument("--metrics_dir", type=str, default=f"./metrics/bandit2d/sac",
                        help="Directory to save results")
     parser.add_argument("--save_every", type=int, default=10,
                        help="Save results every N rounds")
@@ -226,10 +228,10 @@ def main():
     import sys
     sys.stdout.flush()
     
-    print("  Step 1: Creating networks...")
+    print("Step 1: Creating networks...")
     sys.stdout.flush()
     
-    print("  Step 2: Creating agent instance...")
+    print("Step 2: Creating agent instance...")
     sys.stdout.flush()
     
     try:
@@ -243,10 +245,10 @@ def main():
             alpha=args.alpha,
             device=device,
         )
-        print("  ✓ Agent created successfully")
+        print("Agent created successfully")
         sys.stdout.flush()
     except Exception as e:
-        print(f"  ✗ Error creating agent: {e}")
+        print(f"Error creating agent: {e}")
         import traceback
         traceback.print_exc()
         raise
@@ -309,7 +311,7 @@ def main():
             print(f"  Saved checkpoint to {checkpoint_path}")
     
     # Save final results
-    final_path = os.path.join(args.output_dir, "training_history.pkl")
+    final_path = os.path.join(args.metrics_dir, "training_history.pkl")
     with open(final_path, 'wb') as f:
         pickle.dump({
             'history': history,
