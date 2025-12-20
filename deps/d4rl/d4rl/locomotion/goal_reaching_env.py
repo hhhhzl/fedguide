@@ -35,7 +35,13 @@ class GoalReachingEnv(object):
       return base_obs
 
   def step(self, a):
-    self.BASE_ENV.step(self, a)
+    # Call BASE_ENV.step but ignore its return value (we compute our own reward)
+    base_result = self.BASE_ENV.step(self, a)
+    # Handle both 4-value and 5-value returns (for compatibility)
+    if len(base_result) == 5:
+      # New format, but we ignore it
+      pass
+    
     if self.reward_type == 'dense':
       reward = -np.linalg.norm(self.target_goal - self.get_xy())
     elif self.reward_type == 'sparse':
@@ -47,7 +53,10 @@ class GoalReachingEnv(object):
       done = True
 
     obs = self._get_obs()
-    return obs, reward, done, {}
+    # Return in gymnasium format (5 values) for compatibility with newer gym versions
+    terminated = done
+    truncated = False
+    return obs, reward, terminated, truncated, {}
 
   def reset_model(self):
     if self.target_goal is not None or self.eval:

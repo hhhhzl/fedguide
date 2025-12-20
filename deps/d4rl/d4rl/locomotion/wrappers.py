@@ -70,10 +70,19 @@ class HistoryEnv(ProxyEnv, Env):
         self.history = deque(maxlen=self.history_len)
 
     def step(self, action):
-        state, reward, done, info = super().step(action)
+        result = super().step(action)
+        # Handle both 4-value (old) and 5-value (new) formats
+        if len(result) == 5:
+            state, reward, terminated, truncated, info = result
+            done = terminated or truncated
+        else:
+            state, reward, done, info = result
         self.history.append(state)
         flattened_history = self._get_history().flatten()
-        return flattened_history, reward, done, info
+        # Return in gymnasium format (5 values)
+        terminated = done
+        truncated = False
+        return flattened_history, reward, terminated, truncated, info
 
     def reset(self, **kwargs):
         state = super().reset()
@@ -159,10 +168,18 @@ class NormalizedBoxEnv(ProxyEnv):
         scaled_action = np.clip(scaled_action, lb, ub)
 
         wrapped_step = self._wrapped_env.step(scaled_action)
-        next_obs, reward, done, info = wrapped_step
+        # Handle both 4-value (old) and 5-value (new) formats
+        if len(wrapped_step) == 5:
+            next_obs, reward, terminated, truncated, info = wrapped_step
+            done = terminated or truncated
+        else:
+            next_obs, reward, done, info = wrapped_step
         if self._should_normalize:
             next_obs = self._apply_normalize_obs(next_obs)
-        return next_obs, reward * self._reward_scale, done, info
+        # Return in gymnasium format (5 values) for compatibility with newer gym versions
+        terminated = done
+        truncated = False
+        return next_obs, reward * self._reward_scale, terminated, truncated, info
 
     def __str__(self):
         return "Normalized: %s" % self._wrapped_env

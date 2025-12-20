@@ -9,6 +9,7 @@ try:
     import gymnasium as gym
 except Exception:
     import gym  # fallback to classic gym if needed
+import gym as old_gym  # Old gym package for d4rl environments
 
 from fedguide.agents.fedguide_agent import FedguideAgent
 from fedguide.trainers.fedguide_trainer import FedguideTrainer
@@ -22,6 +23,13 @@ def _is_box1d(space) -> bool:
     except Exception:
         from gym.spaces import Box
     return isinstance(space, Box) and len(space.shape) == 1
+
+
+def _is_d4rl_env(env_id: str) -> bool:
+    """Check if env_id is a d4rl environment that needs old gym."""
+    d4rl_prefixes = ["maze2d-", "antmaze-", "flow-", "kitchen-", "pen-", "door-", "hammer-", "relocate-", "push-", "stick-"]
+    env_id_lower = env_id.lower()
+    return any(env_id_lower.startswith(prefix) for prefix in d4rl_prefixes)
 
 
 def _make_env(env_id: str, seed: Optional[int] = None):
@@ -38,10 +46,23 @@ def _make_env(env_id: str, seed: Optional[int] = None):
         if seed is not None:
             env.reset(seed=seed)
         return env
+    elif env_id.lower() == "pointmazenarrow":
+        from fedguide.envs.pointmaze_narrow import PointMazeNarrow
+        env = PointMazeNarrow()
+        if seed is not None:
+            try:
+                env.reset(seed=seed)
+            except TypeError:
+                env.reset()
+        return env
     
-    # Use gym.make for standard gym/gymnasium/d4rl environments
-    # This works for: maze2d, antmaze, flow, and other registered environments
-    env = gym.make(env_id)
+    # Use old_gym.make for d4rl environments (they register with old gym, not gymnasium)
+    # Use gym.make (gymnasium) for standard gymnasium environments
+    if _is_d4rl_env(env_id):
+        env = old_gym.make(env_id)
+    else:
+        env = gym.make(env_id)
+    
     try:
         env.reset(seed=seed)
     except TypeError:
