@@ -12,37 +12,22 @@ echo "=========================================="
 PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 SITE_PACKAGES=$(python3 -c "import site; print(site.getsitepackages()[0])")
 
-echo "Python version: $PYTHON_VERSION"
-echo "Site-packages: $SITE_PACKAGES"
-
-# Step 1: Install Python dependencies
+# Clone flow repository to temporary directory
 echo ""
-echo "Step 1: Installing Python dependencies..."
-pip install pyglet==2.1.11
-pip install opencv-python==4.12.0.88
-pip install imutils==0.5.4
-
-# Step 2: Ensure numpy version is compatible (downgrade if needed)
-echo ""
-echo "Step 2: Ensuring numpy version compatibility..."
-pip install "numpy==1.26.4" --force-reinstall
-
-# Step 3: Clone flow repository to temporary directory
-echo ""
-echo "Step 3: Cloning flow-project repository..."
+echo "Cloning flow-project repository..."
 TEMP_DIR=$(mktemp -d)
 cd "$TEMP_DIR"
 git clone https://github.com/flow-project/flow.git flow-repo
 cd flow-repo
 
-# Step 4: Copy flow package to site-packages
+# Copy flow package to site-packages
 echo ""
-echo "Step 4: Installing flow package to site-packages..."
+echo "Installing flow package to site-packages..."
 cp -r flow "$SITE_PACKAGES/"
 
-# Step 5: Verify installation
+# Verify installation
 echo ""
-echo "Step 5: Verifying installation..."
+echo "Verifying installation..."
 python3 -c "import flow; print(f'✓ Flow package imported successfully from: {flow.__file__}')" || {
     echo "✗ Failed to import flow package"
     exit 1
