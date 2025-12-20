@@ -377,7 +377,8 @@ class FedguideAgent(nn.Module):
                         if abs(lambda_guide) > 0.0:
                             # KL(π || prior) ≈ E[log prior - log π]
                             prior_kl = (prior_logp - logp).mean()
-                            prior_loss = lambda_guide * prior_kl
+                            # prior_kl = (logp - prior_logp).mean()
+                            prior_loss = - lambda_guide * prior_kl
                             prior_report = prior_kl.detach()
                         else:
                             # legacy: maximize log prior(a|s)  => minimize -log prior
@@ -406,7 +407,8 @@ class FedguideAgent(nn.Module):
                     + self.ent_coef * entropy_loss
                     + prior_loss
                     + self.guide_coef * guide_align
-                    + lambda_local * (mb_old_logp - logp).mean()
+                    # + lambda_local * (mb_old_logp - logp).mean()
+                    - lambda_local * (mb_old_logp - logp).mean()
                 )
 
                 self.optimizer.zero_grad(set_to_none=True)
@@ -468,7 +470,8 @@ class FedguideAgent(nn.Module):
         else:
             # SDICE_Critic or other guidance types with update_wt/update_v0 methods
             if hasattr(self.guidance, "update_wt"):
-                gd = {"states": s.detach(), "actions": a.detach(), "weights": torch.relu(adv[mask]).detach()}
+                # gd = {"states": s.detach(), "actions": a.detach(), "weights": torch.relu(adv[mask]).detach()}
+                gd = {"s": s.detach(), "a": a.detach(), "weights": torch.relu(adv[mask]).detach()}
                 try:
                     self.guidance.update_wt(gd)
                 except TypeError:
