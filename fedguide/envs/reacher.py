@@ -36,14 +36,20 @@ def generate_reacher_heterogeneity(client_id, hetero_type="both"):
 
     # ---------------- Dynamics heterogeneity ----------------
     if hetero_type in ["dynamics", "both"]:
-        action_noise = np.clip(np.random.normal(0.0, 0.3, 2), -1.0, 1.0)
+        # Use client_id as seed for deterministic generation
+        rng = np.random.RandomState(client_id)
+        action_noise = np.clip(rng.normal(0.0, 0.3, 2), -1.0, 1.0)
 
     # ---------------- Reward heterogeneity ----------------
     if hetero_type in ["reward", "both"]:
-        reward_scale = np.random.uniform(0.8, 1.2)
+        # Use client_id as seed for deterministic generation
+        rng = np.random.RandomState(client_id + 1000)  # Offset to avoid correlation with action_noise
+        reward_scale = rng.uniform(0.8, 1.2)
 
     # ---------------- Randomized angle ----------------
-    angle_noise = np.random.uniform(-0.05, 0.05)
+    # Use client_id as seed for deterministic generation
+    rng = np.random.RandomState(client_id + 2000)  # Offset to avoid correlation
+    angle_noise = rng.uniform(-0.05, 0.05)
 
     return qpos_high_low, action_noise, reward_scale, angle_noise
 
