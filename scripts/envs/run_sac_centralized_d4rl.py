@@ -134,7 +134,9 @@ def main():
     
     # Output args
     parser.add_argument("--output_dir", type=str, default=None,
-                       help="Directory to save results (default: ./results/sac_centralized_{env_name})")
+                       help="Directory to save models")
+    parser.add_argument("--metrics_dir", type=str, default=None,
+                       help="Directory to save metrics")
     parser.add_argument("--save_every", type=int, default=10,
                        help="Save results every N rounds")
     
@@ -147,7 +149,11 @@ def main():
     # Set output directory
     if args.output_dir is None:
         env_short = args.env_name.replace('-', '_').replace('/', '_')
-        args.output_dir = f"./results/sac_centralized_{env_short}"
+        args.output_dir = f"./model/policy/{env_short}/sac"
+
+    if args.metrics_dir is None:
+        env_short = args.env_name.replace('-', '_').replace('/', '_')
+        args.output_dir = f"./metrics/{env_short}/sac"
     
     # Set device
     if args.device == "auto":
@@ -213,7 +219,7 @@ def main():
         action_high=action_high,
         action_std=args.action_std,
     )
-    print("  ✓ Agent created successfully")
+    print("Agent created successfully")
     
     # Create trainer
     print(f"\nCreating centralized trainer...")
@@ -265,7 +271,7 @@ def main():
             print(f"  Saved checkpoint to {checkpoint_path}")
     
     # Save final results
-    final_path = os.path.join(args.output_dir, "training_history.pkl")
+    final_path = os.path.join(args.metrics_dir, "training_history.pkl")
     with open(final_path, 'wb') as f:
         pickle.dump({
             'history': history,
@@ -278,4 +284,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
