@@ -7,7 +7,6 @@ import json
 import os
 import argparse
 import matplotlib.pyplot as plt
-from fedguide.envs.reacher import generate_reacher_heterogeneity
 
 
 def visualize_reacher_clients(client_configs, title="Reacher Client Distribution"):
@@ -18,12 +17,32 @@ def visualize_reacher_clients(client_configs, title="Reacher Client Distribution
         client_configs: List of client configuration dictionaries
         title: Plot title
     """
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
     
-    colors = plt.cm.tab20(np.linspace(0, 1, len(client_configs)))
+    # Use continuous colormap for better visualization with many clients
+    n_clients = len(client_configs)
+    colormap = plt.cm.viridis  # Use viridis colormap for continuous colors
+    colors = [colormap(i / max(1, n_clients - 1)) for i in range(n_clients)]
     
     # Plot 1: Goal region distribution (qpos_high_low)
     ax1 = axes[0]
+    
+    # Draw grid lines to show 8x8 structure (if applicable)
+    # Check if we have a grid-like structure (8x8 = 64 clients)
+    if n_clients == 64:
+        # Draw 8x8 grid lines
+        # Grid: X from -0.2 to 0.2 (step 0.05), Y from 0.2 to -0.2 (step -0.05)
+        grid_size = 8
+        cell_size = 0.05
+        # Draw vertical lines (X direction)
+        for i in range(grid_size + 1):
+            x_pos = -0.2 + i * cell_size
+            ax1.axvline(x_pos, color='gray', linestyle='--', linewidth=0.8, alpha=0.6)
+        # Draw horizontal lines (Y direction)
+        for i in range(grid_size + 1):
+            y_pos = 0.2 - i * cell_size  # Y goes from 0.2 down to -0.2
+            ax1.axhline(y_pos, color='gray', linestyle='--', linewidth=0.8, alpha=0.6)
+    
     for i, config in enumerate(client_configs):
         qpos = config["qpos_high_low"]
         # Calculate center of the region
@@ -32,25 +51,29 @@ def visualize_reacher_clients(client_configs, title="Reacher Client Distribution
         x_width = qpos[0][1] - qpos[0][0]
         y_width = qpos[1][1] - qpos[1][0]
         
-        # Draw rectangle for goal region
+        # Draw rectangle for goal region with reduced alpha for better visibility
         rect = plt.Rectangle(
             (qpos[0][0], qpos[1][0]), x_width, y_width,
-            facecolor=colors[i], alpha=0.3, edgecolor=colors[i], linewidth=2
+            facecolor=colors[i], alpha=0.4, edgecolor=colors[i], linewidth=1.5
         )
         ax1.add_patch(rect)
         
-        # Mark center
-        ax1.scatter(x_center, y_center, c=colors[i], s=100, 
-                   marker='x', linewidths=2, label=f"Client {i}")
+        # Mark center with larger marker for better visibility
+        ax1.scatter(x_center, y_center, c=[colors[i]], s=80, 
+                   marker='x', linewidths=2, zorder=5)
     
     ax1.set_xlabel("X Position", fontsize=12)
     ax1.set_ylabel("Y Position", fontsize=12)
     ax1.set_title("Goal Region Distribution", fontsize=14)
     ax1.set_xlim(-0.25, 0.25)
     ax1.set_ylim(-0.25, 0.25)
-    ax1.grid(True, alpha=0.3)
+    ax1.grid(True, alpha=0.2, linestyle=':', linewidth=0.5)
     ax1.set_aspect("equal", "box")
-    ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+    
+    # Add colorbar for client ID mapping
+    sm = plt.cm.ScalarMappable(cmap=colormap, norm=plt.Normalize(vmin=0, vmax=n_clients-1))
+    sm.set_array([])
+    cbar1 = plt.colorbar(sm, ax=ax1, label='Client ID', shrink=0.8)
     
     # Plot 2: Action noise and reward scale
     ax2 = axes[1]
@@ -59,22 +82,50 @@ def visualize_reacher_clients(client_configs, title="Reacher Client Distribution
     
     # Scatter plot: action_noise magnitude vs reward_scale
     noise_magnitudes = [np.linalg.norm(noise) for noise in action_noises]
-    ax2.scatter(noise_magnitudes, reward_scales, c=colors[:len(client_configs)], 
-               s=100, alpha=0.7, edgecolors='black', linewidths=1.5)
     
-    # Annotate each point with client ID
-    for i, (noise_mag, rew_scale) in enumerate(zip(noise_magnitudes, reward_scales)):
-        ax2.annotate(f"C{i}", (noise_mag, rew_scale), 
-                    fontsize=8, ha='center', va='center')
+    # Use client_id for color mapping to match left plot
+    scatter = ax2.scatter(noise_magnitudes, reward_scales, 
+                         c=range(n_clients), cmap=colormap,
+                         s=100, alpha=0.7, edgecolors='black', linewidths=1.5)
+    
+    # Annotate each point with client ID (only if not too many clients)
+    if n_clients <= 20:
+        for i, (noise_mag, rew_scale) in enumerate(zip(noise_magnitudes, reward_scales)):
+            ax2.annotate(f"C{i}", (noise_mag, rew_scale), 
+                        fontsize=8, ha='center', va='center')
     
     ax2.set_xlabel("Action Noise Magnitude", fontsize=12)
     ax2.set_ylabel("Reward Scale", fontsize=12)
     ax2.set_title("Dynamics & Reward Heterogeneity", fontsize=14)
     ax2.grid(True, alpha=0.3)
     
+    # Add colorbar for client ID mapping (matching left plot)
+    cbar2 = plt.colorbar(scatter, ax=ax2, label='Client ID', shrink=0.8)
+    
     plt.suptitle(title, fontsize=16, y=1.02)
     plt.tight_layout()
     plt.show()
+
+
+def load_reacher_metadata(metadata_path):
+    """
+    Load existing metadata.json file.
+    
+    Args:
+        metadata_path: Path to metadata.json file
+    
+    Returns:
+        metadata: Dictionary containing all metadata
+        client_configs: List of client configuration dictionaries
+    """
+    if not os.path.exists(metadata_path):
+        raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
+    
+    with open(metadata_path, "r") as f:
+        metadata = json.load(f)
+    
+    client_configs = metadata.get("clients", [])
+    return metadata, client_configs
 
 
 def generate_reacher_metadata(
@@ -102,6 +153,7 @@ def generate_reacher_metadata(
     # for deterministic generation
     
     # Generate configurations for each client
+    from fedguide.envs.reacher import generate_reacher_heterogeneity
     client_configs = []
     for client_id in range(n_clients):
         qpos_high_low, action_noise, reward_scale, angle_noise = generate_reacher_heterogeneity(
@@ -161,20 +213,35 @@ if __name__ == "__main__":
         help="Output directory for metadata.json"
     )
     parser.add_argument(
+        "--metadata_path", type=str, default=None,
+        help="Path to existing metadata.json file (if provided, only visualize, don't generate)"
+    )
+    parser.add_argument(
         "--visualize", action="store_true",
         help="Visualize client distribution"
     )
     
     args = parser.parse_args()
     
-    metadata, client_configs = generate_reacher_metadata(
-        n_clients=args.n_clients,
-        hetero_type=args.hetero_type,
-        seed=args.seed,
-        output_dir=args.output_dir
-    )
-    
-    if args.visualize:
-        visualize_reacher_clients(client_configs, 
-                                 title=f"Reacher Client Distribution (hetero_type={args.hetero_type})")
+    # If metadata_path is provided, load and visualize only
+    if args.metadata_path:
+        print(f"Loading metadata from {args.metadata_path}")
+        metadata, client_configs = load_reacher_metadata(args.metadata_path)
+        print(f"Loaded metadata for {len(client_configs)} clients")
+        print(f"Hetero type: {metadata.get('hetero_type', 'unknown')}")
+        
+        title = f"Reacher Client Distribution (hetero_type={metadata.get('hetero_type', 'unknown')}, n_clients={len(client_configs)})"
+        visualize_reacher_clients(client_configs, title=title)
+    else:
+        # Generate new metadata
+        metadata, client_configs = generate_reacher_metadata(
+            n_clients=args.n_clients,
+            hetero_type=args.hetero_type,
+            seed=args.seed,
+            output_dir=args.output_dir
+        )
+        
+        if args.visualize:
+            visualize_reacher_clients(client_configs, 
+                                     title=f"Reacher Client Distribution (hetero_type={args.hetero_type})")
 
