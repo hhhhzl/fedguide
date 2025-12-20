@@ -172,8 +172,8 @@ def main():
                        help="Standard deviation for reward function")
     
     # Evaluation args
-    parser.add_argument("--eval_episodes", type=int, default=10,
-                       help="Number of episodes for evaluation")
+    parser.add_argument("--eval_episodes", type=int, default=50,
+                       help="Number of episodes for evaluation (increased for more stable evaluation)")
     
     # Output args
     parser.add_argument("--output_dir", type=str, default="./results/sac_centralized_bandit2d",
@@ -223,18 +223,33 @@ def main():
     print(f"  State dim: 2, Action dim: 2")
     print(f"  Hidden dim: {args.hidden_dim}, LR: {args.lr}")
     print(f"  Device: {device}")
-
-    print(f"\nCreating centralized Agent...")
-    agent = SACAgent(
-        state_dim=2,
-        action_dim=2,
-        hidden_dim=args.hidden_dim,
-        lr=args.lr,
-        gamma=args.gamma,
-        tau=args.tau,
-        alpha=args.alpha,
-        device=device,
-    )
+    import sys
+    sys.stdout.flush()
+    
+    print("  Step 1: Creating networks...")
+    sys.stdout.flush()
+    
+    print("  Step 2: Creating agent instance...")
+    sys.stdout.flush()
+    
+    try:
+        agent = SACAgent(
+            state_dim=2,
+            action_dim=2,
+            hidden_dim=args.hidden_dim,
+            lr=args.lr,
+            gamma=args.gamma,
+            tau=args.tau,
+            alpha=args.alpha,
+            device=device,
+        )
+        print("  ✓ Agent created successfully")
+        sys.stdout.flush()
+    except Exception as e:
+        print(f"  ✗ Error creating agent: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
     # Create trainer
     print(f"\nCreating centralized trainer...")
     trainer = CentralSACTrainer(
@@ -257,21 +272,29 @@ def main():
     history = []
     
     for round_num in range(1, args.rounds + 1):
+        print(f"\n{'='*60}")
+        print(f"Round {round_num}/{args.rounds}")
+        print(f"{'='*60}")
+        import sys
+        sys.stdout.flush()
+        
         # Train one round
+        print(f"  [Round {round_num}] Starting training...", flush=True)
         metrics = trainer.train_one_round()
         metrics['round'] = round_num
         
         # Store history
         history.append(metrics)
         
-        # Print progress
-        if round_num % 10 == 0 or round_num == 1:
-            print(f"Round {round_num}/{args.rounds}: "
-                  f"loss={metrics['loss']:.4f}, "
-                  f"actor_loss={metrics['train/loss/actor']:.4f}, "
-                  f"critic_loss={metrics['train/loss/critic']:.4f}, "
-                  f"q_value={metrics['train/q_value']:.4f}, "
-                  f"eval_return={metrics.get('eval/return', 0):.4f}")
+        # Print progress (always print, not just every 10 rounds)
+        print(f"\n  [Round {round_num}] Training completed:")
+        print(f"    Loss: {metrics['loss']:.4f}")
+        print(f"    Actor Loss: {metrics['train/loss/actor']:.4f}")
+        print(f"    Critic Loss: {metrics['train/loss/critic']:.4f}")
+        print(f"    Q Value: {metrics['train/q_value']:.4f}")
+        if 'eval/return' in metrics:
+            print(f"    Eval Return: {metrics['eval/return']:.4f}")
+        sys.stdout.flush()
         
         # Save checkpoint
         if round_num % args.save_every == 0 or round_num == args.rounds:

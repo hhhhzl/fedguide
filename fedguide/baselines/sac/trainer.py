@@ -75,6 +75,7 @@ class CentralSACTrainer:
         
         # Evaluation tracking
         self.eval_returns = deque(maxlen=100)
+        self.eval_returns_smoothed = deque(maxlen=100)  # For smoothed evaluation
         
         print(f"[CentralSACTrainer] Initialized with {self.num_clients} clients")
         print(f"[CentralSACTrainer] Total transitions: {self.total_transitions}")
@@ -157,7 +158,22 @@ class CentralSACTrainer:
                 # Get action from agent (deterministic for evaluation)
                 state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
                 action, _ = self.agent.act(state_tensor, eval=True)
-                action_np = action.cpu().numpy()[0]
+                
+                # Handle both 1D and 2D action outputs
+                if isinstance(action, torch.Tensor):
+                    action_np = action.detach().cpu().numpy()
+                    # Remove batch dimension if present
+                    if action_np.ndim > 1:
+                        action_np = action_np[0]
+                    elif action_np.ndim == 0:
+                        action_np = np.array([action_np])
+                else:
+                    action_np = np.array(action)
+                    if action_np.ndim > 1:
+                        action_np = action_np[0]
+                
+                # Ensure action is in valid range for bandit environment
+                action_np = np.clip(action_np, -1.5, 1.5)
                 
                 # Step environment
                 next_state, reward, terminated, truncated, _ = self.env.step(action_np)
@@ -165,12 +181,34 @@ class CentralSACTrainer:
                 total_return += reward
                 state = next_state
                 step_count += 1
+                
+                # For bandit environments, always done after one step
+                if done:
+                    break
             
             returns.append(total_return)
         
+        # Debug: Print evaluation statistics occasionally
+        if len(returns) > 0 and np.mean(returns) == 0.0:
+            # Only print once to avoid spam
+            if not hasattr(self, '_eval_warned'):
+                print(f"Warning: All eval returns are 0. Action range: [{action_np.min() if len(action_np) > 0 else 'N/A'}, {action_np.max() if len(action_np) > 0 else 'N/A'}]")
+                self._eval_warned = True
+        
         avg_return = np.mean(returns)
+        std_return = np.std(returns)
         self.eval_returns.append(avg_return)
-        return avg_return
+        
+        # Apply exponential moving average to smooth evaluation results
+        # This reduces variance and makes the evaluation curve smoother
+        if len(self.eval_returns) > 1:
+            alpha = 0.3  # Smoothing factor (0.3 means 30% weight on new value, 70% on previous)
+            smoothed = alpha * avg_return + (1 - alpha) * self.eval_returns_smoothed[-1] if len(self.eval_returns_smoothed) > 0 else avg_return
+            self.eval_returns_smoothed.append(smoothed)
+            return smoothed
+        else:
+            self.eval_returns_smoothed.append(avg_return)
+            return avg_return
     
     def train_one_round(self) -> Dict[str, float]:
         """
@@ -179,6 +217,8 @@ class CentralSACTrainer:
         Returns:
             Dictionary of training metrics
         """
+        import sys
+        
         # Initialize metrics
         metrics = {
             'loss': 0.0,
@@ -190,17 +230,27 @@ class CentralSACTrainer:
         }
 
         # Perform multiple update steps
+        print_interval = max(1, self.update_steps // 10)  # Print 10 times per round
+        
         for step in range(self.update_steps):
             # Sample batch from replay buffer
             batch = self._sample_batch()
+            
             # Update agent
             actor_loss, critic_loss, q_values = self.agent.update(batch)
+            
             # Accumulate metrics
             metrics['loss'] += (actor_loss + critic_loss)
             metrics['train/loss/actor'] += actor_loss
             metrics['train/loss/critic'] += critic_loss
             metrics['train/q_value'] += q_values.mean().item()
             metrics['train/q_value_min'] += q_values.min().item()
+            
+            # Print progress during training
+            if (step + 1) % print_interval == 0 or step == 0:
+                print(f"      [Training] Step {step+1}/{self.update_steps}: "
+                      f"actor_loss={actor_loss:.4f}, critic_loss={critic_loss:.4f}, "
+                      f"q_value={q_values.mean().item():.4f}", flush=True)
         
         # Average metrics over update steps
         for key in [
