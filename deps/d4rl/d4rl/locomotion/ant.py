@@ -50,7 +50,26 @@ class AntEnv(mujoco_env.MujocoEnv, utils.EzPickle):
 
     self._non_zero_reset = non_zero_reset
 
-    mujoco_env.MujocoEnv.__init__(self, file_path, 5)
+    # Pre-load model to infer observation_space for newer gym versions
+    temp_model = mujoco_py.load_model_from_path(file_path)
+    # Infer observation space dimension: typically qpos + qvel + cfrc (if exposed)
+    # For now, use a conservative estimate. The actual obs space will be set correctly
+    # after the first step in MujocoEnv.__init__, but we need to provide a placeholder.
+    obs_dim = temp_model.nq + temp_model.nv  # Basic qpos + qvel
+    if expose_all_qpos:
+      obs_dim = temp_model.nq * 2 + temp_model.nv  # More conservative if exposing all qpos
+    from gym.spaces import Box
+    temp_obs_space = Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32)
+    # Calculate render_fps: dt = frame_skip * model.opt.timestep, fps = 1/dt
+    frame_skip = 5
+    dt = frame_skip * temp_model.opt.timestep
+    render_fps = int(np.round(1.0 / dt))
+    # Set metadata before calling parent __init__ (needed for newer gym versions)
+    self.metadata = {
+      "render_modes": ["human", "rgb_array", "depth_array"],
+      "render_fps": render_fps,
+    }
+    mujoco_env.MujocoEnv.__init__(self, file_path, frame_skip, observation_space=temp_obs_space)
     utils.EzPickle.__init__(self)
 
   @property
@@ -58,9 +77,21 @@ class AntEnv(mujoco_env.MujocoEnv, utils.EzPickle):
     # Check mujoco version is greater than version 1.50 to call correct physics
     # model containing PyMjData object for getting and setting position/velocity.
     # Check https://github.com/openai/mujoco-py/issues/80 for updates to api.
-    if mujoco_py.get_version() >= '1.50':
-      return self.sim
+    # For newer gym versions, use self.data directly, otherwise use self.sim
+    if hasattr(self, 'data') and self.data is not None:
+      # Create a simple object that has .data attribute for compatibility
+      class PhysicsWrapper:
+        def __init__(self, data, model):
+          self.data = data
+          self.model = model
+      return PhysicsWrapper(self.data, self.model)
+    elif hasattr(self, 'sim') and self.sim is not None:
+      if mujoco_py.get_version() >= '1.50':
+        return self.sim
+      else:
+        return self.model
     else:
+      # Fallback to model
       return self.model
 
   def _step(self, a):
@@ -72,8 +103,14 @@ class AntEnv(mujoco_env.MujocoEnv, utils.EzPickle):
     xposafter = self.get_body_com("torso")[0]
     forward_reward = (xposafter - xposbefore) / self.dt
     ctrl_cost = .5 * np.square(a).sum()
+    # Use self.data directly (newer gym versions)
+    if hasattr(self, 'data') and self.data is not None:
+        cfrc_ext = self.data.cfrc_ext
+    else:
+        # Fallback to self.sim.data for older versions
+        cfrc_ext = self.sim.data.cfrc_ext
     contact_cost = 0.5 * 1e-3 * np.sum(
-        np.square(np.clip(self.sim.data.cfrc_ext, -1, 1)))
+        np.square(np.clip(cfrc_ext, -1, 1)))
     survive_reward = 1.0
     reward = forward_reward - ctrl_cost - contact_cost + survive_reward
     state = self.state_vector()
@@ -81,11 +118,15 @@ class AntEnv(mujoco_env.MujocoEnv, utils.EzPickle):
         and state[2] >= 0.2 and state[2] <= 1.0
     done = not notdone
     ob = self._get_obs()
-    return ob, reward, done, dict(
+    # Return in gymnasium format (5 values) for compatibility with newer gym versions
+    terminated = done
+    truncated = False
+    info = dict(
         reward_forward=forward_reward,
         reward_ctrl=-ctrl_cost,
         reward_contact=-contact_cost,
         reward_survive=survive_reward)
+    return ob, reward, terminated, truncated, info
 
   def _get_obs(self):
     # No cfrc observation.
@@ -120,7 +161,7 @@ class AntEnv(mujoco_env.MujocoEnv, utils.EzPickle):
   def reset_model(self):
     qpos = self.init_qpos + self.np_random.uniform(
         size=self.model.nq, low=-.1, high=.1)
-    qvel = self.init_qvel + self.np_random.randn(self.model.nv) * .1
+    qvel = self.init_qvel + self.np_random.standard_normal(self.model.nv) * .1
 
     if self._non_zero_reset:
       """Now the reset is supposed to be to a non-zero location"""

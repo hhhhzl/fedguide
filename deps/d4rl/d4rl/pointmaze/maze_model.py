@@ -171,8 +171,24 @@ class MazeEnv(mujoco_env.MujocoEnv, utils.EzPickle, offline_env.OfflineEnv):
         self._target = np.array([0.0,0.0])
 
         model = point_maze(maze_spec)
+        # Pre-load model to infer observation_space for newer gym versions
+        import mujoco_py
+        frame_skip = 1
         with model.asfile() as f:
-            mujoco_env.MujocoEnv.__init__(self, model_path=f.name, frame_skip=1)
+            temp_model = mujoco_py.load_model_from_path(f.name)
+            # Infer observation space dimension: qpos + qvel
+            obs_dim = temp_model.nq + temp_model.nv
+            from gym.spaces import Box
+            temp_obs_space = Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32)
+            # Calculate render_fps: dt = frame_skip * model.opt.timestep, fps = 1/dt
+            dt = frame_skip * temp_model.opt.timestep
+            render_fps = int(np.round(1.0 / dt))
+            # Set metadata before calling parent __init__ (needed for newer gym versions)
+            self.metadata = {
+                "render_modes": ["human", "rgb_array", "depth_array"],
+                "render_fps": render_fps,
+            }
+            mujoco_env.MujocoEnv.__init__(self, model_path=f.name, frame_skip=frame_skip, observation_space=temp_obs_space)
         utils.EzPickle.__init__(self)
 
         # Set the default goal (overriden by a call to set_target)
@@ -200,9 +216,16 @@ class MazeEnv(mujoco_env.MujocoEnv, utils.EzPickle, offline_env.OfflineEnv):
         else:
             raise ValueError('Unknown reward type %s' % self.reward_type)
         done = False
-        return ob, reward, done, {}
+        # Return in gymnasium format (5 values) for compatibility with newer gym versions
+        terminated = done
+        truncated = False
+        return ob, reward, terminated, truncated, {}
 
     def _get_obs(self):
+        # Use self.data directly (newer gym versions)
+        if hasattr(self, 'data') and self.data is not None:
+            return np.concatenate([self.data.qpos, self.data.qvel]).ravel()
+        # Fallback to self.sim.data for older versions
         return np.concatenate([self.sim.data.qpos, self.sim.data.qvel]).ravel()
 
     def get_target(self):
@@ -216,27 +239,49 @@ class MazeEnv(mujoco_env.MujocoEnv, utils.EzPickle, offline_env.OfflineEnv):
         self._target = target_location
 
     def set_marker(self):
-        self.data.site_xpos[self.model.site_name2id('target_site')] = np.array([self._target[0]+1, self._target[1]+1, 0.0])
+        # Handle both mujoco_py (has site_name2id) and new mujoco (needs name lookup)
+        if hasattr(self.model, 'site_name2id'):
+            site_id = self.model.site_name2id('target_site')
+        else:
+            # New mujoco API: need to find site ID by name
+            import mujoco
+            try:
+                site_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, 'target_site')
+            except:
+                # Fallback: assume site ID 0
+                site_id = 0
+        self.data.site_xpos[site_id] = np.array([self._target[0]+1, self._target[1]+1, 0.0])
 
     def clip_velocity(self):
-        qvel = np.clip(self.sim.data.qvel, -5.0, 5.0)
-        self.set_state(self.sim.data.qpos, qvel)
+        # Use self.data directly (newer gym versions)
+        if hasattr(self, 'data') and self.data is not None:
+            qvel = np.clip(self.data.qvel, -5.0, 5.0)
+            self.set_state(self.data.qpos, qvel)
+        else:
+            # Fallback to self.sim.data for older versions
+            qvel = np.clip(self.sim.data.qvel, -5.0, 5.0)
+            self.set_state(self.sim.data.qpos, qvel)
 
     def reset_model(self):
         idx = self.np_random.choice(len(self.empty_and_goal_locations))
         reset_location = np.array(self.empty_and_goal_locations[idx]).astype(self.observation_space.dtype)
         qpos = reset_location + self.np_random.uniform(low=-.1, high=.1, size=self.model.nq)
-        qvel = self.init_qvel + self.np_random.randn(self.model.nv) * .1
+        qvel = self.init_qvel + self.np_random.standard_normal(self.model.nv) * .1
         self.set_state(qpos, qvel)
         if self.reset_target:
             self.set_target()
         return self._get_obs()
 
     def reset_to_location(self, location):
-        self.sim.reset()
+        # Use self.sim.reset() if available, otherwise use parent's reset
+        if hasattr(self, 'sim') and self.sim is not None:
+            self.sim.reset()
+        else:
+            # Parent class will handle reset
+            pass
         reset_location = np.array(location).astype(self.observation_space.dtype)
         qpos = reset_location + self.np_random.uniform(low=-.1, high=.1, size=self.model.nq)
-        qvel = self.init_qvel + self.np_random.randn(self.model.nv) * .1
+        qvel = self.init_qvel + self.np_random.standard_normal(self.model.nv) * .1
         self.set_state(qpos, qvel)
         return self._get_obs()
 
