@@ -77,9 +77,20 @@ class CentralSACTrainer:
         self.eval_returns = deque(maxlen=100)
         self.eval_returns_smoothed = deque(maxlen=100)  # For smoothed evaluation
         
+        # Get action bounds from environment (for evaluation)
+        if hasattr(env, 'action_space') and hasattr(env.action_space, 'low') and hasattr(env.action_space, 'high'):
+            self.action_low = env.action_space.low
+            self.action_high = env.action_space.high
+        else:
+            # Default bounds (for backward compatibility with Bandit2D)
+            self.action_low = None
+            self.action_high = None
+        
         print(f"[CentralSACTrainer] Initialized with {self.num_clients} clients")
         print(f"[CentralSACTrainer] Total transitions: {self.total_transitions}")
         print(f"[CentralSACTrainer] Client data sizes: {self.client_data_sizes}")
+        if self.action_low is not None and self.action_high is not None:
+            print(f"[CentralSACTrainer] Action bounds: [{self.action_low}, {self.action_high}]")
     
     def _build_replay_buffer(self, datasets: List[TransitionDataset]) -> Dict[str, np.ndarray]:
         """
@@ -172,8 +183,12 @@ class CentralSACTrainer:
                     if action_np.ndim > 1:
                         action_np = action_np[0]
                 
-                # Ensure action is in valid range for bandit environment
-                action_np = np.clip(action_np, -1.5, 1.5)
+                # Ensure action is in valid range for environment
+                if self.action_low is not None and self.action_high is not None:
+                    action_np = np.clip(action_np, self.action_low, self.action_high)
+                else:
+                    # Fallback for backward compatibility (Bandit2D range)
+                    action_np = np.clip(action_np, -1.5, 1.5)
                 
                 # Step environment
                 next_state, reward, terminated, truncated, _ = self.env.step(action_np)

@@ -34,6 +34,9 @@ class SACAgent:
             tau: float = 0.005,
             alpha: float = 0.2,
             device: Optional[str] = None,
+            action_low: Optional[np.ndarray] = None,
+            action_high: Optional[np.ndarray] = None,
+            action_std: float = 0.1,
     ):
         import sys
         import os
@@ -47,6 +50,17 @@ class SACAgent:
                 pass
         
         self.gamma, self.tau, self.alpha = gamma, tau, alpha
+        
+        # Store action bounds and std (with backward compatibility)
+        if action_low is not None:
+            self.action_low = torch.tensor(action_low, dtype=torch.float32)
+        else:
+            self.action_low = None
+        if action_high is not None:
+            self.action_high = torch.tensor(action_high, dtype=torch.float32)
+        else:
+            self.action_high = None
+        self.action_std = action_std
 
         def mlp(in_dim, out_dim):
             net = nn.Sequential(
@@ -94,6 +108,12 @@ class SACAgent:
         self.q1_target = self.q1_target.to(self.device)
         self.q2_target = self.q2_target.to(self.device)
         
+        # Move action bounds to device if they exist
+        if self.action_low is not None:
+            self.action_low = self.action_low.to(self.device)
+        if self.action_high is not None:
+            self.action_high = self.action_high.to(self.device)
+        
         # Mark that target networks need initialization (will be done during first update)
         self._target_initialized = False
 
@@ -139,10 +159,16 @@ class SACAgent:
         self.actor.train(actor_was_training)
         
         # Create action distribution and sample
-        dist = Normal(mu, torch.ones_like(mu) * 0.1)
+        dist = Normal(mu, torch.ones_like(mu) * self.action_std)
         action = mu if eval else dist.rsample()
         logp = dist.log_prob(action).sum(-1)
-        action = action.clamp(-1.5, 1.5).detach()
+        
+        # Apply action bounds if provided, otherwise use default (backward compatibility)
+        if self.action_low is not None and self.action_high is not None:
+            action = action.clamp(self.action_low, self.action_high).detach()
+        else:
+            # Default behavior for backward compatibility (Bandit2D range)
+            action = action.clamp(-1.5, 1.5).detach()
         
         # Return to original shape if input was 1D
         if was_1d:
@@ -231,10 +257,16 @@ class SACAgent:
         mu = self.actor(s)
         
         # Create distribution and sample (with gradients)
-        dist = Normal(mu, torch.ones_like(mu) * 0.1)
+        dist = Normal(mu, torch.ones_like(mu) * self.action_std)
         new_a = dist.rsample()
         logp = dist.log_prob(new_a).sum(-1)  # Shape: [batch_size]
-        new_a = new_a.clamp(-1.5, 1.5)
+        
+        # Apply action bounds if provided, otherwise use default (backward compatibility)
+        if self.action_low is not None and self.action_high is not None:
+            new_a = new_a.clamp(self.action_low, self.action_high)
+        else:
+            # Default behavior for backward compatibility (Bandit2D range)
+            new_a = new_a.clamp(-1.5, 1.5)
         
         # Ensure new_a has correct shape for concatenation
         if new_a.dim() == 1:
@@ -280,4 +312,9 @@ class SACAgent:
         self.q2 = self.q2.to(self.device)
         self.q1_target = self.q1_target.to(self.device)
         self.q2_target = self.q2_target.to(self.device)
+        # Move action bounds to device if they exist
+        if self.action_low is not None:
+            self.action_low = self.action_low.to(self.device)
+        if self.action_high is not None:
+            self.action_high = self.action_high.to(self.device)
         return self
