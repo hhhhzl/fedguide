@@ -38,7 +38,7 @@ def _make_env(env_id: str, seed: Optional[int] = None):
         if seed is not None:
             env.reset(seed=seed)
         return env
-
+    
     # Use gym.make for standard gym/gymnasium/d4rl environments
     # This works for: maze2d, antmaze, flow, and other registered environments
     env = gym.make(env_id)
