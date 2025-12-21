@@ -1,4 +1,5 @@
-# SAC Training Configuration for Reacher with Client Heterogeneity
+# FedKL Training Configuration for Reacher with Client Heterogeneity
+# Based on paper settings: 200 rounds
 
 # Environment configuration
 env_type: "reacher_hetero"  # Environment type: "bandit2d", "d4rl", "minari", or "reacher_hetero"
@@ -6,25 +7,32 @@ metadata_path: "data/reacher/metadata.json"  # Path to reacher metadata.json fil
 num_clients: 8  # Number of clients to use (selects first N clients from metadata.json, or random if random_select_clients=true)
 random_select_clients: false  # If true, randomly select num_clients from metadata.json; if false, select first num_clients
 
-# Training configuration (200 rounds for fair comparison with FedKL)
-rounds: 200  # Set to 200 for fair comparison with FedKL
-update_steps: 1500  # Increased from 1000 for better convergence
-batch_size: 256
+# Training configuration (matching paper: 200 rounds)
+rounds: 200  # Number of federated rounds (paper reports 200 rounds)
+n_steps: 2048  # Number of rollout steps per round (on-policy)
+update_epochs: 10  # Number of PPO update epochs per round
+minibatch_size: 64  # Minibatch size for PPO updates
 
-# Agent configuration
+# Agent configuration (PPO)
 hidden_dim: 256
 lr: 3e-4
 gamma: 0.99
-tau: 0.005
-alpha: 0.2  # Temperature parameter
-action_std: 0.1  # Action distribution standard deviation
+gae_lambda: 0.95
+clip_eps: 0.2
+entropy_coef: 0.01
+value_coef: 0.5
+max_grad_norm: 0.5
+
+# FedKL specific parameters
+lambda_global: 0.1  # Weight for KL(π_local || π_global) penalty
+lambda_local: 0.05  # Weight for KL(π || π_local_snapshot) penalty (local trust region)
 
 # Evaluation configuration
 eval_episodes: 10
 
 # Output configuration
-output_dir: "./model/policy/reacher/sac"
-metrics_dir: "./metrics/reacher/sac"
+output_dir: "./model/policy/reacher/fedkl"
+metrics_dir: "./metrics/reacher/fedkl"
 save_every: 10
 
 # Device configuration
@@ -38,7 +46,6 @@ seed: [0, 1, 2, 3, 4]  # Run 5 different seeds
 # Rendering configuration (for MuJoCo/Maze environments)
 render_eval: true  # Enable rendering during evaluation
 render_mode: "video"  # "human" (display), "rgb_array" (collect frames), "video" (save video)
-render_save_dir: "./plots/reacher/sac"  # Directory to save videos
+render_save_dir: "./plots/reacher/fedkl"  # Directory to save videos
 render_every_n_rounds: 10  # Render every N rounds (0 = only last round, -1 = all rounds)
 render_episodes: 5  # Number of episodes to render per round
-
