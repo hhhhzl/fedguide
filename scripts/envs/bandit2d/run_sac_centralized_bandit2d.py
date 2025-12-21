@@ -21,6 +21,7 @@ from fedguide.baselines.sac.agent import SACAgent
 from fedguide.baselines.sac.trainer import CentralSACTrainer
 from fedguide.envs.bandit2d import Bandit2D
 from fedguide.datasets.base import TransitionDataset, TrajectoryDataset
+from fedguide.utils.seeds import set_all_seeds
 from generate_bandit2d_data import generate_bandit2d_datasets
 
 
@@ -187,7 +188,15 @@ def main():
     parser.add_argument("--device", type=str, default="auto",
                        help="Device to use ('cpu', 'cuda', or 'auto')")
     
+    # Seed
+    parser.add_argument("--seed", type=int, default=42,
+                       help="Random seed for reproducibility")
+    
     args = parser.parse_args()
+    
+    # Set random seeds FIRST, before any random operations
+    print(f"Setting random seed: {args.seed}")
+    set_all_seeds(args.seed)
     
     # Set device
     if args.device == "auto":
@@ -199,6 +208,7 @@ def main():
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
+    os.makedirs(args.metrics_dir, exist_ok=True)
     
     # Load datasets
     print(f"\nLoading datasets from {args.data_dir}...")
@@ -209,7 +219,9 @@ def main():
     print(f"Loaded {len(trajectory_datasets)} client datasets")
     
     # Create environment for reward computation and evaluation
-    env = Bandit2D(K=args.K, sigma=args.sigma, seed=42)
+    env = Bandit2D(K=args.K, sigma=args.sigma, seed=args.seed)
+    # Ensure environment is also seeded
+    set_all_seeds(args.seed, env)
     
     # Convert TrajectoryDataset to TransitionDataset format
     print("\nConverting datasets to transition format...")

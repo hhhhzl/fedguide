@@ -29,12 +29,12 @@ cp -r flow "$SITE_PACKAGES/"
 echo ""
 echo "Verifying installation..."
 python3 -c "import flow; print(f'✓ Flow package imported successfully from: {flow.__file__}')" || {
-    echo "✗ Failed to import flow package"
+    echo "Failed to import flow package"
     exit 1
 }
 
 python3 -c "from flow.benchmarks import figureeight1, figureeight2; print('✓ Flow benchmarks imported successfully')" || {
-    echo "✗ Failed to import flow benchmarks"
+    echo "Failed to import flow benchmarks"
     exit 1
 }
 

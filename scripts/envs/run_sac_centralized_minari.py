@@ -1,14 +1,13 @@
 """
-Run Centralized SAC baseline for D4RL environments (reacher, maze2d, antmaze, flow).
+Run Centralized SAC baseline for Minari environments.
 
-This script trains a central SAC agent on D4RL datasets.
+This script trains a central SAC agent on Minari datasets.
 """
 
 import argparse
 import os
 import sys
 import pickle
-import json
 import numpy as np
 import torch
 import gymnasium as gym
@@ -20,66 +19,27 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from fedguide.baselines.sac.agent import SACAgent
 from fedguide.baselines.sac.trainer import CentralSACTrainer
 from fedguide.datasets.base import TransitionDataset
+from fedguide.datasets.minari_loader import load_minari_dataset
 from fedguide.utils.seeds import set_all_seeds
 
 
-def convert_d4rl_to_transitions(obs, acts, rewards, terminals, next_obs):
-    """Convert D4RL dataset format to trajectory format for TransitionDataset."""
-    trajs = []
-    current_traj = {
-        's': [],
-        'a': [],
-        'r': [],
-        's_next': [],
-        'd': [],
-    }
-    
-    for i in range(len(obs)):
-        current_traj['s'].append(obs[i])
-        current_traj['a'].append(acts[i])
-        current_traj['r'].append(rewards[i])
-        current_traj['s_next'].append(next_obs[i] if next_obs is not None else obs[i] if i+1 < len(obs) else obs[i])
-        current_traj['d'].append(float(terminals[i]))
-        
-        # If terminal, end current trajectory
-        if terminals[i] or (i + 1 == len(obs)):
-            traj = {
-                's': np.array(current_traj['s'], dtype=np.float32),
-                'a': np.array(current_traj['a'], dtype=np.float32),
-                'r': np.array(current_traj['r'], dtype=np.float32),
-                's_next': np.array(current_traj['s_next'], dtype=np.float32),
-                'd': np.array(current_traj['d'], dtype=np.float32),
-            }
-            trajs.append(traj)
-            current_traj = {'s': [], 'a': [], 'r': [], 's_next': [], 'd': []}
-    
+def convert_minari_to_transitions(trajs: List[dict]):
+    """Convert Minari trajectory format to TransitionDataset format."""
+    # Minari trajectories already have the right format: s, a, r, s_next, d
+    # Just need to ensure they're in the right format for TransitionDataset
     return trajs
 
 
-def load_d4rl_data(env_name: str, n_clients: int = 1):
-    """Load D4RL dataset and split into client datasets."""
+def load_minari_data(dataset_id: str, n_clients: int = 1, download: bool = True, env_name: str = None):
+    """Load Minari dataset and split into client datasets."""
     try:
-        import d4rl
+        import minari
     except ImportError:
-        raise ImportError("d4rl is required to load D4RL datasets. Please install it with: pip install d4rl")
+        raise ImportError("minari is required to load Minari datasets. Please install it with: pip install minari")
     
-    # Create environment to get dataset
-    env = gym.make(env_name)
-    dataset = env.get_dataset()
-    
-    obs = dataset['observations']
-    acts = dataset['actions']
-    rewards = dataset['rewards']
-    terminals = dataset['terminals']
-    
-    # Compute next_obs if not provided
-    if 'next_observations' in dataset:
-        next_obs = dataset['next_observations']
-    else:
-        next_obs = np.concatenate([obs[1:], obs[-1:]], axis=0)
-    
-    # Convert to trajectories
-    all_trajs = convert_d4rl_to_transitions(obs, acts, rewards, terminals, next_obs)
+    # Load Minari dataset
+    print(f"Loading Minari dataset: {dataset_id}")
+    all_trajs = load_minari_dataset(dataset_id, download=download, flatten_obs=True)
     
     # Split into clients (simple split for now)
     if n_clients == 1:
@@ -95,17 +55,55 @@ def load_d4rl_data(env_name: str, n_clients: int = 1):
     # Convert to TransitionDataset
     transition_datasets = [TransitionDataset(trajs) for trajs in client_trajs]
     
+    # Create environment from dataset or provided env_name
+    if env_name:
+        print(f"Using provided environment name: {env_name}")
+        env = gym.make(env_name)
+    else:
+        try:
+            ds = minari.load_dataset(dataset_id, download=False)
+            # Try to get environment from dataset
+            if hasattr(ds, 'env_spec') and hasattr(ds.env_spec, 'id'):
+                env_name = ds.env_spec.id
+                env = gym.make(env_name)
+            elif hasattr(ds, 'env'):
+                # Some minari datasets have env attribute
+                env = ds.env
+            else:
+                raise AttributeError("Dataset does not have env_spec.id or env attribute")
+        except Exception as e:
+            print(f"Warning: Could not create environment from dataset: {e}")
+            print("Trying to infer environment from dataset_id...")
+            # Try to infer environment from dataset_id
+            dataset_id_lower = dataset_id.lower()
+            if "pointmaze" in dataset_id_lower:
+                try:
+                    env = gym.make("PointMaze_UMaze-v3")
+                except:
+                    env = gym.make("pointmaze-umaze-v1")
+            elif "maze2d" in dataset_id_lower:
+                env = gym.make("maze2d-umaze-v1")
+            elif "antmaze" in dataset_id_lower:
+                env = gym.make("antmaze-umaze-v0")
+            else:
+                raise ValueError(f"Could not infer environment from dataset_id: {dataset_id}. "
+                               f"Please specify env_name in config or ensure dataset has env_spec.")
+    
     return transition_datasets, env
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Centralized SAC for D4RL environments")
+    parser = argparse.ArgumentParser(description="Centralized SAC for Minari environments")
     
     # Environment args
-    parser.add_argument("--env_name", type=str, required=True,
-                       help="D4RL environment name (e.g., 'reacher-medium-v2', 'maze2d-umaze-v1')")
+    parser.add_argument("--dataset_id", type=str, required=True,
+                       help="Minari dataset ID (e.g., 'D4RL/pointmaze/medium-v2', 'D4RL/maze2d/umaze-v1')")
+    parser.add_argument("--env_name", type=str, default=None,
+                       help="Optional: Environment name (if dataset doesn't provide it)")
     parser.add_argument("--num_clients", type=int, default=1,
                        help="Number of clients (for data splitting)")
+    parser.add_argument("--download", action="store_true", default=True,
+                       help="Download dataset if not found locally")
     
     # Training args
     parser.add_argument("--rounds", type=int, default=100,
@@ -157,11 +155,11 @@ def main():
     
     # Set output directory
     if args.output_dir is None:
-        env_short = args.env_name.replace('-', '_').replace('/', '_')
+        env_short = args.dataset_id.replace('/', '_').replace('-', '_')
         args.output_dir = f"./model/policy/{env_short}/sac"
 
     if args.metrics_dir is None:
-        env_short = args.env_name.replace('-', '_').replace('/', '_')
+        env_short = args.dataset_id.replace('/', '_').replace('-', '_')
         args.metrics_dir = f"./metrics/{env_short}/sac"
     
     # Set device
@@ -177,11 +175,13 @@ def main():
     os.makedirs(args.metrics_dir, exist_ok=True)
     
     # Load datasets
-    print(f"\nLoading D4RL dataset: {args.env_name}...")
+    print(f"\nLoading Minari dataset: {args.dataset_id}...")
     try:
-        transition_datasets, env = load_d4rl_data(
-            env_name=args.env_name,
-            n_clients=args.num_clients
+        transition_datasets, env = load_minari_data(
+            dataset_id=args.dataset_id,
+            n_clients=args.num_clients,
+            download=args.download,
+            env_name=args.env_name
         )
         # Ensure environment is also seeded
         set_all_seeds(args.seed, env)
@@ -296,5 +296,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
