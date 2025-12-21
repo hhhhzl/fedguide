@@ -22,7 +22,7 @@ from fedguide.baselines.sac.trainer import CentralSACTrainer
 from fedguide.envs.bandit2d import Bandit2D
 from fedguide.datasets.base import TransitionDataset, TrajectoryDataset
 from fedguide.utils.seeds import set_all_seeds
-from generate_bandit2d_data import generate_bandit2d_datasets
+from scripts.generate_data.generate_bandit2d_data import generate_bandit2d_datasets
 
 
 def convert_trajectory_to_transitions(
