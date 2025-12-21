@@ -24,6 +24,11 @@ alpha: 0.2  # Temperature parameter (entropy regularization)
 # Evaluation configuration
 eval_episodes: 50
 
+# Policy logprob collection configuration (for visualization)
+collect_logprob: true  # Collect policy log probability distribution on grid
+logprob_grid_size: 200  # Grid size for logprob evaluation (grid_size x grid_size)
+logprob_bounds: [-1.5, 1.5]  # Bounds for logprob grid evaluation [min, max]
+
 # Output configuration
 output_dir: "./model/policy/bandit2d/sac"
 metrics_dir: "./metrics/bandit2d/sac"

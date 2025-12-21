@@ -184,6 +184,17 @@ def main():
     parser.add_argument("--save_every", type=int, default=10,
                        help="Save results every N rounds")
     
+    # Logprob collection args
+    parser.add_argument("--collect_logprob", action="store_true", default=False,
+                       help="Collect policy logprob distribution on grid (for visualization)")
+    parser.add_argument("--no_collect_logprob", dest="collect_logprob", action="store_false",
+                       help="Disable logprob collection")
+    parser.set_defaults(collect_logprob=True)  # Default to True
+    parser.add_argument("--logprob_grid_size", type=int, default=200,
+                       help="Grid size for logprob evaluation (grid_size x grid_size)")
+    parser.add_argument("--logprob_bounds", type=float, nargs=2, default=[-1.5, 1.5],
+                       help="Bounds for logprob grid evaluation [min, max]")
+    
     # Device
     parser.add_argument("--device", type=str, default="auto",
                        help="Device to use ('cpu', 'cuda', or 'auto')")
@@ -307,8 +318,38 @@ def main():
         print(f"    Critic Loss: {metrics['train/loss/critic']:.4f}")
         print(f"    Q Value: {metrics['train/q_value']:.4f}")
         if 'eval/return' in metrics:
-            print(f"    Eval Return: {metrics['eval/return']:.4f}")
+            print(f"    Eval Return (deterministic): {metrics['eval/return']:.4f}")
+        if 'eval/return_stochastic_mean' in metrics:
+            print(f"    Eval Return (stochastic mean): {metrics['eval/return_stochastic_mean']:.4f}")
+            print(f"    Eval Return (stochastic max): {metrics['eval/return_stochastic_max']:.4f}")
         sys.stdout.flush()
+        
+        # Collect policy logprob distribution (for visualization)
+        if args.collect_logprob and (round_num % args.save_every == 0 or round_num == args.rounds or round_num == 1):
+            try:
+                print(f"  [Round {round_num}] Computing policy logprob distribution on grid...", flush=True)
+                policy_metrics = trainer.evaluate_policy_logprob_on_grid(
+                    grid_size=args.logprob_grid_size,
+                    bounds=tuple(args.logprob_bounds)
+                )
+                if policy_metrics is not None:
+                    # Store in metrics (convert to list for JSON serialization)
+                    # Prefer density for visualization (0-1 range)
+                    metrics['policy/density_grid'] = policy_metrics['policy_density'].tolist()
+                    metrics['policy/logprob_grid'] = policy_metrics['policy_logprob'].tolist()
+                    metrics['policy/grid_X'] = policy_metrics['X'].tolist()
+                    metrics['policy/grid_Y'] = policy_metrics['Y'].tolist()
+                    if 'action_dims' in policy_metrics:
+                        metrics['policy/action_dims'] = policy_metrics['action_dims']
+                    if 'action_dim' in policy_metrics:
+                        metrics['policy/action_dim'] = int(policy_metrics['action_dim'])
+                    print(f"  [Round {round_num}] Policy logprob distribution computed (action_dim={policy_metrics.get('action_dim', 'unknown')})", flush=True)
+                else:
+                    print(f"  [Round {round_num}] Policy logprob visualization skipped (unsuitable action space)", flush=True)
+            except Exception as e:
+                print(f"  Warning: Failed to compute policy logprob grid: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
         
         # Save checkpoint
         if round_num % args.save_every == 0 or round_num == args.rounds:

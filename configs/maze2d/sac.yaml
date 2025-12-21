@@ -34,3 +34,10 @@ device: "auto"  # "auto", "cpu", or "cuda"
 # If list, will run training for each seed
 seed: [0, 1, 2, 3, 4]  # Run 5 different seeds
 
+# Rendering configuration (for MuJoCo/Maze environments)
+render_eval: true  # Enable rendering during evaluation
+render_mode: "video"  # "human" (display), "rgb_array" (collect frames), "video" (save video)
+render_save_dir: "./plots/maze2d/sac"  # Directory to save videos
+render_every_n_rounds: 10  # Render every N rounds (0 = only last round, -1 = all rounds)
+render_episodes: 1  # Number of episodes to render per round
+

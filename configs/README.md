@@ -42,6 +42,9 @@ python scripts/run_sac_from_config.py configs/bandit2d/sac.yaml --seeds "10,20,3
 - `num_clients` - Number of clients
 - `K` - Number of peaks in bandit
 - `sigma` - Standard deviation for reward function
+- `collect_logprob` - Whether to collect policy log probability distribution on grid (default: true)
+- `logprob_grid_size` - Grid size for logprob evaluation (default: 200)
+- `logprob_bounds` - Bounds for logprob grid evaluation [min, max] (default: [-1.5, 1.5])
 
 ### D4RL Environment
 - `env_type: "d4rl"` - Environment type
@@ -113,4 +116,43 @@ If you run with `seed: [0, 1, 2]` and `output_dir: "./model/policy/bandit2d/sac"
 ```
 
 Each seed's results are completely isolated in its own subdirectory, making it easy to compare results across different seeds.
+
+## Visualization
+
+After training, you can visualize the results using the visualization script:
+
+### Using Config File (Recommended for Multiple Seeds)
+
+```bash
+# Visualize all seeds from config
+python scripts/envs/bandit2d/visualize_sac_training.py --config configs/bandit2d/sac.yaml
+
+# Visualize specific seeds
+python scripts/envs/bandit2d/visualize_sac_training.py --config configs/bandit2d/sac.yaml --seeds "0,1,2"
+
+# Save plots to directory
+python scripts/envs/bandit2d/visualize_sac_training.py \
+    --config configs/bandit2d/sac.yaml \
+    --output_dir ./plots/bandit2d/sac
+```
+
+### Using Direct History Path (Single Seed)
+
+```bash
+# Visualize a single seed
+python scripts/envs/bandit2d/visualize_sac_training.py \
+    --history_path ./metrics/bandit2d/sac/seed_0/training_history.pkl \
+    --output_dir ./plots/bandit2d/sac/seed_0
+```
+
+### Visualization Options
+
+- `--combined`: Also create a combined plot with dual y-axis (loss and return)
+- `--plot_logprob`: Plot policy log probability distribution (default: True)
+- `--logprob_rounds`: Specific round numbers to plot logprob (if None, auto-selects first, middle, last)
+
+The visualization script generates:
+- `training_curves.png`: Training curves (loss, return, Q value)
+- `training_combined.png`: Combined plot (if `--combined` is used)
+- `policy_logprob_distribution.png`: Policy log probability distribution heatmap (if `--plot_logprob` is used)
 

@@ -149,6 +149,19 @@ def main():
     parser.add_argument("--seed", type=int, default=42,
                        help="Random seed for reproducibility")
     
+    # Rendering args
+    parser.add_argument("--render_eval", action="store_true",
+                       help="Render evaluation episodes")
+    parser.add_argument("--render_mode", type=str, default="video",
+                       choices=["human", "rgb_array", "video"],
+                       help="Rendering mode: 'human' (display), 'rgb_array' (collect frames), 'video' (save video)")
+    parser.add_argument("--render_save_dir", type=str, default=None,
+                       help="Directory to save rendered videos (if render_mode='video')")
+    parser.add_argument("--render_every_n_rounds", type=int, default=10,
+                       help="Render every N rounds (0 = only last round, -1 = all rounds)")
+    parser.add_argument("--render_episodes", type=int, default=1,
+                       help="Number of episodes to render per round")
+    
     args = parser.parse_args()
     
     # Set random seeds FIRST, before any random operations
@@ -163,6 +176,11 @@ def main():
     if args.metrics_dir is None:
         env_short = args.env_name.replace('-', '_').replace('/', '_')
         args.metrics_dir = f"./metrics/{env_short}/sac"
+    
+    # Set render save directory
+    if args.render_eval and args.render_save_dir is None:
+        env_short = args.env_name.replace('-', '_').replace('/', '_')
+        args.render_save_dir = f"./videos/{env_short}/sac"
     
     # Set device
     if args.device == "auto":
@@ -244,6 +262,11 @@ def main():
         gamma=args.gamma,
         eval_episodes=args.eval_episodes,
         device=device,
+        render_eval=args.render_eval,
+        render_mode=args.render_mode,
+        render_save_dir=args.render_save_dir,
+        render_every_n_rounds=args.render_every_n_rounds,
+        render_episodes=args.render_episodes,
     )
     
     # Training loop
@@ -259,7 +282,16 @@ def main():
         print(f"Round {round_num}/{args.rounds}")
         print(f"{'='*60}")
         
-        metrics = trainer.train_one_round()
+        # Handle render_every_n_rounds == 0 (only render last round)
+        if args.render_eval and args.render_every_n_rounds == 0 and round_num == args.rounds:
+            # Temporarily set render_every_n_rounds to -1 for last round
+            trainer.render_every_n_rounds = -1
+        
+        metrics = trainer.train_one_round(round_num=round_num)
+        
+        # Restore original value
+        if args.render_eval and args.render_every_n_rounds == 0:
+            trainer.render_every_n_rounds = 0
         metrics['round'] = round_num
         history.append(metrics)
         
@@ -268,7 +300,10 @@ def main():
         print(f"    Critic Loss: {metrics['train/loss/critic']:.4f}")
         print(f"    Q Value: {metrics['train/q_value']:.4f}")
         if 'eval/return' in metrics:
-            print(f"    Eval Return: {metrics['eval/return']:.4f}")
+            print(f"    Eval Return (deterministic): {metrics['eval/return']:.4f}")
+        if 'eval/return_stochastic_mean' in metrics:
+            print(f"    Eval Return (stochastic mean): {metrics['eval/return_stochastic_mean']:.4f}")
+            print(f"    Eval Return (stochastic max): {metrics['eval/return_stochastic_max']:.4f}")
         
         # Save checkpoint
         if round_num % args.save_every == 0 or round_num == args.rounds:

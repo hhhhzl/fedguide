@@ -67,6 +67,15 @@ def run_bandit2d_training(config: Dict[str, Any], seed: int) -> None:
         "--seed", str(seed),
     ]
     
+    # Add logprob collection arguments if specified
+    if config.get("collect_logprob", True):
+        cmd.append("--collect_logprob")
+    if "logprob_grid_size" in config:
+        cmd.extend(["--logprob_grid_size", str(config.get("logprob_grid_size", 200))])
+    if "logprob_bounds" in config:
+        bounds = config.get("logprob_bounds", [-1.5, 1.5])
+        cmd.extend(["--logprob_bounds", str(bounds[0]), str(bounds[1])])
+    
     print(f"\n{'='*80}")
     print(f"Running Bandit2D SAC training with seed={seed}")
     print(f"{'='*80}")
@@ -75,10 +84,10 @@ def run_bandit2d_training(config: Dict[str, Any], seed: int) -> None:
     
     result = subprocess.run(cmd, check=False)
     if result.returncode != 0:
-        print(f"\n❌ Training failed for seed={seed} with exit code {result.returncode}")
+        print(f"\nTraining failed for seed={seed} with exit code {result.returncode}")
         return False
     else:
-        print(f"\n✅ Training completed successfully for seed={seed}")
+        print(f"\nTraining completed successfully for seed={seed}")
         return True
 
 
@@ -116,6 +125,21 @@ def run_d4rl_training(config: Dict[str, Any], seed: int) -> None:
         "--seed", str(seed),
     ]
     
+    # Add rendering arguments if specified
+    if config.get("render_eval", False):
+        cmd.append("--render_eval")
+    if "render_mode" in config:
+        cmd.extend(["--render_mode", config.get("render_mode", "video")])
+    if "render_save_dir" in config:
+        # Add seed subfolder to render save directory
+        base_render_dir = config.get("render_save_dir")
+        render_save_dir = os.path.join(base_render_dir, f"seed_{seed}")
+        cmd.extend(["--render_save_dir", render_save_dir])
+    if "render_every_n_rounds" in config:
+        cmd.extend(["--render_every_n_rounds", str(config.get("render_every_n_rounds", 10))])
+    if "render_episodes" in config:
+        cmd.extend(["--render_episodes", str(config.get("render_episodes", 1))])
+    
     print(f"\n{'='*80}")
     print(f"Running D4RL SAC training: {config.get('env_name')} with seed={seed}")
     print(f"{'='*80}")
@@ -124,10 +148,10 @@ def run_d4rl_training(config: Dict[str, Any], seed: int) -> None:
     
     result = subprocess.run(cmd, check=False)
     if result.returncode != 0:
-        print(f"\n❌ Training failed for seed={seed} with exit code {result.returncode}")
+        print(f"\nTraining failed for seed={seed} with exit code {result.returncode}")
         return False
     else:
-        print(f"\n✅ Training completed successfully for seed={seed}")
+        print(f"\nTraining completed successfully for seed={seed}")
         return True
 
 
@@ -173,6 +197,21 @@ def run_minari_training(config: Dict[str, Any], seed: int) -> None:
     if config.get("download", True):
         cmd.append("--download")
     
+    # Add rendering arguments if specified
+    if config.get("render_eval", False):
+        cmd.append("--render_eval")
+    if "render_mode" in config:
+        cmd.extend(["--render_mode", config.get("render_mode", "video")])
+    if "render_save_dir" in config:
+        # Add seed subfolder to render save directory
+        base_render_dir = config.get("render_save_dir")
+        render_save_dir = os.path.join(base_render_dir, f"seed_{seed}")
+        cmd.extend(["--render_save_dir", render_save_dir])
+    if "render_every_n_rounds" in config:
+        cmd.extend(["--render_every_n_rounds", str(config.get("render_every_n_rounds", 10))])
+    if "render_episodes" in config:
+        cmd.extend(["--render_episodes", str(config.get("render_episodes", 1))])
+    
     print(f"\n{'='*80}")
     print(f"Running Minari SAC training: {config.get('dataset_id')} with seed={seed}")
     print(f"{'='*80}")
@@ -181,10 +220,91 @@ def run_minari_training(config: Dict[str, Any], seed: int) -> None:
     
     result = subprocess.run(cmd, check=False)
     if result.returncode != 0:
-        print(f"\n❌ Training failed for seed={seed} with exit code {result.returncode}")
+        print(f"\nTraining failed for seed={seed} with exit code {result.returncode}")
         return False
     else:
-        print(f"\n✅ Training completed successfully for seed={seed}")
+        print(f"\nTraining completed successfully for seed={seed}")
+        return True
+
+
+def run_reacher_hetero_training(config: Dict[str, Any], seed: int) -> None:
+    """Run Reacher heterogeneous SAC training with given seed."""
+    script_path = os.path.join(
+        os.path.dirname(__file__),
+        "envs", "run_sac_centralized_reacher_hetero.py"
+    )
+    
+    # Add seed subfolder to output directories
+    base_output_dir = config.get("output_dir", "./model/policy/reacher/sac")
+    base_metrics_dir = config.get("metrics_dir", "./metrics/reacher/sac")
+    output_dir = os.path.join(base_output_dir, f"seed_{seed}")
+    metrics_dir = os.path.join(base_metrics_dir, f"seed_{seed}")
+    
+    cmd = [
+        sys.executable, script_path,
+        "--metadata_path", config.get("metadata_path", ""),
+        "--rounds", str(config.get("rounds", 100)),
+        "--update_steps", str(config.get("update_steps", 1000)),
+        "--batch_size", str(config.get("batch_size", 256)),
+        "--hidden_dim", str(config.get("hidden_dim", 256)),
+        "--lr", str(config.get("lr", 3e-4)),
+        "--gamma", str(config.get("gamma", 0.99)),
+        "--tau", str(config.get("tau", 0.005)),
+        "--alpha", str(config.get("alpha", 0.2)),
+        "--action_std", str(config.get("action_std", 0.1)),
+        "--eval_episodes", str(config.get("eval_episodes", 10)),
+        "--output_dir", output_dir,
+        "--metrics_dir", metrics_dir,
+        "--save_every", str(config.get("save_every", 10)),
+        "--device", config.get("device", "auto"),
+        "--seed", str(seed),
+    ]
+    
+    # Add num_clients if specified
+    if "num_clients" in config and config.get("num_clients") is not None:
+        cmd.extend(["--num_clients", str(config.get("num_clients"))])
+    
+    # Add random_select_clients if specified
+    if config.get("random_select_clients", False):
+        cmd.append("--random_select_clients")
+    
+    # Add logprob collection arguments if specified
+    if config.get("collect_logprob", False):
+        cmd.append("--collect_logprob")
+        if "logprob_grid_size" in config:
+            cmd.extend(["--logprob_grid_size", str(config.get("logprob_grid_size", 200))])
+        if "logprob_bounds" in config:
+            bounds = config.get("logprob_bounds", [-1.5, 1.5])
+            cmd.extend(["--logprob_bounds", str(bounds[0]), str(bounds[1])])
+    
+    # Add rendering arguments if specified
+    if config.get("render_eval", False):
+        cmd.append("--render_eval")
+    if "render_mode" in config:
+        cmd.extend(["--render_mode", config.get("render_mode", "video")])
+    if "render_save_dir" in config:
+        # Add seed subfolder to render save directory
+        base_render_dir = config.get("render_save_dir")
+        render_save_dir = os.path.join(base_render_dir, f"seed_{seed}")
+        cmd.extend(["--render_save_dir", render_save_dir])
+    if "render_every_n_rounds" in config:
+        cmd.extend(["--render_every_n_rounds", str(config.get("render_every_n_rounds", 10))])
+    if "render_episodes" in config:
+        cmd.extend(["--render_episodes", str(config.get("render_episodes", 1))])
+    
+    print(f"\n{'='*80}")
+    print(f"Running Reacher Heterogeneous SAC training with seed={seed}")
+    print(f"  Metadata: {config.get('metadata_path', 'unknown')}")
+    print(f"{'='*80}")
+    print(f"Command: {' '.join(cmd)}")
+    print(f"{'='*80}\n")
+    
+    result = subprocess.run(cmd, check=False)
+    if result.returncode != 0:
+        print(f"\nTraining failed for seed={seed} with exit code {result.returncode}")
+        return False
+    else:
+        print(f"\nTraining completed successfully for seed={seed}")
         return True
 
 
@@ -233,6 +353,8 @@ def main():
         print(f"  Environment name: {config.get('env_name', 'unknown')}")
     elif config.get("env_type") == "minari":
         print(f"  Dataset ID: {config.get('dataset_id', 'unknown')}")
+    elif config.get("env_type") == "reacher_hetero":
+        print(f"  Metadata path: {config.get('metadata_path', 'unknown')}")
     print(f"  Seeds to run: {seed_list}")
     print(f"  Total runs: {len(seed_list)}")
     
@@ -252,8 +374,10 @@ def main():
             success = run_d4rl_training(config, seed)
         elif env_type == "minari":
             success = run_minari_training(config, seed)
+        elif env_type == "reacher_hetero":
+            success = run_reacher_hetero_training(config, seed)
         else:
-            raise ValueError(f"Unknown environment type: {env_type}. Supported types: 'bandit2d', 'd4rl', 'minari'")
+            raise ValueError(f"Unknown environment type: {env_type}. Supported types: 'bandit2d', 'd4rl', 'minari', 'reacher_hetero'")
         
         results.append((seed, success))
     
@@ -265,7 +389,7 @@ def main():
     failed = len(results) - successful
     
     for seed, success in results:
-        status = "✅ SUCCESS" if success else "❌ FAILED"
+        status = "SUCCESS" if success else "FAILED"
         print(f"  Seed {seed:3d}: {status}")
     
     print(f"\nTotal: {len(results)} runs, {successful} successful, {failed} failed")
