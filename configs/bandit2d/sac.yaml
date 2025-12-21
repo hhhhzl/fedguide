@@ -1,0 +1,44 @@
+# SAC Training Configuration for Bandit2D Environment
+
+# Environment configuration
+env_type: "bandit2d"  # Environment type: "bandit2d" or "d4rl"
+data_dir: "data/bandit2d"
+num_clients: 4
+
+# Environment-specific parameters (for bandit2d)
+K: 4  # Number of peaks in bandit
+sigma: 0.2  # Standard deviation for reward function
+
+# Training configuration
+rounds: 60
+update_steps: 1000
+batch_size: 128
+
+# Agent configuration
+hidden_dim: 256
+lr: 3e-4
+gamma: 0.99
+tau: 0.005
+alpha: 0.2  # Temperature parameter (entropy regularization)
+
+# Evaluation configuration
+eval_episodes: 50
+
+# Policy logprob collection configuration (for visualization)
+collect_logprob: true  # Collect policy log probability distribution on grid
+logprob_grid_size: 200  # Grid size for logprob evaluation (grid_size x grid_size)
+logprob_bounds: [-1.5, 1.5]  # Bounds for logprob grid evaluation [min, max]
+
+# Output configuration
+output_dir: "./model/policy/bandit2d/sac"
+metrics_dir: "./metrics/bandit2d/sac"
+save_every: 10
+
+# Device configuration
+device: "auto"  # "auto", "cpu", or "cuda"
+
+# Random seed configuration
+# Can be a single integer or a list of integers
+# If list, will run training for each seed
+seed: [0, 1, 2, 3, 4]  # Run 5 different seeds
+

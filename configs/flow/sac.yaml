@@ -1,0 +1,36 @@
+# SAC Training Configuration for Flow D4RL Environment
+
+# Environment configuration
+env_type: "d4rl"  # Environment type: "bandit2d" or "d4rl"
+env_name: "flow-ring-random-v0"  # D4RL environment name
+num_clients: 1  # Number of clients (for data splitting)
+
+# Training configuration
+rounds: 100
+update_steps: 1000
+batch_size: 256
+
+# Agent configuration
+hidden_dim: 256
+lr: 3e-4
+gamma: 0.99
+tau: 0.005
+alpha: 0.2  # Temperature parameter
+action_std: 0.1  # Action distribution standard deviation
+
+# Evaluation configuration
+eval_episodes: 10
+
+# Output configuration
+output_dir: "./model/policy/flow/sac"
+metrics_dir: "./metrics/flow/sac"
+save_every: 10
+
+# Device configuration
+device: "auto"  # "auto", "cpu", or "cuda"
+
+# Random seed configuration
+# Can be a single integer or a list of integers
+# If list, will run training for each seed
+seed: [0, 1, 2, 3, 4]  # Run 5 different seeds
+

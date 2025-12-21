@@ -12,6 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
 from typing import Dict, Tuple, Optional
+import numpy as np
 
 
 class SACAgent:

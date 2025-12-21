@@ -61,7 +61,18 @@ python3 scripts/envs/bandit2d/run_fedkl_bandit2d.py \
     --cpus_per_client 2
 ```
 
-### 5. Visualize Prior Models
+### 5. Run SAC Baseline
+```bash
+python scripts/run_sac_from_config.py configs/bandit2d/sac.yaml
+```
+Visualize:
+```bash
+python scripts/envs/bandit2d/visualize_sac_training.py \
+    --config configs/bandit2d/sac.yaml \
+    --output_dir ./plots/bandit2d/sac
+```
+
+### 6. Visualize Prior Models
 
 After pretraining, you can visualize the prior models:
 
@@ -83,7 +94,7 @@ python3 scripts/envs/bandit2d/visualize_prior_aggregated.py \
     --output_path ./prior_comparison.png
 ```
 
-### 6. Visualize Training Results
+### 7. Visualize Training Results
 ```bash
 python3 scripts/envs/bandit2d/visualize_bandit2d.py \
     --metrics_path ./metrics/bandit2d_fedguide/bandit2d_metrics.pkl \
