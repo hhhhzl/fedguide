@@ -1,7 +1,7 @@
 """
-Run Centralized SAC baseline for 2D Bandit environment.
+Run Centralized PPO baseline for 2D Bandit environment.
 
-This script trains a central SAC agent on mixed data from multiple clients.
+This module trains a central PPO agent on mixed data from multiple clients.
 No federated aggregation is performed - pure centralized training.
 """
 
@@ -10,19 +10,46 @@ import os
 import sys
 import pickle
 import json
+import yaml
 import numpy as np
 import torch
-from typing import List
+from typing import List, Dict, Any, Union
 
-# Add current directory to path for local imports
-sys.path.insert(0, os.path.dirname(__file__))
+# Add project root to path for imports
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, _project_root)
 
-from fedguide.baselines.sac.agent import SACAgent
-from fedguide.baselines.sac.trainer import CentralSACTrainer
+from fedguide.baselines.ppo.agent import PPOAgent
+from fedguide.baselines.ppo.trainer import CentralPPOTrainer
 from fedguide.envs.bandit2d import Bandit2D
 from fedguide.datasets.base import TransitionDataset, TrajectoryDataset
 from fedguide.utils.seeds import set_all_seeds
 from scripts.generate_data.generate_bandit2d_data import generate_bandit2d_datasets
+
+
+def load_config(config_path: str) -> Dict[str, Any]:
+    """Load YAML configuration file."""
+    if not os.path.exists(config_path):
+        # Try relative to configs directory
+        alt_path = os.path.join(_project_root, "configs", config_path)
+        if os.path.exists(alt_path):
+            config_path = alt_path
+        else:
+            raise FileNotFoundError(f"Configuration file not found: {config_path}")
+    
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    return config
+
+
+def normalize_seed(seed: Union[int, List[int]]) -> List[int]:
+    """Convert seed to list format."""
+    if isinstance(seed, int):
+        return [seed]
+    elif isinstance(seed, list):
+        return seed
+    else:
+        raise ValueError(f"seed must be int or list of ints, got {type(seed)}")
 
 
 def convert_trajectory_to_transitions(
@@ -138,7 +165,12 @@ def load_bandit2d_datasets(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Centralized SAC for Bandit2D")
+    """Main entry point for Bandit2D PPO training."""
+    parser = argparse.ArgumentParser(description="Centralized PPO for Bandit2D")
+    
+    # Config file argument
+    parser.add_argument("--config", type=str, default=None,
+                       help="Path to YAML configuration file")
     
     # Data args
     parser.add_argument("--num_clients", type=int, default=4,
@@ -149,10 +181,12 @@ def main():
     # Training args
     parser.add_argument("--rounds", type=int, default=100,
                        help="Number of training rounds")
-    parser.add_argument("--update_steps", type=int, default=1000,
-                       help="Number of update steps per round")
-    parser.add_argument("--batch_size", type=int, default=256,
-                       help="Batch size for training")
+    parser.add_argument("--steps_per_round", type=int, default=2000,
+                       help="Number of environment steps to collect per round (on-policy)")
+    parser.add_argument("--update_epochs", type=int, default=4,
+                       help="Number of epochs per update")
+    parser.add_argument("--minibatch_size", type=int, default=None,
+                       help="Minibatch size for PPO updates (if None, use full batch)")
     
     # Agent args
     parser.add_argument("--hidden_dim", type=int, default=256,
@@ -161,10 +195,22 @@ def main():
                        help="Learning rate")
     parser.add_argument("--gamma", type=float, default=0.99,
                        help="Discount factor")
-    parser.add_argument("--tau", type=float, default=0.005,
-                       help="Soft update coefficient")
-    parser.add_argument("--alpha", type=float, default=0.2,
-                       help="Temperature parameter (entropy regularization)")
+    parser.add_argument("--clip_eps", type=float, default=0.2,
+                       help="PPO clipping epsilon")
+    parser.add_argument("--gae_lambda", type=float, default=0.95,
+                       help="GAE lambda parameter")
+    parser.add_argument("--entropy_coef", type=float, default=0.01,
+                       help="Entropy coefficient")
+    parser.add_argument("--value_coef", type=float, default=0.5,
+                       help="Value loss coefficient")
+    parser.add_argument("--max_grad_norm", type=float, default=0.5,
+                       help="Maximum gradient norm for clipping")
+    parser.add_argument("--action_std", type=float, default=0.1,
+                       help="Initial standard deviation for action distribution (if learnable_std=False)")
+    parser.add_argument("--learnable_std", action="store_true", default=True,
+                       help="Use learnable action std (recommended)")
+    parser.add_argument("--no_learnable_std", dest="learnable_std", action="store_false",
+                       help="Use fixed action std")
     
     # Environment args
     parser.add_argument("--K", type=int, default=4,
@@ -177,9 +223,9 @@ def main():
                        help="Number of episodes for evaluation (increased for more stable evaluation)")
     
     # Output args
-    parser.add_argument("--output_dir", type=str, default=f"./model/policy/bandit2d/sac",
+    parser.add_argument("--output_dir", type=str, default=f"./model/policy/bandit2d/ppo",
                        help="Directory to save results")
-    parser.add_argument("--metrics_dir", type=str, default=f"./metrics/bandit2d/sac",
+    parser.add_argument("--metrics_dir", type=str, default=f"./metrics/bandit2d/ppo",
                        help="Directory to save results")
     parser.add_argument("--save_every", type=int, default=10,
                        help="Save results every N rounds")
@@ -203,6 +249,68 @@ def main():
     parser.add_argument("--seed", type=int, default=42,
                        help="Random seed for reproducibility")
     
+    # Parse arguments to get config path first
+    temp_args, _ = parser.parse_known_args()
+    
+    # Load config file if provided, and update parser defaults
+    if temp_args.config:
+        print(f"Loading configuration from: {temp_args.config}")
+        config = load_config(temp_args.config)
+        print(f"Configuration loaded successfully")
+        
+        # Update parser defaults with config values
+        config_mapping = {
+            'num_clients': 'num_clients',
+            'data_dir': 'data_dir',
+            'rounds': 'rounds',
+            'steps_per_round': 'steps_per_round',
+            'update_epochs': 'update_epochs',
+            'minibatch_size': 'minibatch_size',
+            'hidden_dim': 'hidden_dim',
+            'lr': 'lr',
+            'gamma': 'gamma',
+            'clip_eps': 'clip_eps',
+            'gae_lambda': 'gae_lambda',
+            'entropy_coef': 'entropy_coef',
+            'value_coef': 'value_coef',
+            'max_grad_norm': 'max_grad_norm',
+            'action_std': 'action_std',
+            'learnable_std': 'learnable_std',
+            'K': 'K',
+            'sigma': 'sigma',
+            'eval_episodes': 'eval_episodes',
+            'output_dir': 'output_dir',
+            'metrics_dir': 'metrics_dir',
+            'save_every': 'save_every',
+            'collect_logprob': 'collect_logprob',
+            'logprob_grid_size': 'logprob_grid_size',
+            'logprob_bounds': 'logprob_bounds',
+            'device': 'device',
+            'seed': 'seed',
+        }
+        
+        # Set defaults from config
+        for config_key, arg_key in config_mapping.items():
+            if config_key in config:
+                config_value = config[config_key]
+                # Special handling for seed (if it's a list, use first element)
+                if config_key == 'seed' and isinstance(config_value, list):
+                    if len(config_value) > 0:
+                        config_value = config_value[0]
+                    else:
+                        config_value = 42
+                # Special handling for collect_logprob (boolean flag)
+                if config_key == 'collect_logprob':
+                    # For boolean flags, we need to update the default
+                    parser.set_defaults(**{arg_key: config_value})
+                    continue
+                # Find the action in parser and update its default
+                for action in parser._actions:
+                    if action.dest == arg_key and not isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
+                        action.default = config_value
+                        break
+    
+    # Now parse all arguments (command line will override config defaults)
     args = parser.parse_args()
     
     # Set random seeds FIRST, before any random operations
@@ -243,29 +351,29 @@ def main():
         transition_datasets.append(transition_dataset)
         print(f"Client {client_id}: {len(transition_dataset)} transitions")
     
-    # Create SAC agent
-    print(f"\nCreating SAC agent...")
+    # Create PPO agent
+    print(f"\nCreating PPO agent...")
     print(f"  State dim: 2, Action dim: 2")
     print(f"  Hidden dim: {args.hidden_dim}, LR: {args.lr}")
+    print(f"  Clip eps: {args.clip_eps}, GAE lambda: {args.gae_lambda}")
     print(f"  Device: {device}")
     import sys
     sys.stdout.flush()
     
-    print("Step 1: Creating networks...")
-    sys.stdout.flush()
-    
-    print("Step 2: Creating agent instance...")
-    sys.stdout.flush()
-    
     try:
-        agent = SACAgent(
+        agent = PPOAgent(
             state_dim=2,
             action_dim=2,
             hidden_dim=args.hidden_dim,
             lr=args.lr,
             gamma=args.gamma,
-            tau=args.tau,
-            alpha=args.alpha,
+            clip_eps=args.clip_eps,
+            gae_lambda=args.gae_lambda,
+            entropy_coef=args.entropy_coef,
+            value_coef=args.value_coef,
+            max_grad_norm=args.max_grad_norm,
+            action_std=args.action_std,
+            learnable_std=args.learnable_std,
             device=device,
         )
         print("Agent created successfully")
@@ -275,24 +383,28 @@ def main():
         import traceback
         traceback.print_exc()
         raise
+    
     # Create trainer
     print(f"\nCreating centralized trainer...")
-    trainer = CentralSACTrainer(
+    trainer = CentralPPOTrainer(
         agent=agent,
-        datasets=transition_datasets,
+        datasets=transition_datasets,  # Kept for compatibility, but not used in on-policy
         env=env,
-        batch_size=args.batch_size,
-        update_steps=args.update_steps,
+        steps_per_round=args.steps_per_round,
+        update_epochs=args.update_epochs,
+        minibatch_size=args.minibatch_size,
         gamma=args.gamma,
+        gae_lambda=args.gae_lambda,
         eval_episodes=args.eval_episodes,
         device=device,
     )
     
     # Training loop
     print(f"\nStarting training for {args.rounds} rounds...")
-    print(f"  Update steps per round: {args.update_steps}")
-    print(f"  Batch size: {args.batch_size}")
-    print(f"  Total transitions: {trainer.total_transitions}")
+    print(f"  Steps per round: {args.steps_per_round}")
+    print(f"  Update epochs: {args.update_epochs}")
+    print(f"  Minibatch size: {args.minibatch_size if args.minibatch_size is not None else 'full batch'}")
+    print(f"  Learnable std: {args.learnable_std}")
     
     history = []
     
@@ -305,7 +417,7 @@ def main():
         
         # Train one round
         print(f"  [Round {round_num}] Starting training...", flush=True)
-        metrics = trainer.train_one_round()
+        metrics = trainer.train_one_round(round_num=round_num)
         metrics['round'] = round_num
         
         # Store history
@@ -314,9 +426,11 @@ def main():
         # Print progress (always print, not just every 10 rounds)
         print(f"\n  [Round {round_num}] Training completed:")
         print(f"    Loss: {metrics['loss']:.4f}")
-        print(f"    Actor Loss: {metrics['train/loss/actor']:.4f}")
-        print(f"    Critic Loss: {metrics['train/loss/critic']:.4f}")
-        print(f"    Q Value: {metrics['train/q_value']:.4f}")
+        print(f"    Policy Loss: {metrics['train/loss/actor']:.4f}")
+        print(f"    Value Loss: {metrics['train/loss/critic']:.4f}")
+        print(f"    Entropy: {metrics['train/entropy']:.4f}")
+        print(f"    Returns mean: {metrics['train/returns_mean']:.4f}")
+        print(f"    V mean: {metrics['train/V_mean']:.4f}")
         if 'eval/return' in metrics:
             print(f"    Eval Return (deterministic): {metrics['eval/return']:.4f}")
         if 'eval/return_stochastic_mean' in metrics:
@@ -380,9 +494,11 @@ def main():
         final_metrics = history[-1]
         print(f"\nFinal Metrics:")
         print(f"  Loss: {final_metrics['loss']:.4f}")
-        print(f"  Actor Loss: {final_metrics['train/loss/actor']:.4f}")
-        print(f"  Critic Loss: {final_metrics['train/loss/critic']:.4f}")
-        print(f"  Q Value: {final_metrics['train/q_value']:.4f}")
+        print(f"  Policy Loss: {final_metrics['train/loss/actor']:.4f}")
+        print(f"  Value Loss: {final_metrics['train/loss/critic']:.4f}")
+        print(f"  Entropy: {final_metrics['train/entropy']:.4f}")
+        print(f"  Returns mean: {final_metrics['train/returns_mean']:.4f}")
+        print(f"  V mean: {final_metrics['train/V_mean']:.4f}")
         if 'eval/return' in final_metrics:
             print(f"  Eval Return: {final_metrics['eval/return']:.4f}")
     

@@ -1,25 +1,17 @@
 """
-FedKL Trainer Implementation
+FedRep Trainer Implementation
 
-This module implements the PPO trainer with dual KL divergence penalties
-for federated reinforcement learning.
+Uses standard PPO training without KL penalties.
 """
 
 import torch
 import numpy as np
-from typing import Any, Tuple
-from collections import deque
-from typing import Dict, Optional, Any, Iterable
+from typing import Any, Tuple, Dict, Optional
 import time
 
-class FedKLTrainer:
-    """
-    FedKL Trainer implementing PPO with KL divergence penalty.
-    
-    The trainer adds two types of KL penalties:
-    1. Global penalty: KL divergence from global policy (lambda_global)
-    2. Local penalty: KL divergence from policy at start of round (lambda_local)
-    """
+
+class FedRepTrainer:
+    """FedRep Trainer implementing standard PPO."""
     
     def __init__(
         self,
@@ -34,8 +26,6 @@ class FedKLTrainer:
         value_coef: float = 0.5,
         update_epochs: int = 10,
         minibatch_size: int = 64,
-        lambda_global: float = 0.1,
-        lambda_local: float = 0.05,
         max_grad_norm: float = 0.5,
         eval_episodes: int = 1,
         writer: Optional[Any] = None,
@@ -52,8 +42,6 @@ class FedKLTrainer:
         self.value_coef = value_coef
         self.update_epochs = update_epochs
         self.minibatch_size = minibatch_size
-        self.lambda_global = lambda_global
-        self.lambda_local = lambda_local
         self.max_grad_norm = max_grad_norm
         self.eval_episodes = eval_episodes
         self.writer = writer
@@ -64,14 +52,9 @@ class FedKLTrainer:
         
         # Store last rollout actions for metrics collection
         self.last_actions = None
-        
-        # Local policy snapshot (for local KL penalty)
-        self.local_policy_snapshot = None
-        self.local_log_std_snapshot = None
     
-    # ---------------- Rollout + GAE ----------------
     def _rollout(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
-        """Collect rollout data similar to FedGuide."""
+        """Collect rollout data."""
         obs_buf, act_buf, logp_buf, rew_buf, val_buf, done_buf = [], [], [], [], [], []
         
         for _ in range(self.n_steps):
@@ -140,22 +123,9 @@ class FedKLTrainer:
         
         return adv, ret
     
-    # ---------------- Local KL Penalty ----------------
-    def save_local_policy_snapshot(self):
-        """Save current policy as local snapshot for local KL penalty."""
-        self.local_policy_snapshot = {
-            k: v.clone().detach() 
-            for k, v in self.agent.policy.state_dict().items()
-        }
-        self.local_log_std_snapshot = self.agent.log_std.clone().detach()
-    
-    # ---------------- One Local Round ----------------
     def train_one_round(self) -> Dict[str, float]:
-        """Train for one federated round (similar to FedGuide's train_one_round)."""
+        """Train for one federated round."""
         t0 = time.time()
-        
-        # Save local policy snapshot at start of round
-        self.save_local_policy_snapshot()
         
         # Collect rollouts
         states, actions, logps_old, returns, extras = self._rollout()
@@ -175,15 +145,11 @@ class FedKLTrainer:
             "done": extras["done"],
         }
         
-        # Update policy with KL penalties
+        # Update policy with standard PPO (no KL penalties)
         logs = self.agent.update(
             batch,
             epochs=self.update_epochs,
             minibatch_size=self.minibatch_size,
-            lambda_local=self.lambda_local,
-            lambda_global=self.lambda_global,
-            local_snapshot_state_dict=self.local_policy_snapshot,
-            local_snapshot_log_std=self.local_log_std_snapshot,
         )
         
         # Evaluation
@@ -224,13 +190,8 @@ class FedKLTrainer:
             ep_ret += r
         return ep_ret
     
-    # ---------------- Compatibility Methods ----------------
-    def save_eval(self, cid: str, rnd: int, outdir = "./results/fedKL") -> bool:
-        """Save evaluation trajectory and metadata.
-        
-        For Bandit2D environment, this is a simplified version that doesn't
-        track passed_gate or reached_goal (those are maze-specific concepts).
-        """
+    def save_eval(self, cid: str, rnd: int, outdir = "./results/fedrep") -> bool:
+        """Save evaluation trajectory and metadata."""
         import os
         import json
         
@@ -260,15 +221,15 @@ class FedKLTrainer:
         with open(os.path.join(d, f"round_{rnd}_meta.json"), "w") as f:
             json.dump(meta, f)
         
-        # Return True to indicate success (for compatibility with base.py interface)
-        return True    
+        return True
+    
     @property
     def return_(self):
         """Average episode return."""
-        # For compatibility with parent class
         return 0.0
     
     @property
     def episode_len(self):
-        """Average episode length. (For Bandit2D environment)"""
+        """Average episode length."""
         return 1.0
+

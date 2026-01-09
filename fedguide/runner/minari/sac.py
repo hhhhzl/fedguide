@@ -13,8 +13,9 @@ import torch
 import gymnasium as gym
 from typing import List
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+# Add project root to path for imports
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, _project_root)
 
 from fedguide.baselines.sac.agent import SACAgent
 from fedguide.baselines.sac.trainer import CentralSACTrainer

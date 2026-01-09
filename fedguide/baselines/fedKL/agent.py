@@ -191,6 +191,63 @@ class FedKLAgent(nn.Module):
         
         return kl.sum(dim=-1).mean()
     
+    def compute_local_kl_from_snapshot(
+        self, 
+        states: torch.Tensor, 
+        snapshot_state_dict: Dict[str, torch.Tensor], 
+        snapshot_log_std: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Compute KL divergence from local policy snapshot.
+        KL(π_current || π_snapshot) for Gaussian policies.
+        
+        Args:
+            states: Batch of states
+            snapshot_state_dict: State dict of the policy snapshot
+            snapshot_log_std: Log std parameter of the snapshot
+            
+        Returns:
+            Mean KL divergence
+        """
+        if snapshot_state_dict is None:
+            return torch.tensor(0.0, device=self.device)
+        
+        if states.dim() == 1:
+            states = states.unsqueeze(0)
+        
+        # Current policy distribution
+        mean_current = self.policy(states)
+        std_current = torch.exp(self.log_std)
+        
+        # Create temporary policy for snapshot (avoids in-place mutation)
+        # Infer hidden_dim from state_dict (fc1 weight shape: [hidden_dim, state_dim])
+        if 'fc1.weight' in snapshot_state_dict:
+            hidden_dim = snapshot_state_dict['fc1.weight'].shape[0]
+        else:
+            # Fallback: use the same hidden_dim as current policy (from fc1.out_features)
+            hidden_dim = self.policy.fc1.out_features
+        
+        temp_policy = PolicyNetwork(self.state_dim, self.action_dim, hidden_dim=hidden_dim)
+        temp_policy.load_state_dict(snapshot_state_dict)
+        temp_policy.to(self.device)
+        temp_policy.eval()
+        
+        with torch.no_grad():
+            mean_snapshot = temp_policy(states)
+            std_snapshot = torch.exp(snapshot_log_std.to(self.device))
+        
+        # KL divergence for diagonal Gaussian: KL(π_current || π_snapshot)
+        var_current = std_current.pow(2) + 1e-8
+        var_snapshot = std_snapshot.pow(2) + 1e-8
+        
+        kl = (
+            torch.log(std_snapshot / std_current)
+            + (var_current + (mean_current - mean_snapshot).pow(2)) / (2.0 * var_snapshot)
+            - 0.5
+        )
+        
+        return kl.sum(dim=-1).mean()
+    
     def update_global_policy(self):
         """Update the global policy reference from current local policy."""
         self.global_policy.load_state_dict(self.policy.state_dict())
@@ -204,6 +261,8 @@ class FedKLAgent(nn.Module):
         minibatch_size: Optional[int] = None,
         lambda_global: float = 0.1,
         lambda_local: float = 0.05,
+        local_snapshot_state_dict: Optional[Dict[str, torch.Tensor]] = None,
+        local_snapshot_log_std: Optional[torch.Tensor] = None,
     ) -> Dict[str, float]:
         """
         Update policy using PPO with KL penalties.
@@ -214,6 +273,8 @@ class FedKLAgent(nn.Module):
             minibatch_size: Size of minibatches
             lambda_global: Weight for KL(π || π_global)
             lambda_local: Weight for KL(π || π_local_snapshot)
+            local_snapshot_state_dict: State dict of policy at start of round
+            local_snapshot_log_std: Log std of policy at start of round
         """
         s = batch["s"].to(self.device).float()
         a = batch["a"].to(self.device).float()
@@ -261,8 +322,12 @@ class FedKLAgent(nn.Module):
                 
                 # Local KL (if lambda_local > 0, compute KL from policy at start of round)
                 kl_local = torch.tensor(0.0, device=self.device)
-                if lambda_local > 0.0:
-                    kl_local = (mb_old_logp - logp).mean().abs()
+                if lambda_local > 0.0 and local_snapshot_state_dict is not None and local_snapshot_log_std is not None:
+                    kl_local = self.compute_local_kl_from_snapshot(
+                        mb_s,
+                        local_snapshot_state_dict,
+                        local_snapshot_log_std
+                    )
                 
                 # Total loss
                 loss = (

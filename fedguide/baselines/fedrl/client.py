@@ -1,11 +1,8 @@
 """
-FMARL Client Implementation
+FedRL Client Implementation
 
-This module implements the FMARL client that extends FedRLClient.
-Key features:
-- Syncs old policy before training (for sequential federated training)
-- Returns client weight (timesteps) for weighted aggregation
-- Only policy parameters are aggregated; value networks remain local.
+This module implements the FedRL client that extends FedRLClient.
+Supports both DQN (discrete actions) and DDPG (continuous actions).
 """
 
 from __future__ import annotations
@@ -20,11 +17,12 @@ try:
 except Exception:
     import gym
 
-from fedguide.fed.client import FedRLClient
+from fedguide.fed.client import FedRLClient as BaseFedRLClient
 
 
 # --------- Helpers ---------
 def _is_box1d(space) -> bool:
+    """Check if space is 1D Box (continuous action space)."""
     try:
         from gymnasium.spaces import Box
     except Exception:
@@ -32,7 +30,17 @@ def _is_box1d(space) -> bool:
     return isinstance(space, Box) and len(space.shape) == 1
 
 
+def _is_discrete(space) -> bool:
+    """Check if space is discrete."""
+    try:
+        from gymnasium.spaces import Discrete
+    except Exception:
+        from gym.spaces import Discrete
+    return isinstance(space, Discrete)
+
+
 def _make_env(env_id: str, seed: Optional[int] = None):
+    """Create environment."""
     if env_id.lower() in ["bandit2d", "bandit_2d", "2dbandit"]:
         from fedguide.envs.bandit2d import Bandit2D
         env = Bandit2D(K=4, sigma=0.2, seed=seed)
@@ -48,15 +56,12 @@ def _make_env(env_id: str, seed: Optional[int] = None):
     return env
 
 
-class FMARLClient(FedRLClient):
+class FedRLClient(BaseFedRLClient):  # Inherit from fedguide.fed.client.FedRLClient
     """
-    FMARL Client implementation.
+    FedRL Client implementation.
     
-    Key design principles:
-    - Only POLICY parameters are aggregated across clients
-    - VALUE networks remain LOCAL to each client
-    - Syncs old policy before training (FMARL-specific)
-    - Returns client weight (timesteps) for weighted aggregation
+    Supports both DQN (discrete actions) and DDPG (continuous actions).
+    Only policy/Q-network parameters are aggregated; other networks (if any) remain local.
     """
     
     def __init__(
@@ -91,28 +96,33 @@ class FMARLClient(FedRLClient):
         self.metrics_collector = metrics_collector
     
     def get_parameters(self, config: Dict[str, Any]):
-        """Get parameters as a list for Flower compatibility (same as FedKL)."""
+        """Get parameters as a list for Flower compatibility."""
         if not hasattr(self.agent, "get_parameters"):
             return super().get_parameters(config)
         
-        # Get parameters as list from agent
-        flat_params = []
+        # Get parameters as dict from agent
         param_dict = self.agent.get_parameters()
-        for module_params in param_dict.values():
+        
+        # Convert dict to flat list of numpy arrays
+        flat_params = []
+        for module_name, module_params in param_dict.items():
             if isinstance(module_params, dict):
-                for v in module_params.values():
-                    if isinstance(v, torch.Tensor):
-                        flat_params.append(v.numpy())
-                    elif hasattr(v, "numpy"):
-                        flat_params.append(v.numpy())
+                # It's a state_dict (e.g., {"q_net": {...}} or {"actor": {...}, "critic": {...}})
+                for key in sorted(module_params.keys()):  # Sort for consistency
+                    param_tensor = module_params[key]
+                    if isinstance(param_tensor, torch.Tensor):
+                        flat_params.append(param_tensor.detach().cpu().numpy())
+                    elif hasattr(param_tensor, "numpy"):
+                        flat_params.append(param_tensor.numpy())
                     else:
-                        flat_params.append(v)
+                        flat_params.append(np.asarray(param_tensor))
             elif isinstance(module_params, torch.Tensor):
-                flat_params.append(module_params.numpy())
+                # It's a single tensor (e.g., log_std)
+                flat_params.append(module_params.detach().cpu().numpy())
             elif hasattr(module_params, "numpy"):
                 flat_params.append(module_params.numpy())
             else:
-                flat_params.append(module_params)
+                flat_params.append(np.asarray(module_params))
         
         # Verify return type - must be list of numpy arrays
         # Make sure all are independent copies (not views) for serialization
@@ -135,45 +145,53 @@ class FMARLClient(FedRLClient):
         
         return verified_params
     
-    def list_to_parameter_dict(self, lst):
-        """Convert flat list from server into parameter dict."""
+    def list_to_parameter_dict(self, lst: list) -> Dict[str, Any]:
+        """Convert flat list from server into FedRL-style parameter dict."""
         param_dict = {}
-
-        # 1) Policy parameters
-        policy_state = self.agent.policy.state_dict()
-        new_policy_state = {}
-
+        
+        # Get agent's parameter structure to understand layout
+        agent_param_dict = self.agent.get_parameters()
+        
+        # Reconstruct dict from flat list
         idx = 0
-        for k, v in policy_state.items():
-            new_policy_state[k] = torch.tensor(lst[idx], dtype=v.dtype)
-            idx += 1
-        param_dict["policy"] = new_policy_state
-
-        # 2) log_std (last item)
-        param_dict["log_std"] = torch.tensor(lst[idx])
-
+        for module_name, module_params in agent_param_dict.items():
+            if isinstance(module_params, dict):
+                # It's a state_dict (e.g., {"q_net": {...}} or {"actor": {...}})
+                new_module_params = {}
+                for key in sorted(module_params.keys()):  # Must match order in get_parameters
+                    original_tensor = module_params[key]
+                    new_module_params[key] = torch.tensor(lst[idx], dtype=original_tensor.dtype)
+                    idx += 1
+                param_dict[module_name] = new_module_params
+            elif isinstance(module_params, torch.Tensor):
+                # It's a single tensor (e.g., log_std)
+                param_dict[module_name] = torch.tensor(lst[idx], dtype=module_params.dtype)
+                idx += 1
+            else:
+                # Fallback: try to convert
+                param_dict[module_name] = torch.tensor(lst[idx])
+                idx += 1
+        
         return param_dict
-
+    
     def set_parameters(self, parameters):
         """Set parameters, handling both dict and list formats."""
         if not hasattr(self.agent, "set_parameters"):
             return super().set_parameters(parameters)
-
-        # If parameters is a list, convert it
+        
+        # If parameters is a list, convert it to dict
         if isinstance(parameters, list):
             parameters = self.list_to_parameter_dict(parameters)
+        
         # Now pass the dict to the agent
         self.agent.set_parameters(parameters)
-
+        
+        # Rebuild optimizer after setting parameters
+        if hasattr(self.agent, "rebuild_optimizer"):
+            self.agent.rebuild_optimizer()
+    
     def fit(self, parameters, config):
-        """
-        Override fit to handle FMARL-specific logic:
-        1. Set parameters from server
-        2. Sync old policy (FMARL-specific, though trainer also does this)
-        3. Train one round
-        4. Get client weight (timesteps) for weighted aggregation
-        5. Return parameters, client weight, and metrics
-        """
+        """Override fit to handle parameters and collect actions for metrics."""
         cid = getattr(self, "cid", config.get("cid", "unknown"))
         rnd = int(config.get("server_round", 0))
         
@@ -191,16 +209,10 @@ class FMARLClient(FedRLClient):
                 self.set_parameters(param_list)
             except Exception as e:
                 # Continue anyway - agent will use current parameters
-                print("Parameter loading failed in fit():", e)
+                print(f"[FedRLClient {cid}] Parameter loading failed in fit(): {e}")
         
         if hasattr(self, "metrics"):
             self.metrics.set_step(rnd)
-        
-        # FMARL: Sync old policy before training (trainer also does this, but ensure it's done)
-        # Note: The trainer.train_one_round() will also call sync_old_policy, but we ensure
-        # it's called here as well for consistency with original FMARL implementation
-        if hasattr(self.agent, 'sync_old_policy'):
-            self.agent.sync_old_policy()
         
         # Train one round
         train_result = self.trainer.train_one_round()
@@ -209,7 +221,7 @@ class FMARLClient(FedRLClient):
         if isinstance(train_result, dict):
             # Try multiple possible loss keys
             loss = None
-            for key in ["loss", "train/loss", "train/loss/total", "loss/total", "train/loss/policy", "train/loss/value"]:
+            for key in ["loss", "train/loss", "train/loss/total", "loss/total", "loss/actor", "loss/critic"]:
                 if key in train_result:
                     val = train_result[key]
                     # Check if value is valid (not None, not nan, not inf)
@@ -287,24 +299,13 @@ class FMARLClient(FedRLClient):
             except (TypeError, ValueError):
                 loss = 0.0
         
-        # Get client weight (number of timesteps) - FMARL uses this for weighted aggregation
-        client_weight = 0
-        if hasattr(self.agent, 'get_client_weight'):
-            client_weight = self.agent.get_client_weight()
-        elif hasattr(self.trainer, 'current_round_timesteps'):
-            client_weight = int(self.trainer.current_round_timesteps)
-        else:
-            # Fallback to samples
-            client_weight = samples
-        
         # Print client loss for debugging
-        print(f"[FMARLClient {cid}] Round {rnd}: loss = {loss}, train_return = {train_return}, eval_return = {eval_return}, client_weight = {client_weight}, success = {success}")
+        print(f"[FedRLClient {cid}] Round {rnd}: loss = {loss:.6f}, train_return = {train_return}, eval_return = {eval_return}, success = {success}")
         
         # Build metrics dict
         fit_metrics = {
             "loss": loss,
             "success": int(bool(success)),
-            "client_weight": client_weight,  # FMARL-specific: client weight for weighted aggregation
         }
         if train_return is not None:
             fit_metrics["train/return"] = float(train_return)
@@ -322,7 +323,7 @@ class FMARLClient(FedRLClient):
         if not isinstance(new_params_list, list):
             new_params_list = [np.asarray(new_params_list)] if not isinstance(new_params_list, list) else new_params_list
         
-        # Collect actions for metrics visualization
+        # Collect actions for metrics visualization (if collector is available)
         if self.metrics_collector is not None:
             try:
                 client_id = int(cid) if isinstance(cid, (int, str)) and str(cid).isdigit() else hash(cid) % 10000
@@ -353,14 +354,15 @@ class FMARLClient(FedRLClient):
                 # Silently fail if serialization fails
                 pass
         
-        # Evaluate policy on grid and pass through metrics
+        # Evaluate policy on grid and pass through metrics (for Bandit2D)
         if self.metrics_collector is not None:
             try:
                 import json
                 # Evaluate agent on grid
+                mapped_id = fit_metrics.get("client_id_mapped", None)
                 grid_metrics = self.metrics_collector.evaluate_on_grid(
                     agent=self.agent,
-                    client_id=mapped_id if 'mapped_id' in locals() else None,
+                    client_id=mapped_id,
                     round_num=rnd
                 )
                 # Serialize grid metrics to JSON
@@ -377,45 +379,58 @@ class FMARLClient(FedRLClient):
                 # Silently fail if evaluation fails
                 pass
         
-        # Return: parameters, num_examples (use client_weight), metrics
-        # Note: Flower uses num_examples for weighted aggregation, but we pass client_weight in metrics
-        # The server will use client_weight from metrics instead of num_examples
-        return new_params_list, client_weight, fit_metrics
+        return new_params_list, samples, fit_metrics
 
 
 # --------- client_fn_builder ----------
 def client_fn_builder(
     env_id: str,
-    algo: str = "fmarl",
+    algo: str = "dqn",  # "dqn" or "ddpg"
     *,
-    n_steps: int = 2048,
-    gamma: float = 0.99,
-    gae_lambda: float = 0.95,
-    clip_eps: float = 0.2,
-    entropy_coef: float = 0.01,
-    value_coef: float = 0.5,
-    update_epochs: int = 10,
-    minibatch_size: int = 64,
-    lambda_global: float = 0.1,
-    lambda_local: float = 0.05,
-    max_grad_norm: float = 0.5,
-    hidden_dim: int = 256,
-    lr: float = 3e-4,
+    # DQN/DDPG hyperparameters
+    gamma: float = 0.9,
+    lr: float = 1e-3,
+    hidden_dim: int = 128,
+    # DQN-specific
+    epsilon: float = 1.0,
+    epsilon_decay: float = 0.99,
+    epsilon_min: float = 0.01,
+    # DDPG-specific
+    tau: float = 0.001,
+    threshold: float = 2.0,
+    aggregate_critic: bool = False,
+    # Training hyperparameters
+    batch_size: int = 16,
+    replay_size: int = 1000,
+    replay_initial: int = None,  # Default: 2 * batch_size for DQN, 1000 for DDPG
+    sync_interval: int = 10,
+    merge_interval: int = 16,  # Number of steps per round (E in FedRL)
+    eval_episodes: int = 1,
+    add_noise: bool = True,  # For DDPG exploration
     # logging
     use_wandb: bool = False,
     wandb_project: Optional[str] = None,
     run_name: Optional[str] = None,
     metrics_collector: Optional[Any] = None,
     num_clients: Optional[int] = None,  # For ID mapping
+    device: str = "cpu",
 ):
     """
-    Build client function for FMARL.
+    Build client function for FedRL (supports both DQN and DDPG).
+    
+    Args:
+        env_id: Environment ID
+        algo: Algorithm type ("dqn" or "ddpg")
+        ... (other hyperparameters)
+    
+    Returns:
+        client_fn function for Flower
     """
     
     def client_fn(context) -> Any:
         # Import here to avoid circular imports
-        from fedguide.baselines.fmarl.agent import FMARLAgent
-        from fedguide.baselines.fmarl.trainer import FMARLTrainer
+        from fedguide.baselines.fedrl.agent import DQNAgent, DDPGAgent
+        from fedguide.baselines.fedrl.trainer import DQNTrainer, DDPGTrainer
         
         # 1) per-client seed and ID mapping
         cid = str(getattr(context, "client_id", None) or getattr(context, "node_id", None) or "0")
@@ -434,37 +449,87 @@ def client_fn_builder(
         # 2) env
         env = _make_env(env_id, seed=base)
         obs_space, act_space = env.observation_space, env.action_space
-        assert _is_box1d(obs_space) and _is_box1d(act_space), "Only Support 1D Box spaces."
         
-        state_dim = int(obs_space.shape[0])
-        action_dim = int(act_space.shape[0])
+        # Determine state and action dimensions
+        if algo.lower() == "dqn":
+            assert _is_discrete(act_space), "DQN requires discrete action space"
+            # Get state dimension (handle both Box and Discrete observation spaces)
+            try:
+                state_dim = int(obs_space.shape[0])
+            except (AttributeError, IndexError):
+                # Fallback: try to get from n if it's a Discrete space
+                try:
+                    state_dim = int(obs_space.n)
+                except AttributeError:
+                    raise ValueError(f"Unsupported observation space for DQN: {type(obs_space)}")
+            action_dim = int(act_space.n)
+        elif algo.lower() == "ddpg":
+            assert _is_box1d(act_space), "DDPG requires continuous action space"
+            assert _is_box1d(obs_space), "DDPG requires continuous observation space"
+            state_dim = int(obs_space.shape[0])
+            action_dim = int(act_space.shape[0])
+        else:
+            raise ValueError(f"Unsupported algorithm: {algo}. Must be 'dqn' or 'ddpg'")
         
         # 3) agent
-        agent = FMARLAgent(
-            state_dim=state_dim,
-            action_dim=action_dim,
-            hidden_dim=hidden_dim,
-            lr=lr,
-            device="cpu",
-        )
+        if algo.lower() == "dqn":
+            agent = DQNAgent(
+                state_dim=state_dim,
+                action_dim=action_dim,
+                hidden_dim=hidden_dim,
+                lr=lr,
+                gamma=gamma,
+                epsilon=epsilon,
+                epsilon_decay=epsilon_decay,
+                epsilon_min=epsilon_min,
+                sync_interval=sync_interval,
+                device=device,
+            )
+        else:  # ddpg
+            agent = DDPGAgent(
+                state_dim=state_dim,
+                action_dim=action_dim,
+                lr=lr,
+                gamma=gamma,
+                tau=tau,
+                threshold=threshold,
+                device=device,
+                aggregate_critic=aggregate_critic,
+            )
         
         # 4) trainer
-        trainer = FMARLTrainer(
-            agent=agent,
-            env=env,
-            n_steps=n_steps,
-            gamma=gamma,
-            gae_lambda=gae_lambda,
-            clip_eps=clip_eps,
-            entropy_coef=entropy_coef,
-            value_coef=value_coef,
-            update_epochs=update_epochs,
-            minibatch_size=minibatch_size,
-            lambda_global=lambda_global,
-            lambda_local=lambda_local,
-            max_grad_norm=max_grad_norm,
-            device="cpu",
-        )
+        if algo.lower() == "dqn":
+            trainer_replay_initial = replay_initial if replay_initial is not None else 2 * batch_size
+            trainer = DQNTrainer(
+                agent=agent,
+                env=env,
+                device=device,
+                gamma=gamma,
+                epsilon=epsilon,
+                epsilon_decay=epsilon_decay,
+                epsilon_min=epsilon_min,
+                batch_size=batch_size,
+                replay_size=replay_size,
+                sync_interval=sync_interval,
+                merge_interval=merge_interval,
+                eval_episodes=eval_episodes,
+                replay_initial=trainer_replay_initial,
+            )
+        else:  # ddpg
+            trainer_replay_initial = replay_initial if replay_initial is not None else 1000
+            trainer = DDPGTrainer(
+                agent=agent,
+                env=env,
+                device=device,
+                gamma=gamma,
+                batch_size=batch_size,
+                replay_size=replay_size,
+                replay_initial=trainer_replay_initial,
+                merge_interval=merge_interval,
+                tau=tau,
+                eval_episodes=eval_episodes,
+                add_noise=add_noise,
+            )
         
         # Get collector from global variable if not passed directly
         nonlocal metrics_collector
@@ -472,7 +537,7 @@ def client_fn_builder(
             try:
                 import importlib
                 try:
-                    run_module = importlib.import_module('scripts.envs.bandit2d.run_fmarl_bandit2d')
+                    run_module = importlib.import_module(f'scripts.envs.bandit2d.run_fedrl_{algo}_bandit2d')
                     metrics_collector = getattr(run_module, '_metrics_collector_global', None)
                 except (ImportError, AttributeError):
                     pass
@@ -480,7 +545,7 @@ def client_fn_builder(
                 pass
         
         # 5) client
-        client = FMARLClient(
+        client = FedRLClient(
             agent=agent,
             env=env,
             trainer=trainer,
@@ -504,7 +569,7 @@ def client_fn_builder(
             if hasattr(metrics_collector, 'register_client_agent'):
                 metrics_collector.register_client_agent(mapped_id, agent)
         
-        # Convert NumPyClient to Client 
+        # Convert NumPyClient to Client
         return client.to_client()
     
     return client_fn

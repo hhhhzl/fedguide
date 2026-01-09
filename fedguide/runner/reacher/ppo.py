@@ -1,9 +1,8 @@
 """
-Run Centralized SAC for Reacher with client heterogeneity from metadata.json.
+Run Centralized PPO for Reacher with client heterogeneity from metadata.json.
 
-This script loads client configurations from metadata.json and trains SAC
-on data from different D4RL variants (medium-v2, expert-v2, random-v2)
-with client-specific environment configurations.
+This script loads client configurations from metadata.json and trains PPO
+on different Reacher environments with client-specific configurations using on-policy rollouts.
 """
 
 import argparse
@@ -16,111 +15,16 @@ import torch
 import gymnasium as gym
 from typing import List, Dict, Any
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+# Add project root to path for imports
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, _project_root)
 
-from fedguide.baselines.sac.agent import SACAgent
-from fedguide.baselines.sac.trainer import CentralSACTrainer
+from fedguide.baselines.ppo.agent import PPOAgent
+from fedguide.baselines.ppo.trainer import CentralPPOTrainer
 from fedguide.datasets.base import TransitionDataset
 from fedguide.utils.seeds import set_all_seeds
 from fedguide.envs.reacher import CustomizedReacherEnv
 from gymnasium.wrappers import TimeLimit
-
-try:
-    import d4rl
-except ImportError:
-    raise ImportError("d4rl is required. Please install it with: pip install d4rl")
-
-
-def convert_d4rl_to_transitions(obs, acts, rewards, terminals, next_obs):
-    """Convert D4RL dataset format to trajectory format for TransitionDataset."""
-    trajs = []
-    current_traj = {
-        's': [],
-        'a': [],
-        'r': [],
-        's_next': [],
-        'd': [],
-    }
-    
-    for i in range(len(obs)):
-        current_traj['s'].append(obs[i])
-        current_traj['a'].append(acts[i])
-        current_traj['r'].append(rewards[i])
-        current_traj['s_next'].append(next_obs[i] if next_obs is not None else obs[i] if i+1 < len(obs) else obs[i])
-        current_traj['d'].append(float(terminals[i]))
-        
-        # If terminal, end current trajectory
-        if terminals[i] or (i + 1 == len(obs)):
-            traj = {
-                's': np.array(current_traj['s'], dtype=np.float32),
-                'a': np.array(current_traj['a'], dtype=np.float32),
-                'r': np.array(current_traj['r'], dtype=np.float32),
-                's_next': np.array(current_traj['s_next'], dtype=np.float32),
-                'd': np.array(current_traj['d'], dtype=np.float32),
-            }
-            trajs.append(traj)
-            current_traj = {'s': [], 'a': [], 'r': [], 's_next': [], 'd': []}
-    
-    return trajs
-
-
-def load_reacher_client_data(client_config: Dict[str, Any], max_episode_steps: int = 50):
-    """
-    Load D4RL dataset for a specific client configuration.
-    
-    Args:
-        client_config: Client configuration dict with keys:
-            - variant: D4RL variant name (e.g., "medium-v2")
-            - qpos_high_low: Goal region bounds
-            - action_noise: Action noise vector
-            - reward_scale: Reward scaling factor
-            - angle_noise: Angle noise
-        max_episode_steps: Maximum episode steps
-    
-    Returns:
-        transition_dataset: TransitionDataset for this client
-        env: Environment instance for evaluation
-    """
-    variant = client_config["variant"]
-    env_name = f"reacher-{variant}"
-    
-    # Create D4RL environment to get dataset
-    d4rl_env = gym.make(env_name)
-    dataset = d4rl_env.get_dataset()
-    
-    obs = dataset['observations']
-    acts = dataset['actions']
-    rewards = dataset['rewards']
-    terminals = dataset['terminals']
-    
-    # Compute next_obs if not provided
-    if 'next_observations' in dataset:
-        next_obs = dataset['next_observations']
-    else:
-        next_obs = np.concatenate([obs[1:], obs[-1:]], axis=0)
-    
-    # Convert to trajectories
-    trajs = convert_d4rl_to_transitions(obs, acts, rewards, terminals, next_obs)
-    
-    # Create TransitionDataset
-    transition_dataset = TransitionDataset(trajs)
-    
-    # Create evaluation environment with client-specific configuration
-    eval_env = TimeLimit(
-        CustomizedReacherEnv(
-            qpos_high_low=client_config["qpos_high_low"],
-            action_noise=np.array(client_config["action_noise"]),
-            reward_scale=client_config["reward_scale"],
-            angle_noise=client_config["angle_noise"],
-            variant=variant
-        ),
-        max_episode_steps=max_episode_steps
-    )
-    
-    d4rl_env.close()
-    
-    return transition_dataset, eval_env
 
 
 def load_reacher_metadata(metadata_path: str):
@@ -136,7 +40,7 @@ def load_reacher_metadata(metadata_path: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Centralized SAC for Reacher with client heterogeneity"
+        description="Centralized PPO for Reacher with client heterogeneity"
     )
     
     # Environment args
@@ -150,10 +54,12 @@ def main():
     # Training args
     parser.add_argument("--rounds", type=int, default=100,
                        help="Number of training rounds")
-    parser.add_argument("--update_steps", type=int, default=1000,
-                       help="Number of update steps per round")
-    parser.add_argument("--batch_size", type=int, default=256,
-                       help="Batch size for training")
+    parser.add_argument("--steps_per_round", type=int, default=2000,
+                       help="Number of environment steps to collect per round (on-policy)")
+    parser.add_argument("--update_epochs", type=int, default=4,
+                       help="Number of epochs per update")
+    parser.add_argument("--minibatch_size", type=int, default=None,
+                       help="Minibatch size for PPO updates (if None, use full batch)")
     
     # Agent args
     parser.add_argument("--hidden_dim", type=int, default=256,
@@ -162,16 +68,28 @@ def main():
                        help="Learning rate")
     parser.add_argument("--gamma", type=float, default=0.99,
                        help="Discount factor")
-    parser.add_argument("--tau", type=float, default=0.005,
-                       help="Soft update coefficient")
-    parser.add_argument("--alpha", type=float, default=0.2,
-                       help="Temperature parameter")
+    parser.add_argument("--clip_eps", type=float, default=0.2,
+                       help="PPO clipping epsilon")
+    parser.add_argument("--gae_lambda", type=float, default=0.95,
+                       help="GAE lambda parameter")
+    parser.add_argument("--entropy_coef", type=float, default=0.01,
+                       help="Entropy coefficient")
+    parser.add_argument("--value_coef", type=float, default=0.5,
+                       help="Value loss coefficient")
+    parser.add_argument("--max_grad_norm", type=float, default=0.5,
+                       help="Maximum gradient norm for clipping")
     parser.add_argument("--action_std", type=float, default=0.1,
-                       help="Action distribution standard deviation")
+                       help="Initial standard deviation for action distribution (if learnable_std=False)")
+    parser.add_argument("--learnable_std", action="store_true", default=True,
+                       help="Use learnable action std (recommended)")
+    parser.add_argument("--no_learnable_std", dest="learnable_std", action="store_false",
+                       help="Use fixed action std")
     
     # Evaluation args
     parser.add_argument("--eval_episodes", type=int, default=10,
                        help="Number of episodes for evaluation")
+    parser.add_argument("--eval_stochastic_samples", type=int, default=64,
+                       help="Number of action samples per state for stochastic evaluation")
     
     # Output args
     parser.add_argument("--output_dir", type=str, default=None,
@@ -246,23 +164,44 @@ def main():
     n_clients = len(client_configs)
     print(f"Using {n_clients} clients for training")
     
-    # Load data for selected clients
-    print(f"\nLoading D4RL datasets for {n_clients} clients...")
-    all_datasets = []
-    eval_envs = []
+    # For on-policy PPO, we use the first client's environment for training
+    # (or we could cycle through clients, but for simplicity use first one)
+    first_client_config = client_configs[0]
+    variant = first_client_config.get('variant', 'medium-v2')
     
+    # Create training environment with first client's configuration
+    print(f"\nCreating training environment (using first client config: variant={variant})...")
+    train_env = TimeLimit(
+        CustomizedReacherEnv(
+            qpos_high_low=first_client_config["qpos_high_low"],
+            action_noise=np.array(first_client_config["action_noise"]),
+            reward_scale=first_client_config["reward_scale"],
+            angle_noise=first_client_config["angle_noise"],
+            variant=variant
+        ),
+        max_episode_steps=50
+    )
+    set_all_seeds(args.seed, train_env)
+    
+    # Create evaluation environments for all selected clients
+    eval_envs = []
     for i, client_config in enumerate(client_configs):
         variant = client_config.get('variant', 'medium-v2')
-        print(f"  Loading client {i}: variant={variant}")
-        dataset, eval_env = load_reacher_client_data(client_config)
-        all_datasets.append(dataset)
+        eval_env = TimeLimit(
+            CustomizedReacherEnv(
+                qpos_high_low=client_config["qpos_high_low"],
+                action_noise=np.array(client_config["action_noise"]),
+                reward_scale=client_config["reward_scale"],
+                angle_noise=client_config["angle_noise"],
+                variant=variant
+            ),
+            max_episode_steps=50
+        )
+        set_all_seeds(args.seed, eval_env)
         eval_envs.append(eval_env)
-        print(f"    Loaded {len(dataset)} transitions")
     
-    # Get environment dimensions from first eval env
+    # Use first eval env for dimensions
     eval_env = eval_envs[0]
-    set_all_seeds(args.seed, eval_env)
-    
     obs_dim = eval_env.observation_space.shape[0]
     action_dim = eval_env.action_space.shape[0]
     
@@ -289,47 +228,56 @@ def main():
     
     # Set output directories
     if args.output_dir is None:
-        args.output_dir = f"./model/policy/reacher/sac"
+        args.output_dir = f"./model/policy/reacher/ppo"
     if args.metrics_dir is None:
-        args.metrics_dir = f"./metrics/reacher/sac"
+        args.metrics_dir = f"./metrics/reacher/ppo"
     
     # Set render save directory
     if args.render_eval and args.render_save_dir is None:
-        args.render_save_dir = f"./videos/reacher/sac"
+        args.render_save_dir = f"./videos/reacher/ppo"
     
     os.makedirs(args.output_dir, exist_ok=True)
     os.makedirs(args.metrics_dir, exist_ok=True)
     if args.render_eval and args.render_save_dir:
         os.makedirs(args.render_save_dir, exist_ok=True)
     
+    # Create dummy datasets for compatibility (not used in on-policy)
+    dummy_datasets = [TransitionDataset([])]
+    
     # Create agent
-    print(f"\nCreating SAC agent...")
-    agent = SACAgent(
-        obs_dim=obs_dim,
+    print(f"\nCreating PPO agent...")
+    agent = PPOAgent(
+        state_dim=obs_dim,
         action_dim=action_dim,
         hidden_dim=args.hidden_dim,
         lr=args.lr,
         gamma=args.gamma,
-        tau=args.tau,
-        alpha=args.alpha,
+        clip_eps=args.clip_eps,
+        gae_lambda=args.gae_lambda,
+        entropy_coef=args.entropy_coef,
+        value_coef=args.value_coef,
+        max_grad_norm=args.max_grad_norm,
         action_std=args.action_std,
+        learnable_std=args.learnable_std,
         device=device,
         action_low=action_low,
         action_high=action_high,
     )
     print("Agent created successfully")
     
-    # Create trainer
+    # Create trainer (use training environment)
     print(f"\nCreating centralized trainer...")
-    trainer = CentralSACTrainer(
+    trainer = CentralPPOTrainer(
         agent=agent,
-        datasets=all_datasets,
-        env=eval_env,
-        batch_size=args.batch_size,
-        update_steps=args.update_steps,
+        datasets=dummy_datasets,  # Not used in on-policy, but kept for compatibility
+        env=train_env,  # Use training environment for rollouts
+        steps_per_round=args.steps_per_round,
+        update_epochs=args.update_epochs,
+        minibatch_size=args.minibatch_size,
         gamma=args.gamma,
+        gae_lambda=args.gae_lambda,
         eval_episodes=args.eval_episodes,
-        eval_stochastic_samples=64,  # For stochastic evaluation
+        eval_stochastic_samples=args.eval_stochastic_samples,
         device=device,
         render_eval=args.render_eval,
         render_mode=args.render_mode,
@@ -338,16 +286,15 @@ def main():
         render_episodes=args.render_episodes,
     )
     
-    print(f"Total transitions: {trainer.total_transitions}")
-    print(f"Number of clients: {trainer.num_clients}")
-    
     # Training loop
     print(f"\n{'='*60}")
-    print(f"Starting SAC Training")
+    print(f"Starting PPO Training")
     print(f"{'='*60}")
     print(f"Rounds: {args.rounds}")
-    print(f"Update steps per round: {args.update_steps}")
-    print(f"Batch size: {args.batch_size}")
+    print(f"Steps per round: {args.steps_per_round}")
+    print(f"Update epochs: {args.update_epochs}")
+    print(f"Minibatch size: {args.minibatch_size if args.minibatch_size is not None else 'full batch'}")
+    print(f"Learnable std: {args.learnable_std}")
     print(f"Evaluation episodes: {args.eval_episodes}")
     print(f"{'='*60}\n")
     
@@ -372,7 +319,6 @@ def main():
                 )
                 if policy_metrics is not None:
                     # Store in metrics (convert to list for JSON serialization)
-                    # Prefer density for visualization (0-1 range)
                     metrics['policy/density_grid'] = policy_metrics['policy_density'].tolist()
                     metrics['policy/logprob_grid'] = policy_metrics['policy_logprob'].tolist()
                     metrics['policy/grid_X'] = policy_metrics['X'].tolist()
@@ -396,7 +342,9 @@ def main():
             print(f"{'='*60}")
             print(f"  Train Loss (Actor): {metrics.get('train/loss/actor', 'N/A'):.4f}")
             print(f"  Train Loss (Critic): {metrics.get('train/loss/critic', 'N/A'):.4f}")
-            print(f"  Q-Value: {metrics.get('train/q_value', 'N/A'):.2f}")
+            print(f"  Entropy: {metrics.get('train/entropy', 'N/A'):.4f}")
+            print(f"  Returns mean: {metrics.get('train/returns_mean', 'N/A'):.4f}")
+            print(f"  V mean: {metrics.get('train/V_mean', 'N/A'):.4f}")
             if 'eval/return' in metrics:
                 print(f"  Eval Return (deterministic): {metrics.get('eval/return', 'N/A'):.2f}")
             if 'eval/return_stochastic_mean' in metrics:
@@ -406,12 +354,22 @@ def main():
         # Save checkpoint
         if round_num % args.save_every == 0 or round_num == args.rounds:
             checkpoint_path = os.path.join(args.output_dir, f"checkpoint_round_{round_num}.pkl")
-            agent.save(checkpoint_path)
+            with open(checkpoint_path, 'wb') as f:
+                pickle.dump({
+                    'round': round_num,
+                    'history': history,
+                    'agent_state': agent.actor.state_dict(),
+                    'args': vars(args),
+                }, f)
             print(f"  Saved checkpoint: {checkpoint_path}")
     
     # Save final model and metrics
     final_model_path = os.path.join(args.output_dir, "final_model.pkl")
-    agent.save(final_model_path)
+    with open(final_model_path, 'wb') as f:
+        pickle.dump({
+            'agent_state': agent.actor.state_dict(),
+            'args': vars(args),
+        }, f)
     print(f"\nSaved final model: {final_model_path}")
     
     metrics_path = os.path.join(args.metrics_dir, "training_history.pkl")
@@ -424,6 +382,7 @@ def main():
     print(f"Saved training history: {metrics_path}")
     
     # Cleanup
+    train_env.close()
     for env in eval_envs:
         env.close()
     
