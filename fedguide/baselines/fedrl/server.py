@@ -1,10 +1,8 @@
 """
-FMARL Server Implementation
+FedRL Server Implementation
 
-This module implements the FMARL server strategy and provides
-convenience functions for running federated training.
-
-Key feature: Uses client weight (timesteps) instead of num_examples for weighted aggregation.
+This module implements the FedRL server strategy using FedAvg aggregation.
+Based on FedRL paper: "Federated Reinforcement Learning with Environment Heterogeneity" (AISTATS 2022)
 """
 
 import flwr as fl
@@ -26,13 +24,12 @@ import json
 import numpy as np
 
 
-class FMARLStrategy(Strategy):
+class FedRLStrategy(Strategy):
     """
-    FMARL Server Strategy.
+    FedRL Server Strategy.
     
-    Uses weighted aggregation based on client weight (timesteps) rather than num_examples.
-    This matches the original FMARL implementation where clients are weighted by
-    the number of timesteps they've seen.
+    Uses FedAvg for aggregation (simple weighted average of parameters).
+    No KL penalties, just parameter averaging like the original FedRL paper.
     """
     
     def __init__(
@@ -66,7 +63,7 @@ class FMARLStrategy(Strategy):
         self.init_parameters = initial_parameters or init_parameters
     
     def __repr__(self) -> str:
-        return "FMARLStrategy(weighted aggregation using client timesteps)"
+        return "FedRLStrategy(fedavg aggregation)"
     
     def initialize_parameters(self, client_manager: ClientManager) -> Optional[Parameters]:
         """Initialize global model parameters."""
@@ -117,11 +114,7 @@ class FMARLStrategy(Strategy):
         results: List[Tuple[ClientProxy, FitRes]],
         failures: List[Union[Tuple[ClientProxy, FitRes], BaseException]],
     ) -> Tuple[Optional[Parameters], Dict[str, Scalar]]:
-        """
-        Aggregate model weights using weighted average based on client weight (timesteps).
-        
-        FMARL-specific: Uses client_weight from metrics instead of num_examples.
-        """
+        """Aggregate model weights using FedAvg and collect metrics."""
         
         if not self.accept_failures and failures:
             return None, {}
@@ -131,9 +124,9 @@ class FMARLStrategy(Strategy):
         collected_actions: Dict[int, Any] = {}
         collected_client_metrics: Dict[int, Dict[str, Any]] = {}
         
-        # Aggregate loss (weighted by client_weight, not num_examples)
+        # Aggregate loss (weighted by num_examples)
         total_loss = 0.0
-        total_client_weight = 0.0  # Total timesteps across all clients
+        total_examples = 0
         
         # Aggregate other metrics
         total_success = 0.0
@@ -151,21 +144,15 @@ class FMARLStrategy(Strategy):
                 metrics = fit_res.metrics
                 num_examples = fit_res.num_examples
             
-            # FMARL: Use client_weight from metrics, fallback to num_examples
-            client_weight = metrics.get("client_weight", num_examples)
-            if client_weight is None or client_weight == 0:
-                client_weight = num_examples
-            client_weight = float(client_weight)
+            total_examples += num_examples
             
-            total_client_weight += client_weight
-            
-            # Aggregate loss (weighted by client_weight)
+            # Aggregate loss
             if "loss" in metrics:
                 try:
                     loss_val = float(metrics["loss"])
                     # Check for nan/inf
                     if loss_val == loss_val and loss_val != float('inf') and loss_val != float('-inf'):
-                        total_loss += loss_val * client_weight
+                        total_loss += loss_val * num_examples
                 except (TypeError, ValueError):
                     pass
             
@@ -173,7 +160,7 @@ class FMARLStrategy(Strategy):
             if "success" in metrics:
                 try:
                     success_val = float(metrics["success"])
-                    total_success += success_val * client_weight
+                    total_success += success_val * num_examples
                 except (TypeError, ValueError):
                     pass
             
@@ -238,9 +225,9 @@ class FMARLStrategy(Strategy):
                     pass
         
         # Compute aggregated metrics
-        if total_client_weight > 0:
-            aggregated_metrics["loss"] = total_loss / total_client_weight
-            aggregated_metrics["success"] = total_success / total_client_weight
+        if total_examples > 0:
+            aggregated_metrics["loss"] = total_loss / total_examples
+            aggregated_metrics["success"] = total_success / total_examples
         else:
             aggregated_metrics["loss"] = 0.0
             aggregated_metrics["success"] = 0.0
@@ -251,7 +238,7 @@ class FMARLStrategy(Strategy):
         if count_eval_return > 0:
             aggregated_metrics["eval/return"] = total_eval_return / count_eval_return
         
-        aggregated_metrics["total_client_weight"] = total_client_weight
+        aggregated_metrics["total_samples"] = total_examples
         aggregated_metrics["num_clients"] = len(results)
         
         # Store collected data for evaluate_fn
@@ -263,27 +250,21 @@ class FMARLStrategy(Strategy):
             self._collected_client_metrics = {}
         self._collected_client_metrics[server_round] = collected_client_metrics
         
-        # Aggregate parameters using weighted average based on client_weight
+        # Aggregate parameters using FedAvg
         weighted_params = []
         for _, fit_res in results:
             if isinstance(fit_res, dict):
                 parameters = fit_res.get("parameters", None)
                 num_examples = fit_res.get("num_examples", 0)
-                metrics = fit_res.get("metrics", {})
             else:
                 parameters = fit_res.parameters
                 num_examples = fit_res.num_examples
-                metrics = fit_res.metrics
             
             if parameters is not None:
                 param_arrays = parameters_to_ndarrays(parameters)
-                # FMARL: Use client_weight from metrics, fallback to num_examples
-                client_weight = metrics.get("client_weight", num_examples)
-                if client_weight is None or client_weight == 0:
-                    client_weight = num_examples
-                weighted_params.append((param_arrays, float(client_weight)))
+                weighted_params.append((param_arrays, num_examples))
         
-        # Weighted average based on client_weight
+        # FedAvg: weighted average
         if weighted_params:
             aggregated_arrays = self._fedavg_arrays(weighted_params)
             aggregated_parameters = ndarrays_to_parameters(aggregated_arrays)
@@ -292,7 +273,6 @@ class FMARLStrategy(Strategy):
             print(f"[Round {server_round}] Aggregated metrics:")
             print(f"  loss: {aggregated_metrics.get('loss', 'N/A'):.6f}")
             print(f"  success: {aggregated_metrics.get('success', 'N/A'):.3f}")
-            print(f"  total_client_weight: {aggregated_metrics.get('total_client_weight', 'N/A')}")
             if "train/return" in aggregated_metrics:
                 print(f"  train/return: {aggregated_metrics['train/return']:.3f}")
             if "eval/return" in aggregated_metrics:
@@ -304,32 +284,24 @@ class FMARLStrategy(Strategy):
     
     def _fedavg_arrays(
         self, 
-        weighted_arrays: List[Tuple[List[np.ndarray], float]]
+        weighted_arrays: List[Tuple[List[np.ndarray], int]]
     ) -> List[np.ndarray]:
-        """
-        Perform weighted average aggregation on parameter arrays.
-        
-        Args:
-            weighted_arrays: List of (parameter_arrays, client_weight) tuples
-        
-        Returns:
-            Aggregated parameter arrays
-        """
+        """Perform FedAvg aggregation on parameter arrays."""
         if not weighted_arrays:
             return []
         
         num_layers = len(weighted_arrays[0][0])
-        total_weight = sum(weight for _, weight in weighted_arrays)
+        total_examples = sum(n for _, n in weighted_arrays)
         
-        if total_weight == 0:
+        if total_examples == 0:
             return []
         
         aggregated = []
         for layer_idx in range(num_layers):
             # Weighted sum of parameters for this layer
             layer_sum = sum(
-                arrays[layer_idx] * (client_weight / total_weight)
-                for arrays, client_weight in weighted_arrays
+                arrays[layer_idx] * (num_examples / total_examples)
+                for arrays, num_examples in weighted_arrays
             )
             aggregated.append(layer_sum)
         
@@ -380,12 +352,13 @@ class FMARLStrategy(Strategy):
         results: List[Tuple[ClientProxy, EvaluateRes]],
         failures: List[Union[Tuple[ClientProxy, EvaluateRes], BaseException]],
     ) -> Tuple[Optional[float], Dict[str, Scalar]]:
+        """Aggregate evaluation results."""
         if not self.accept_failures and failures:
-                return None, {}
-            
+            return None, {}
+        
         if not results:
-                return None, {}
-    
+            return None, {}
+        
         # Aggregate losses and metrics
         total_loss = 0.0
         total_examples = 0
@@ -439,7 +412,7 @@ class FMARLStrategy(Strategy):
                 if result is not None and isinstance(result, tuple) and len(result) == 2:
                     return result
             except Exception as e:
-                print(f"[FMARLStrategy.evaluate] Error calling evaluate_fn: {e}")
+                print(f"[FedRLStrategy.evaluate] Error calling evaluate_fn: {e}")
                 import traceback
                 traceback.print_exc()
         
@@ -456,7 +429,7 @@ def evaluate_config(server_round: int) -> Dict[str, Scalar]:
     return {"server_round": server_round}
 
 
-def run_fmarl_server(
+def run_fedrl_server(
     client_fn: Callable,
     num_rounds: int = 100,
     num_clients: int = 10,
@@ -467,7 +440,7 @@ def run_fmarl_server(
     evaluate_fn: Optional[Callable] = None,
 ):
     """
-    Run FMARL server.
+    Run FedRL server.
     
     Args:
         client_fn: Function to create client instances
@@ -478,10 +451,13 @@ def run_fmarl_server(
         server_address: Server address for non-simulation mode
         use_simulation: Whether to use Flower simulation
         evaluate_fn: Optional evaluation function for metrics collection
+    
+    Returns:
+        Training history
     """
     
     # Create strategy with evaluation enabled if evaluate_fn provided
-    strategy = FMARLStrategy(
+    strategy = FedRLStrategy(
         fraction_fit=fraction_fit,
         fraction_evaluate=1.0 if evaluate_fn is not None else 0.0,
         min_fit_clients=min_fit_clients,
@@ -515,5 +491,5 @@ def run_fmarl_server(
 
 
 # Alias for compatibility
-FMARLServer = FMARLStrategy
+FedRLServer = FedRLStrategy
 

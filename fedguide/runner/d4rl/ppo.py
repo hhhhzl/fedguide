@@ -1,7 +1,7 @@
 """
-Run Centralized SAC baseline for D4RL environments (reacher, maze2d, antmaze, flow).
+Run Centralized PPO baseline for D4RL environments (reacher, maze2d, antmaze, flow).
 
-This script trains a central SAC agent on D4RL datasets.
+This script trains a central PPO agent on D4RL environments using on-policy rollouts.
 """
 
 import argparse
@@ -14,106 +14,34 @@ import torch
 import gymnasium as gym
 from typing import List
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+# Add project root to path for imports
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, _project_root)
 
-from fedguide.baselines.sac.agent import SACAgent
-from fedguide.baselines.sac.trainer import CentralSACTrainer
+from fedguide.baselines.ppo.agent import PPOAgent
+from fedguide.baselines.ppo.trainer import CentralPPOTrainer
 from fedguide.datasets.base import TransitionDataset
 from fedguide.utils.seeds import set_all_seeds
 
 
-def convert_d4rl_to_transitions(obs, acts, rewards, terminals, next_obs):
-    """Convert D4RL dataset format to trajectory format for TransitionDataset."""
-    trajs = []
-    current_traj = {
-        's': [],
-        'a': [],
-        'r': [],
-        's_next': [],
-        'd': [],
-    }
-    
-    for i in range(len(obs)):
-        current_traj['s'].append(obs[i])
-        current_traj['a'].append(acts[i])
-        current_traj['r'].append(rewards[i])
-        current_traj['s_next'].append(next_obs[i] if next_obs is not None else obs[i] if i+1 < len(obs) else obs[i])
-        current_traj['d'].append(float(terminals[i]))
-        
-        # If terminal, end current trajectory
-        if terminals[i] or (i + 1 == len(obs)):
-            traj = {
-                's': np.array(current_traj['s'], dtype=np.float32),
-                'a': np.array(current_traj['a'], dtype=np.float32),
-                'r': np.array(current_traj['r'], dtype=np.float32),
-                's_next': np.array(current_traj['s_next'], dtype=np.float32),
-                'd': np.array(current_traj['d'], dtype=np.float32),
-            }
-            trajs.append(traj)
-            current_traj = {'s': [], 'a': [], 'r': [], 's_next': [], 'd': []}
-    
-    return trajs
-
-
-def load_d4rl_data(env_name: str, n_clients: int = 1):
-    """Load D4RL dataset and split into client datasets."""
-    try:
-        import d4rl
-    except ImportError:
-        raise ImportError("d4rl is required to load D4RL datasets. Please install it with: pip install d4rl")
-    
-    # Create environment to get dataset
-    env = gym.make(env_name)
-    dataset = env.get_dataset()
-    
-    obs = dataset['observations']
-    acts = dataset['actions']
-    rewards = dataset['rewards']
-    terminals = dataset['terminals']
-    
-    # Compute next_obs if not provided
-    if 'next_observations' in dataset:
-        next_obs = dataset['next_observations']
-    else:
-        next_obs = np.concatenate([obs[1:], obs[-1:]], axis=0)
-    
-    # Convert to trajectories
-    all_trajs = convert_d4rl_to_transitions(obs, acts, rewards, terminals, next_obs)
-    
-    # Split into clients (simple split for now)
-    if n_clients == 1:
-        client_trajs = [all_trajs]
-    else:
-        trajs_per_client = len(all_trajs) // n_clients
-        client_trajs = [all_trajs[i*trajs_per_client:(i+1)*trajs_per_client] 
-                       for i in range(n_clients)]
-        # Add remaining trajectories to last client
-        if len(all_trajs) % n_clients > 0:
-            client_trajs[-1].extend(all_trajs[n_clients*trajs_per_client:])
-    
-    # Convert to TransitionDataset
-    transition_datasets = [TransitionDataset(trajs) for trajs in client_trajs]
-    
-    return transition_datasets, env
-
-
 def main():
-    parser = argparse.ArgumentParser(description="Centralized SAC for D4RL environments")
+    parser = argparse.ArgumentParser(description="Centralized PPO for D4RL environments")
     
     # Environment args
     parser.add_argument("--env_name", type=str, required=True,
                        help="D4RL environment name (e.g., 'reacher-medium-v2', 'maze2d-umaze-v1')")
     parser.add_argument("--num_clients", type=int, default=1,
-                       help="Number of clients (for data splitting)")
+                       help="Number of clients (for compatibility, not used in on-policy)")
     
     # Training args
     parser.add_argument("--rounds", type=int, default=100,
                        help="Number of training rounds")
-    parser.add_argument("--update_steps", type=int, default=1000,
-                       help="Number of update steps per round")
-    parser.add_argument("--batch_size", type=int, default=256,
-                       help="Batch size for training")
+    parser.add_argument("--steps_per_round", type=int, default=2000,
+                       help="Number of environment steps to collect per round (on-policy)")
+    parser.add_argument("--update_epochs", type=int, default=4,
+                       help="Number of epochs per update")
+    parser.add_argument("--minibatch_size", type=int, default=None,
+                       help="Minibatch size for PPO updates (if None, use full batch)")
     
     # Agent args
     parser.add_argument("--hidden_dim", type=int, default=256,
@@ -122,16 +50,28 @@ def main():
                        help="Learning rate")
     parser.add_argument("--gamma", type=float, default=0.99,
                        help="Discount factor")
-    parser.add_argument("--tau", type=float, default=0.005,
-                       help="Soft update coefficient")
-    parser.add_argument("--alpha", type=float, default=0.2,
-                       help="Temperature parameter")
+    parser.add_argument("--clip_eps", type=float, default=0.2,
+                       help="PPO clipping epsilon")
+    parser.add_argument("--gae_lambda", type=float, default=0.95,
+                       help="GAE lambda parameter")
+    parser.add_argument("--entropy_coef", type=float, default=0.01,
+                       help="Entropy coefficient")
+    parser.add_argument("--value_coef", type=float, default=0.5,
+                       help="Value loss coefficient")
+    parser.add_argument("--max_grad_norm", type=float, default=0.5,
+                       help="Maximum gradient norm for clipping")
     parser.add_argument("--action_std", type=float, default=0.1,
-                       help="Action distribution standard deviation")
+                       help="Initial standard deviation for action distribution (if learnable_std=False)")
+    parser.add_argument("--learnable_std", action="store_true", default=True,
+                       help="Use learnable action std (recommended)")
+    parser.add_argument("--no_learnable_std", dest="learnable_std", action="store_false",
+                       help="Use fixed action std")
     
     # Evaluation args
     parser.add_argument("--eval_episodes", type=int, default=10,
                        help="Number of episodes for evaluation")
+    parser.add_argument("--eval_stochastic_samples", type=int, default=64,
+                       help="Number of action samples per state for stochastic evaluation")
     
     # Output args
     parser.add_argument("--output_dir", type=str, default=None,
@@ -171,16 +111,16 @@ def main():
     # Set output directory
     if args.output_dir is None:
         env_short = args.env_name.replace('-', '_').replace('/', '_')
-        args.output_dir = f"./model/policy/{env_short}/sac"
+        args.output_dir = f"./model/policy/{env_short}/ppo"
 
     if args.metrics_dir is None:
         env_short = args.env_name.replace('-', '_').replace('/', '_')
-        args.metrics_dir = f"./metrics/{env_short}/sac"
+        args.metrics_dir = f"./metrics/{env_short}/ppo"
     
     # Set render save directory
     if args.render_eval and args.render_save_dir is None:
         env_short = args.env_name.replace('-', '_').replace('/', '_')
-        args.render_save_dir = f"./videos/{env_short}/sac"
+        args.render_save_dir = f"./videos/{env_short}/ppo"
     
     # Set device
     if args.device == "auto":
@@ -194,22 +134,16 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     os.makedirs(args.metrics_dir, exist_ok=True)
     
-    # Load datasets
-    print(f"\nLoading D4RL dataset: {args.env_name}...")
+    # Create environment (for on-policy training)
+    print(f"\nCreating D4RL environment: {args.env_name}...")
     try:
-        transition_datasets, env = load_d4rl_data(
-            env_name=args.env_name,
-            n_clients=args.num_clients
-        )
+        import d4rl
+        env = gym.make(args.env_name)
         # Ensure environment is also seeded
         set_all_seeds(args.seed, env)
     except Exception as e:
-        print(f"Error loading dataset: {e}")
+        print(f"Error creating environment: {e}")
         raise
-    
-    print(f"Loaded {len(transition_datasets)} client datasets")
-    for i, ds in enumerate(transition_datasets):
-        print(f"  Client {i}: {len(ds)} transitions")
     
     # Get environment dimensions
     state_dim = env.observation_space.shape[0]
@@ -234,33 +168,43 @@ def main():
     else:
         print(f"  Action bounds: Not available (using defaults)")
     
-    # Create SAC agent
-    print(f"\nCreating SAC agent...")
-    agent = SACAgent(
+    # Create dummy datasets for compatibility (not used in on-policy)
+    dummy_datasets = [TransitionDataset([])]
+    
+    # Create PPO agent
+    print(f"\nCreating PPO agent...")
+    agent = PPOAgent(
         state_dim=state_dim,
         action_dim=action_dim,
         hidden_dim=args.hidden_dim,
         lr=args.lr,
         gamma=args.gamma,
-        tau=args.tau,
-        alpha=args.alpha,
+        clip_eps=args.clip_eps,
+        gae_lambda=args.gae_lambda,
+        entropy_coef=args.entropy_coef,
+        value_coef=args.value_coef,
+        max_grad_norm=args.max_grad_norm,
+        action_std=args.action_std,
+        learnable_std=args.learnable_std,
         device=device,
         action_low=action_low,
         action_high=action_high,
-        action_std=args.action_std,
     )
     print("Agent created successfully")
     
     # Create trainer
     print(f"\nCreating centralized trainer...")
-    trainer = CentralSACTrainer(
+    trainer = CentralPPOTrainer(
         agent=agent,
-        datasets=transition_datasets,
+        datasets=dummy_datasets,  # Not used in on-policy, but kept for compatibility
         env=env,
-        batch_size=args.batch_size,
-        update_steps=args.update_steps,
+        steps_per_round=args.steps_per_round,
+        update_epochs=args.update_epochs,
+        minibatch_size=args.minibatch_size,
         gamma=args.gamma,
+        gae_lambda=args.gae_lambda,
         eval_episodes=args.eval_episodes,
+        eval_stochastic_samples=args.eval_stochastic_samples,
         device=device,
         render_eval=args.render_eval,
         render_mode=args.render_mode,
@@ -271,9 +215,10 @@ def main():
     
     # Training loop
     print(f"\nStarting training for {args.rounds} rounds...")
-    print(f"  Update steps per round: {args.update_steps}")
-    print(f"  Batch size: {args.batch_size}")
-    print(f"  Total transitions: {trainer.total_transitions}")
+    print(f"  Steps per round: {args.steps_per_round}")
+    print(f"  Update epochs: {args.update_epochs}")
+    print(f"  Minibatch size: {args.minibatch_size if args.minibatch_size is not None else 'full batch'}")
+    print(f"  Learnable std: {args.learnable_std}")
     
     history = []
     
@@ -296,9 +241,11 @@ def main():
         history.append(metrics)
         
         print(f"\n  [Round {round_num}] Metrics:")
-        print(f"    Actor Loss: {metrics['train/loss/actor']:.4f}")
-        print(f"    Critic Loss: {metrics['train/loss/critic']:.4f}")
-        print(f"    Q Value: {metrics['train/q_value']:.4f}")
+        print(f"    Policy Loss: {metrics['train/loss/actor']:.4f}")
+        print(f"    Value Loss: {metrics['train/loss/critic']:.4f}")
+        print(f"    Entropy: {metrics['train/entropy']:.4f}")
+        print(f"    Returns mean: {metrics['train/returns_mean']:.4f}")
+        print(f"    V mean: {metrics['train/V_mean']:.4f}")
         if 'eval/return' in metrics:
             print(f"    Eval Return (deterministic): {metrics['eval/return']:.4f}")
         if 'eval/return_stochastic_mean' in metrics:
@@ -331,5 +278,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 

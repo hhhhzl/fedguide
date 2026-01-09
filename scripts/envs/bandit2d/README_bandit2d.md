@@ -63,16 +63,36 @@ python3 scripts/envs/bandit2d/run_fedkl_bandit2d.py \
 
 ### 5. Run SAC Baseline
 ```bash
-python scripts/run_sac_from_config.py configs/bandit2d/sac.yaml
+python scripts/run_from_config.py configs/bandit2d/sac.yaml --algorithm sac
+```
+Or simply (algorithm is auto-detected from config path):
+```bash
+python scripts/run_from_config.py configs/bandit2d/sac.yaml
 ```
 Visualize:
 ```bash
-python scripts/envs/bandit2d/visualize_sac_training.py \
+python scripts/envs/bandit2d/visualize_rl_training.py \
     --config configs/bandit2d/sac.yaml \
     --output_dir ./plots/bandit2d/sac
 ```
 
-### 6. Visualize Prior Models
+### 6. Run PPO Baseline
+```bash
+python scripts/run_from_config.py configs/bandit2d/ppo.yaml --algorithm ppo
+```
+Or simply (algorithm is auto-detected from config path):
+```bash
+python scripts/run_from_config.py configs/bandit2d/ppo.yaml
+```
+Visualize:
+```bash
+python scripts/envs/bandit2d/visualize_rl_training.py \
+    --config configs/bandit2d/ppo.yaml \
+    --output_dir ./plots/bandit2d/ppo
+```
+Note: The same visualization script works for both SAC and PPO baselines. It automatically detects the algorithm type and displays appropriate metrics (e.g., Q Value for SAC, Value and Entropy for PPO).
+
+### 7. Visualize Prior Models
 
 After pretraining, you can visualize the prior models:
 
@@ -94,7 +114,7 @@ python3 scripts/envs/bandit2d/visualize_prior_aggregated.py \
     --output_path ./prior_comparison.png
 ```
 
-### 7. Visualize Training Results
+### 8. Visualize Training Results
 ```bash
 python3 scripts/envs/bandit2d/visualize_bandit2d.py \
     --metrics_path ./metrics/bandit2d_fedguide/bandit2d_metrics.pkl \

@@ -1,11 +1,7 @@
 """
-FMARL Client Implementation
+FedRep Client Implementation
 
-This module implements the FMARL client that extends FedRLClient.
-Key features:
-- Syncs old policy before training (for sequential federated training)
-- Returns client weight (timesteps) for weighted aggregation
-- Only policy parameters are aggregated; value networks remain local.
+Only aggregates encoder parameters; head stays local.
 """
 
 from __future__ import annotations
@@ -48,15 +44,13 @@ def _make_env(env_id: str, seed: Optional[int] = None):
     return env
 
 
-class FMARLClient(FedRLClient):
+class FedRepClient(FedRLClient):
     """
-    FMARL Client implementation.
+    FedRep Client - only aggregates encoder parameters.
     
     Key design principles:
-    - Only POLICY parameters are aggregated across clients
-    - VALUE networks remain LOCAL to each client
-    - Syncs old policy before training (FMARL-specific)
-    - Returns client weight (timesteps) for weighted aggregation
+    - Only ENCODER parameters are aggregated across clients
+    - HEAD and VALUE networks remain LOCAL to each client
     """
     
     def __init__(
@@ -73,7 +67,7 @@ class FMARLClient(FedRLClient):
         use_wandb: bool = False,
         wandb_project: Optional[str] = None,
         logger_level: int = None,
-        metrics_collector: Optional[Any] = None,  # Bandit2DMetricsCollector instance
+        metrics_collector: Optional[Any] = None,
     ):
         super().__init__(
             agent=agent,
@@ -91,28 +85,24 @@ class FMARLClient(FedRLClient):
         self.metrics_collector = metrics_collector
     
     def get_parameters(self, config: Dict[str, Any]):
-        """Get parameters as a list for Flower compatibility (same as FedKL)."""
+        """Get parameters - ONLY ENCODER (Flower format: list of numpy arrays)."""
         if not hasattr(self.agent, "get_parameters"):
             return super().get_parameters(config)
         
-        # Get parameters as list from agent
-        flat_params = []
+        # Get parameters as dict from agent
         param_dict = self.agent.get_parameters()
-        for module_params in param_dict.values():
-            if isinstance(module_params, dict):
-                for v in module_params.values():
-                    if isinstance(v, torch.Tensor):
-                        flat_params.append(v.numpy())
-                    elif hasattr(v, "numpy"):
-                        flat_params.append(v.numpy())
-                    else:
-                        flat_params.append(v)
-            elif isinstance(module_params, torch.Tensor):
-                flat_params.append(module_params.numpy())
-            elif hasattr(module_params, "numpy"):
-                flat_params.append(module_params.numpy())
-            else:
-                flat_params.append(module_params)
+        
+        # Only encoder parameters
+        flat_params = []
+        if "encoder" in param_dict:
+            encoder_params = param_dict["encoder"]
+            for v in encoder_params.values():
+                if isinstance(v, torch.Tensor):
+                    flat_params.append(v.numpy())
+                elif hasattr(v, "numpy"):
+                    flat_params.append(v.numpy())
+                else:
+                    flat_params.append(v)
         
         # Verify return type - must be list of numpy arrays
         # Make sure all are independent copies (not views) for serialization
@@ -136,101 +126,79 @@ class FMARLClient(FedRLClient):
         return verified_params
     
     def list_to_parameter_dict(self, lst):
-        """Convert flat list from server into parameter dict."""
+        """Convert flat list from server into parameter dict (encoder only)."""
         param_dict = {}
-
-        # 1) Policy parameters
-        policy_state = self.agent.policy.state_dict()
-        new_policy_state = {}
-
+        encoder_state = self.agent.encoder.state_dict()
+        new_encoder_state = {}
+        
         idx = 0
-        for k, v in policy_state.items():
-            new_policy_state[k] = torch.tensor(lst[idx], dtype=v.dtype)
+        for k, v in encoder_state.items():
+            new_encoder_state[k] = torch.tensor(lst[idx], dtype=v.dtype)
             idx += 1
-        param_dict["policy"] = new_policy_state
-
-        # 2) log_std (last item)
-        param_dict["log_std"] = torch.tensor(lst[idx])
-
+        param_dict["encoder"] = new_encoder_state
+        
         return param_dict
-
+    
     def set_parameters(self, parameters):
-        """Set parameters, handling both dict and list formats."""
+        """Set parameters - ONLY ENCODER."""
         if not hasattr(self.agent, "set_parameters"):
             return super().set_parameters(parameters)
-
-        # If parameters is a list, convert it
+        
+        # Handle Parameters object from Flower
+        from flwr.common import parameters_to_ndarrays
+        if hasattr(parameters, 'tensors') or hasattr(parameters, 'tensor_type'):
+            parameters = parameters_to_ndarrays(parameters)
+        
+        # If parameters is a list, convert it to dict
         if isinstance(parameters, list):
             parameters = self.list_to_parameter_dict(parameters)
-        # Now pass the dict to the agent
+        
+        # Now pass the dict to the agent (only encoder)
         self.agent.set_parameters(parameters)
-
+    
     def fit(self, parameters, config):
-        """
-        Override fit to handle FMARL-specific logic:
-        1. Set parameters from server
-        2. Sync old policy (FMARL-specific, though trainer also does this)
-        3. Train one round
-        4. Get client weight (timesteps) for weighted aggregation
-        5. Return parameters, client weight, and metrics
-        """
+        """Override fit to handle parameters and collect metrics."""
         cid = getattr(self, "cid", config.get("cid", "unknown"))
         rnd = int(config.get("server_round", 0))
         
         # Handle parameters - Flower may pass Parameters object or list
         if parameters is not None:
             try:
-                # Convert Parameters object to list if needed
                 from flwr.common import parameters_to_ndarrays
                 if hasattr(parameters, 'tensors') or hasattr(parameters, 'tensor_type'):
-                    # It's a Parameters object, convert to list
                     param_list = parameters_to_ndarrays(parameters)
                 else:
-                    # It's already a list or dict
                     param_list = parameters
                 self.set_parameters(param_list)
             except Exception as e:
-                # Continue anyway - agent will use current parameters
                 print("Parameter loading failed in fit():", e)
         
         if hasattr(self, "metrics"):
             self.metrics.set_step(rnd)
-        
-        # FMARL: Sync old policy before training (trainer also does this, but ensure it's done)
-        # Note: The trainer.train_one_round() will also call sync_old_policy, but we ensure
-        # it's called here as well for consistency with original FMARL implementation
-        if hasattr(self.agent, 'sync_old_policy'):
-            self.agent.sync_old_policy()
         
         # Train one round
         train_result = self.trainer.train_one_round()
         
         # Extract loss and other metrics from trainer result
         if isinstance(train_result, dict):
-            # Try multiple possible loss keys
             loss = None
             for key in ["loss", "train/loss", "train/loss/total", "loss/total", "train/loss/policy", "train/loss/value"]:
                 if key in train_result:
                     val = train_result[key]
-                    # Check if value is valid (not None, not nan, not inf)
                     if val is not None:
                         try:
                             loss_float = float(val)
-                            # Check for nan: nan != nan is True
-                            # Check for inf
                             if loss_float == loss_float and loss_float != float('inf') and loss_float != float('-inf'):
                                 loss = loss_float
                                 break
                         except (TypeError, ValueError):
                             continue
             
-            # If still None or invalid, try to use return as a proxy
             if loss is None:
                 if "train/return" in train_result:
                     train_return_val = train_result["train/return"]
                     if train_return_val is not None:
                         try:
-                            # Use negative return as loss
                             loss = -float(train_return_val)
                         except (TypeError, ValueError):
                             loss = 0.0
@@ -239,9 +207,7 @@ class FMARLClient(FedRLClient):
                 else:
                     loss = 0.0
             elif isinstance(loss, float):
-                # Check for nan/inf
                 if loss != loss or loss == float('inf') or loss == float('-inf'):
-                    # Try to use return as fallback
                     if "train/return" in train_result:
                         train_return_val = train_result["train/return"]
                         if train_return_val is not None:
@@ -257,11 +223,9 @@ class FMARLClient(FedRLClient):
             train_return = train_result.get("train/return", train_result.get("return", None))
             eval_return = train_result.get("eval/return", None)
         else:
-            # If train_result is not a dict, it should be a scalar loss value
             if train_result is not None:
                 try:
                     loss = float(train_result)
-                    # Check for nan/inf
                     if loss != loss or loss == float('inf') or loss == float('-inf'):
                         loss = 0.0
                 except (TypeError, ValueError):
@@ -281,44 +245,30 @@ class FMARLClient(FedRLClient):
         else:
             try:
                 loss = float(loss)
-                # Check for nan/inf
                 if loss != loss or loss == float('inf') or loss == float('-inf'):
                     loss = 0.0
             except (TypeError, ValueError):
                 loss = 0.0
         
-        # Get client weight (number of timesteps) - FMARL uses this for weighted aggregation
-        client_weight = 0
-        if hasattr(self.agent, 'get_client_weight'):
-            client_weight = self.agent.get_client_weight()
-        elif hasattr(self.trainer, 'current_round_timesteps'):
-            client_weight = int(self.trainer.current_round_timesteps)
-        else:
-            # Fallback to samples
-            client_weight = samples
-        
-        # Print client loss for debugging
-        print(f"[FMARLClient {cid}] Round {rnd}: loss = {loss}, train_return = {train_return}, eval_return = {eval_return}, client_weight = {client_weight}, success = {success}")
+        print(f"[FedRepClient {cid}] Round {rnd}: loss = {loss}, train_return = {train_return}, eval_return = {eval_return}, success = {success}")
         
         # Build metrics dict
         fit_metrics = {
             "loss": loss,
             "success": int(bool(success)),
-            "client_weight": client_weight,  # FMARL-specific: client weight for weighted aggregation
         }
         if train_return is not None:
             fit_metrics["train/return"] = float(train_return)
         if eval_return is not None:
             fit_metrics["eval/return"] = float(eval_return)
         
-        # Get new parameters (as list)
+        # Get new parameters (as list) - only encoder
         new_params_list = self.get_parameters(config)
         
-        # Ensure new_params_list is a list, not a dict
+        # Ensure new_params_list is a list
         if isinstance(new_params_list, dict):
             new_params_list = [np.asarray(v) for v in new_params_list.values()]
         
-        # Verify it's a list
         if not isinstance(new_params_list, list):
             new_params_list = [np.asarray(new_params_list)] if not isinstance(new_params_list, list) else new_params_list
         
@@ -337,56 +287,45 @@ class FMARLClient(FedRLClient):
             try:
                 import json
                 actions = self.trainer.last_actions
-                # Convert to list for JSON serialization
                 if isinstance(actions, np.ndarray):
                     actions_list = actions.tolist()
                 elif isinstance(actions, (list, tuple)):
                     actions_list = [a.tolist() if isinstance(a, np.ndarray) else a for a in actions]
                 else:
                     actions_list = actions
-                # Store in metrics as JSON string
                 fit_metrics["client_actions"] = json.dumps(actions_list)
-                # Also store client_id for mapping
                 mapped_id = abs(hash(cid)) % (getattr(self, '_num_clients', 100) if hasattr(self, '_num_clients') else 100)
                 fit_metrics["client_id_mapped"] = mapped_id
             except Exception:
-                # Silently fail if serialization fails
                 pass
         
         # Evaluate policy on grid and pass through metrics
         if self.metrics_collector is not None:
             try:
                 import json
-                # Evaluate agent on grid
                 grid_metrics = self.metrics_collector.evaluate_on_grid(
                     agent=self.agent,
                     client_id=mapped_id if 'mapped_id' in locals() else None,
                     round_num=rnd
                 )
-                # Serialize grid metrics to JSON
                 serialized_metrics = {}
                 for key, value in grid_metrics.items():
                     if isinstance(value, np.ndarray):
                         serialized_metrics[key] = json.dumps(value.tolist())
                     else:
                         serialized_metrics[key] = json.dumps(value)
-                # Store in fit_metrics with prefix
                 for key, value in serialized_metrics.items():
                     fit_metrics[f"client_grid_{key}"] = value
             except Exception:
-                # Silently fail if evaluation fails
                 pass
         
-        # Return: parameters, num_examples (use client_weight), metrics
-        # Note: Flower uses num_examples for weighted aggregation, but we pass client_weight in metrics
-        # The server will use client_weight from metrics instead of num_examples
-        return new_params_list, client_weight, fit_metrics
+        return new_params_list, samples, fit_metrics
 
 
 # --------- client_fn_builder ----------
 def client_fn_builder(
     env_id: str,
-    algo: str = "fmarl",
+    algo: str = "fedrep",
     *,
     n_steps: int = 2048,
     gamma: float = 0.99,
@@ -396,31 +335,26 @@ def client_fn_builder(
     value_coef: float = 0.5,
     update_epochs: int = 10,
     minibatch_size: int = 64,
-    lambda_global: float = 0.1,
-    lambda_local: float = 0.05,
     max_grad_norm: float = 0.5,
     hidden_dim: int = 256,
     lr: float = 3e-4,
-    # logging
     use_wandb: bool = False,
     wandb_project: Optional[str] = None,
     run_name: Optional[str] = None,
     metrics_collector: Optional[Any] = None,
-    num_clients: Optional[int] = None,  # For ID mapping
+    num_clients: Optional[int] = None,
 ):
     """
-    Build client function for FMARL.
+    Build client function for FedRep.
     """
     
     def client_fn(context) -> Any:
-        # Import here to avoid circular imports
-        from fedguide.baselines.fmarl.agent import FMARLAgent
-        from fedguide.baselines.fmarl.trainer import FMARLTrainer
+        from fedguide.baselines.fedrep.agent import FedRepAgent
+        from fedguide.baselines.fedrep.trainer import FedRepTrainer
         
         # 1) per-client seed and ID mapping
         cid = str(getattr(context, "client_id", None) or getattr(context, "node_id", None) or "0")
         
-        # Map Flower's client ID to 0, 1, 2, 3...
         if num_clients is not None:
             mapped_client_id = abs(hash(cid)) % num_clients
         else:
@@ -439,8 +373,8 @@ def client_fn_builder(
         state_dim = int(obs_space.shape[0])
         action_dim = int(act_space.shape[0])
         
-        # 3) agent
-        agent = FMARLAgent(
+        # 3) agent (FedRep with encoder/head separation)
+        agent = FedRepAgent(
             state_dim=state_dim,
             action_dim=action_dim,
             hidden_dim=hidden_dim,
@@ -449,7 +383,7 @@ def client_fn_builder(
         )
         
         # 4) trainer
-        trainer = FMARLTrainer(
+        trainer = FedRepTrainer(
             agent=agent,
             env=env,
             n_steps=n_steps,
@@ -460,8 +394,6 @@ def client_fn_builder(
             value_coef=value_coef,
             update_epochs=update_epochs,
             minibatch_size=minibatch_size,
-            lambda_global=lambda_global,
-            lambda_local=lambda_local,
             max_grad_norm=max_grad_norm,
             device="cpu",
         )
@@ -472,7 +404,7 @@ def client_fn_builder(
             try:
                 import importlib
                 try:
-                    run_module = importlib.import_module('scripts.envs.bandit2d.run_fmarl_bandit2d')
+                    run_module = importlib.import_module('scripts.envs.bandit2d.run_fedrep_bandit2d')
                     metrics_collector = getattr(run_module, '_metrics_collector_global', None)
                 except (ImportError, AttributeError):
                     pass
@@ -480,7 +412,7 @@ def client_fn_builder(
                 pass
         
         # 5) client
-        client = FMARLClient(
+        client = FedRepClient(
             agent=agent,
             env=env,
             trainer=trainer,
@@ -490,7 +422,6 @@ def client_fn_builder(
             wandb_project=wandb_project,
             metrics_collector=metrics_collector,
         )
-        # Store client_id for metrics collection
         client.cid = cid
         
         # Register agent with metrics collector for visualization
@@ -500,11 +431,10 @@ def client_fn_builder(
             else:
                 mapped_id = abs(hash(cid)) % 100
             
-            # Register agent if method exists
             if hasattr(metrics_collector, 'register_client_agent'):
                 metrics_collector.register_client_agent(mapped_id, agent)
         
-        # Convert NumPyClient to Client 
+        # Convert NumPyClient to Client
         return client.to_client()
     
     return client_fn

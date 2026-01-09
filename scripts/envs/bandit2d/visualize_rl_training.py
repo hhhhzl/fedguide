@@ -1,11 +1,14 @@
 """
-Visualize training history for Centralized SAC baseline.
+Visualize training history for Centralized SAC and PPO baselines.
 
 This script reads the training history pickle file and plots:
 - Return (eval/return) vs rounds
-- Loss (total, actor, critic) vs rounds
-- Q Value vs rounds
+- Loss (total, actor/policy, critic/value) vs rounds
+- Q Value (SAC) or Value (PPO) vs rounds
+- Entropy (PPO only) vs rounds
 - Policy log probability distribution (heatmap) for selected rounds
+
+Supports both SAC and PPO algorithms by detecting available metrics.
 """
 
 import argparse
@@ -39,6 +42,7 @@ def load_history(pickle_path: str) -> Dict:
 def extract_metrics(history: List[Dict]) -> Dict[str, np.ndarray]:
     """
     Extract metrics from history for plotting.
+    Supports both SAC and PPO algorithms by detecting available metrics.
     
     Args:
         history: List of metric dictionaries from training
@@ -51,14 +55,29 @@ def extract_metrics(history: List[Dict]) -> Dict[str, np.ndarray]:
     actor_loss = []
     critic_loss = []
     q_value = []
+    entropy = []
     eval_return = []
+    
+    # Detect algorithm type from first round's metrics
+    is_ppo = False
+    if history:
+        first_metrics = history[0]
+        if 'train/value' in first_metrics or 'train/entropy' in first_metrics:
+            is_ppo = True
     
     for metrics in history:
         rounds.append(metrics.get('round', len(rounds) + 1))
         total_loss.append(metrics.get('loss', 0.0))
         actor_loss.append(metrics.get('train/loss/actor', 0.0))
         critic_loss.append(metrics.get('train/loss/critic', 0.0))
-        q_value.append(metrics.get('train/q_value', 0.0))
+        
+        # Handle value/Q-value: PPO uses 'train/value', SAC uses 'train/q_value'
+        if is_ppo:
+            q_value.append(metrics.get('train/value', 0.0))
+            entropy.append(metrics.get('train/entropy', 0.0))
+        else:
+            q_value.append(metrics.get('train/q_value', 0.0))
+            entropy.append(np.nan)  # SAC doesn't have entropy
         
         # Eval return might not be present in all rounds
         if 'eval/return' in metrics:
@@ -72,23 +91,32 @@ def extract_metrics(history: List[Dict]) -> Dict[str, np.ndarray]:
         'actor_loss': np.array(actor_loss),
         'critic_loss': np.array(critic_loss),
         'q_value': np.array(q_value),
+        'entropy': np.array(entropy),
         'eval_return': np.array(eval_return),
+        'is_ppo': is_ppo,
     }
 
 
 def plot_training_curves(metrics: Dict[str, np.ndarray], output_path: Optional[str] = None):
     """
     Plot training curves for return and loss.
+    Supports both SAC and PPO algorithms.
     
     Args:
         metrics: Dictionary containing extracted metrics
         output_path: Optional path to save the figure
     """
     rounds = metrics['rounds']
+    is_ppo = metrics.get('is_ppo', False)
+    algorithm_name = 'PPO' if is_ppo else 'SAC'
     
-    # Create figure with subplots (2x2 for training curves)
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle('SAC Training Progress', fontsize=16, fontweight='bold')
+    # Create figure with subplots (2x2 for training curves, or 2x3 if PPO with entropy)
+    has_entropy = is_ppo and not np.all(np.isnan(metrics['entropy']))
+    if has_entropy:
+        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    else:
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle(f'{algorithm_name} Training Progress', fontsize=16, fontweight='bold')
     
     # Plot 1: Eval Return
     ax1 = axes[0, 0]
@@ -116,24 +144,47 @@ def plot_training_curves(metrics: Dict[str, np.ndarray], output_path: Optional[s
     ax2.grid(True, alpha=0.3)
     ax2.legend()
     
-    # Plot 3: Actor and Critic Loss
+    # Plot 3: Actor/Policy and Critic/Value Loss
     ax3 = axes[1, 0]
-    ax3.plot(rounds, metrics['actor_loss'], 'g-', linewidth=2, label='Actor Loss', marker='o', markersize=4)
-    ax3.plot(rounds, metrics['critic_loss'], 'orange', linewidth=2, label='Critic Loss', marker='s', markersize=4)
+    if is_ppo:
+        ax3.plot(rounds, metrics['actor_loss'], 'g-', linewidth=2, label='Policy Loss', marker='o', markersize=4)
+        ax3.plot(rounds, metrics['critic_loss'], 'orange', linewidth=2, label='Value Loss', marker='s', markersize=4)
+        ax3.set_title('Policy & Value Loss vs Rounds', fontsize=13, fontweight='bold')
+    else:
+        ax3.plot(rounds, metrics['actor_loss'], 'g-', linewidth=2, label='Actor Loss', marker='o', markersize=4)
+        ax3.plot(rounds, metrics['critic_loss'], 'orange', linewidth=2, label='Critic Loss', marker='s', markersize=4)
+        ax3.set_title('Actor & Critic Loss vs Rounds', fontsize=13, fontweight='bold')
     ax3.set_xlabel('Round', fontsize=12)
     ax3.set_ylabel('Loss', fontsize=12)
-    ax3.set_title('Actor & Critic Loss vs Rounds', fontsize=13, fontweight='bold')
     ax3.grid(True, alpha=0.3)
     ax3.legend()
     
-    # Plot 4: Q Value
+    # Plot 4: Q Value or Value
     ax4 = axes[1, 1]
-    ax4.plot(rounds, metrics['q_value'], 'purple', linewidth=2, label='Q Value', marker='^', markersize=4)
+    value_label = 'Value' if is_ppo else 'Q Value'
+    ax4.plot(rounds, metrics['q_value'], 'purple', linewidth=2, label=value_label, marker='^', markersize=4)
     ax4.set_xlabel('Round', fontsize=12)
-    ax4.set_ylabel('Q Value', fontsize=12)
-    ax4.set_title('Q Value vs Rounds', fontsize=13, fontweight='bold')
+    ax4.set_ylabel(value_label, fontsize=12)
+    ax4.set_title(f'{value_label} vs Rounds', fontsize=13, fontweight='bold')
     ax4.grid(True, alpha=0.3)
     ax4.legend()
+    
+    # Plot 5: Entropy (PPO only)
+    if has_entropy:
+        ax5 = axes[1, 2]
+        valid_entropy = ~np.isnan(metrics['entropy'])
+        if np.any(valid_entropy):
+            ax5.plot(rounds[valid_entropy], metrics['entropy'][valid_entropy], 
+                    'teal', linewidth=2, label='Entropy', marker='d', markersize=4)
+            ax5.set_xlabel('Round', fontsize=12)
+            ax5.set_ylabel('Entropy', fontsize=12)
+            ax5.set_title('Entropy vs Rounds', fontsize=13, fontweight='bold')
+            ax5.grid(True, alpha=0.3)
+            ax5.legend()
+        else:
+            ax5.text(0.5, 0.5, 'No entropy data available', 
+                    ha='center', va='center', transform=ax5.transAxes)
+            ax5.set_title('Entropy vs Rounds', fontsize=13, fontweight='bold')
     
     plt.tight_layout()
     
@@ -383,12 +434,21 @@ def visualize_single_seed(history_path: str, output_dir: Optional[str],
     metrics = extract_metrics(history)
     
     # Print summary statistics
-    print("\nSummary Statistics:")
+    is_ppo = metrics.get('is_ppo', False)
+    algorithm_name = 'PPO' if is_ppo else 'SAC'
+    print(f"\nSummary Statistics ({algorithm_name}):")
     print(f"  Total rounds: {len(metrics['rounds'])}")
     print(f"  Final total loss: {metrics['total_loss'][-1]:.4f}")
-    print(f"  Final actor loss: {metrics['actor_loss'][-1]:.4f}")
-    print(f"  Final critic loss: {metrics['critic_loss'][-1]:.4f}")
-    print(f"  Final Q value: {metrics['q_value'][-1]:.4f}")
+    if is_ppo:
+        print(f"  Final policy loss: {metrics['actor_loss'][-1]:.4f}")
+        print(f"  Final value loss: {metrics['critic_loss'][-1]:.4f}")
+        print(f"  Final value: {metrics['q_value'][-1]:.4f}")
+        if not np.isnan(metrics['entropy'][-1]):
+            print(f"  Final entropy: {metrics['entropy'][-1]:.4f}")
+    else:
+        print(f"  Final actor loss: {metrics['actor_loss'][-1]:.4f}")
+        print(f"  Final critic loss: {metrics['critic_loss'][-1]:.4f}")
+        print(f"  Final Q value: {metrics['q_value'][-1]:.4f}")
     
     eval_return = metrics['eval_return']
     valid_return = ~np.isnan(eval_return)
@@ -427,7 +487,7 @@ def visualize_single_seed(history_path: str, output_dir: Optional[str],
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Visualize SAC training history")
+    parser = argparse.ArgumentParser(description="Visualize SAC/PPO training history")
     
     # Config file or direct path
     parser.add_argument("--config", type=str, default=None,
@@ -476,8 +536,12 @@ def main():
             # Use seeds from config
             seed_list = normalize_seed(config.get("seed", 42))
         
-        # Get metrics directory
-        base_metrics_dir = config.get("metrics_dir", "./metrics/bandit2d/sac")
+        # Get metrics directory (detect SAC or PPO from path)
+        default_metrics_dir = "./metrics/bandit2d/sac"
+        config_metrics_dir = config.get("metrics_dir", default_metrics_dir)
+        if "ppo" in config_metrics_dir.lower():
+            default_metrics_dir = "./metrics/bandit2d/ppo"
+        base_metrics_dir = config_metrics_dir if "metrics" in config_metrics_dir else default_metrics_dir
         
         # Get output directory (if not specified, use metrics_dir)
         if args.output_dir:

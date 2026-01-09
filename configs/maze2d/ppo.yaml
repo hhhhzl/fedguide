@@ -1,0 +1,49 @@
+# PPO Training Configuration for Maze2D D4RL Environment
+
+# Environment configuration
+env_type: "d4rl"  # Environment type: "d4rl"
+env_name: "maze2d-umaze-v1"  # D4RL environment name
+num_clients: 1  # Number of clients (for compatibility, not used in on-policy)
+
+# Training configuration
+rounds: 100
+steps_per_round: 2000  # Number of environment steps to collect per round (on-policy)
+update_epochs: 4  # Number of epochs per update (PPO-specific)
+minibatch_size: null  # If null, use full batch
+
+# Agent configuration
+hidden_dim: 256
+lr: 3e-4
+gamma: 0.99
+clip_eps: 0.2  # PPO clipping epsilon
+gae_lambda: 0.95  # GAE lambda parameter
+entropy_coef: 0.01  # Entropy coefficient
+value_coef: 0.5  # Value loss coefficient
+max_grad_norm: 0.5  # Maximum gradient norm for clipping
+action_std: 0.1  # Initial standard deviation for action distribution (if learnable_std=False)
+learnable_std: true  # Use learnable action std (strongly recommended)
+
+# Evaluation configuration
+eval_episodes: 10
+eval_stochastic_samples: 64  # Number of action samples per state for stochastic evaluation
+
+# Output configuration
+output_dir: "./model/policy/maze2d/ppo"
+metrics_dir: "./metrics/maze2d/ppo"
+save_every: 10
+
+# Device configuration
+device: "auto"  # "auto", "cpu", or "cuda"
+
+# Random seed configuration
+# Can be a single integer or a list of integers
+# If list, will run training for each seed
+seed: [0, 1, 2, 3, 4]  # Run 5 different seeds
+
+# Rendering configuration (for MuJoCo/Maze environments)
+render_eval: true  # Enable rendering during evaluation
+render_mode: "video"  # "human" (display), "rgb_array" (collect frames), "video" (save video)
+render_save_dir: "./plots/maze2d/ppo"  # Directory to save videos
+render_every_n_rounds: 10  # Render every N rounds (0 = only last round, -1 = all rounds)
+render_episodes: 1  # Number of episodes to render per round
+
