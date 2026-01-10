@@ -12,7 +12,7 @@ import argparse
 _project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 sys.path.insert(0, _project_root)
 
-from fedguide.runner.unified_runner import run_training, load_config
+from fedguide.runner.runner import run_training, load_config
 
 
 def main():

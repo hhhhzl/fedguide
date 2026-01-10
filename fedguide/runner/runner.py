@@ -1,8 +1,9 @@
 """
-Unified runner that supports all algorithms and environments without code duplication.
+Unified runner that supports all algorithms and environments.
 
 This runner uses factory functions registered in a registry to dynamically create
-agents, trainers, and environments based on configuration.
+agents, trainers, and environments based on configuration. It eliminates the need
+for separate runner files for each (environment, algorithm) combination.
 """
 
 import argparse

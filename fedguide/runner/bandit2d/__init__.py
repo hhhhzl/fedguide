@@ -2,7 +2,7 @@
 Bandit2D environment runners.
 
 This module is kept for backward compatibility. All runners are now handled
-by the unified runner system in fedguide.runner.unified_runner.
+by the unified runner system in fedguide.runner.runner.
 """
 
 # Export common utilities for hooks (e.g., metrics collection)

@@ -66,7 +66,7 @@ def run_training(config: Dict[str, Any], seed: int, algorithm: str = None) -> bo
         True if training succeeded, False otherwise
     """
     # Import unified runner
-    from fedguide.runner.unified_runner import run_training as unified_run_training
+    from fedguide.runner.runner import run_training as unified_run_training
     
     # Determine algorithm
     if algorithm is None:

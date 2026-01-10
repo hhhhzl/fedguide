@@ -11,7 +11,7 @@ runner file and registering it in the environment's __init__.py.
 """
 
 from .run_from_config import main as run_from_config
-from .unified_runner import run_training, main as unified_main
+from .runner import run_training, main as unified_main
 from .factories import get_registry
 
 # Keep old imports for backward compatibility
