@@ -55,7 +55,7 @@ def make_evaluate_fn(
     Args:
         collect_every: Collect metrics every N rounds
         collector: Metrics collector instance
-        algorithm: Algorithm name ('fedguide', 'fedkl', 'fmarl', 'fedrl', or 'fedrep')
+        algorithm: Algorithm name ('fedguide', 'fedkl', 'fmarl', 'fedrl', 'fedrep', or 'fedmomentum')
     
     Returns:
         Evaluate function or None if disabled
@@ -274,4 +274,7 @@ def save_training_results(
     elif algorithm == 'fedrep':
         print(f"    python scripts/envs/bandit2d/plot_reward_curves.py \\")
         print(f"        --fedkl_history {history_path}  # FedRep uses same format as FedKL")
+    elif algorithm == 'fedmomentum':
+        print(f"    python scripts/envs/bandit2d/plot_reward_curves.py \\")
+        print(f"        --fedkl_history {history_path}  # FedMomentum uses same format as FedKL")
 

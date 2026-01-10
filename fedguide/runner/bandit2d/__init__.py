@@ -34,6 +34,12 @@ try:
 except ImportError:
     pass
 
+try:
+    from . import fedmomentum
+    register_runner('bandit2d', 'fedmomentum')
+except ImportError:
+    pass
+
 # Export main functions for direct usage
 from .ppo import main as run_ppo
 from .sac import main as run_sac
@@ -50,5 +56,11 @@ try:
 except ImportError:
     run_fedkl = None
 
-__all__ = ['run_ppo', 'run_sac', 'run_fedguide', 'run_fedkl']
+try:
+    from . import fedmomentum
+    from .fedmomentum import main as run_fedmomentum
+except ImportError:
+    run_fedmomentum = None
+
+__all__ = ['run_ppo', 'run_sac', 'run_fedguide', 'run_fedkl', 'run_fedmomentum']
 
