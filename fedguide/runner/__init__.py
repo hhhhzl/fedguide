@@ -11,7 +11,13 @@ runner file and registering it in the environment's __init__.py.
 """
 
 from .run_from_config import main as run_from_config
-from .registry import get_registry, register_env, register_runner
+from .unified_runner import run_training, main as unified_main
+from .factories import get_registry
 
-__all__ = ['run_from_config', 'get_registry', 'register_env', 'register_runner']
+# Keep old imports for backward compatibility
+try:
+    from .registry import register_env, register_runner
+    __all__ = ['run_from_config', 'run_training', 'unified_main', 'get_registry', 'register_env', 'register_runner']
+except ImportError:
+    __all__ = ['run_from_config', 'run_training', 'unified_main', 'get_registry']
 
