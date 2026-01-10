@@ -1,54 +1,15 @@
 """
-Bandit2D environment runners for PPO, SAC, FedGuide, and FedKL algorithms.
+Bandit2D environment runners.
 
-This module automatically registers available runners with the global registry.
+This module is kept for backward compatibility. All runners are now handled
+by the unified runner system in fedguide.runner.runner.
 """
 
-from fedguide.runner.registry import register_env, register_runner
+# Export common utilities for hooks (e.g., metrics collection)
+from ._common import (
+    create_metrics_collector,
+    make_evaluate_fn,
+    save_training_results
+)
 
-# Register environment type
-register_env('bandit2d', 'bandit2d')
-
-# Auto-register available runners
-try:
-    from . import ppo
-    register_runner('bandit2d', 'ppo')
-except ImportError:
-    pass
-
-try:
-    from . import sac
-    register_runner('bandit2d', 'sac')
-except ImportError:
-    pass
-
-try:
-    from . import fedguide
-    register_runner('bandit2d', 'fedguide')
-except ImportError:
-    pass
-
-try:
-    from . import fedkl
-    register_runner('bandit2d', 'fedkl')
-except ImportError:
-    pass
-
-# Export main functions for direct usage
-from .ppo import main as run_ppo
-from .sac import main as run_sac
-
-try:
-    from . import fedguide
-    from .fedguide import main as run_fedguide
-except ImportError:
-    run_fedguide = None
-
-try:
-    from . import fedkl
-    from .fedkl import main as run_fedkl
-except ImportError:
-    run_fedkl = None
-
-__all__ = ['run_ppo', 'run_sac', 'run_fedguide', 'run_fedkl']
-
+__all__ = ['create_metrics_collector', 'make_evaluate_fn', 'save_training_results']

@@ -1,5 +1,5 @@
 """
-Entry point for FedGuide federated training on Bandit2D.
+Entry point for FedMomentum federated training on Bandit2D.
 
 This script uses the unified runner system.
 """
@@ -7,7 +7,6 @@ This script uses the unified runner system.
 import sys
 import os
 import argparse
-import yaml
 
 # Add project root to path
 _project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -17,14 +16,14 @@ from fedguide.runner.runner import run_training, load_config
 
 
 def main():
-    """Main entry point for FedGuide federated training on Bandit2D."""
-    parser = argparse.ArgumentParser(description="FedGuide federated training for Bandit2D")
+    """Main entry point for FedMomentum federated training on Bandit2D."""
+    parser = argparse.ArgumentParser(description="FedMomentum federated training for Bandit2D")
     
     # Config file (primary method)
-    parser.add_argument("--config", type=str, default="configs/bandit2d/fedguide.yaml",
+    parser.add_argument("--config", type=str, default="configs/bandit2d/fedkl.yaml",  # FedMomentum uses similar config
                        help="Path to YAML configuration file")
     
-    # Command-line overrides (optional, will override config values)
+    # Command-line overrides (optional)
     parser.add_argument("--seed", type=int, default=None, help="Random seed (overrides config)")
     parser.add_argument("--device", type=str, default=None, help="Device (overrides config)")
     parser.add_argument("--rounds", type=int, default=None, help="Number of rounds (overrides config)")
@@ -35,7 +34,6 @@ def main():
     # Load config
     config_path = args.config
     if not os.path.exists(config_path):
-        # Try relative to project root
         alt_path = os.path.join(_project_root, config_path)
         if os.path.exists(alt_path):
             config_path = alt_path
@@ -46,7 +44,7 @@ def main():
     config = load_config(config_path)
     
     # Set algorithm and environment type
-    config['algorithm'] = 'fedguide'
+    config['algorithm'] = 'fedmomentum'
     config['env_type'] = 'bandit2d'
     
     # Override with command-line args if provided
