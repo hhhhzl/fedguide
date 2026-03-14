@@ -239,6 +239,14 @@ def _run_federated_training(env_type: str, algorithm: str, config: Dict[str, Any
     hooks = registry.get_hooks(env_type, algorithm)
     metrics_collector = None
     
+    # Deterministic client ID mapping for heterogeneous Bandit2D (Flower VCE uses long int cids)
+    metrics_dir = config.get('metrics_dir', './metrics')
+    os.makedirs(metrics_dir, exist_ok=True)
+    cid_mapping_file = os.path.abspath(os.path.join(metrics_dir, ".cid_mapping.json"))
+    from fedguide.utils.client_id_mapping import clear_mapping_file
+    clear_mapping_file(cid_mapping_file)
+    config['cid_mapping_file'] = cid_mapping_file
+    
     # Initialize hooks and get metrics collector if available
     if hooks:
         for hook in hooks:

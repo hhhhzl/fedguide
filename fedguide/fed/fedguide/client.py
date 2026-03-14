@@ -32,7 +32,7 @@ def _is_d4rl_env(env_id: str) -> bool:
     return any(env_id_lower.startswith(prefix) for prefix in d4rl_prefixes)
 
 
-def _make_env(env_id: str, seed: Optional[int] = None):
+def _make_env(env_id: str, seed: Optional[int] = None, client_id: Optional[int] = None, num_clients: Optional[int] = None):
     # Import d4rl to register all d4rl environments (maze2d, antmaze, flow, etc.)
     try:
         import d4rl
@@ -42,7 +42,9 @@ def _make_env(env_id: str, seed: Optional[int] = None):
     # Handle custom environments
     if env_id.lower() in ["bandit2d", "bandit_2d", "2dbandit"]:
         from fedguide.envs.bandit2d import Bandit2D
-        env = Bandit2D(K=4, sigma=0.2, seed=seed)
+        # Client-specific heterogeneity: each client prefers one peak (client_id % K)
+        preferred_peak = (client_id % 4) if (client_id is not None and num_clients is not None) else None
+        env = Bandit2D(K=4, sigma=0.2, seed=seed, preferred_peak=preferred_peak)
         if seed is not None:
             env.reset(seed=seed)
         return env
@@ -251,6 +253,10 @@ class FedGuideClient(FedRLClient):
         
         if hasattr(self, "metrics"):
             self.metrics.set_step(rnd)
+        
+        # Set server round for lambda_guide annealing (if trainer supports it)
+        if hasattr(self.trainer, "set_server_round"):
+            self.trainer.set_server_round(rnd)
         
         # Train one round
         train_result = self.trainer.train_one_round()
@@ -505,6 +511,9 @@ def client_fn_builder(
     minibatch_size: int = 64,
     lambda_local: float = 0.0,
     lambda_guide: float = 1.0,
+    lambda_guide_anneal: bool = False,
+    lambda_guide_decay_rounds: int = 40,
+    init_log_std: float = 0.0,
     online_guidance: bool = False,
     online_prior: bool = False,
     # logging
@@ -519,20 +528,22 @@ def client_fn_builder(
         # 1) per-client seed and ID mapping
         cid = str(getattr(context, "client_id", None) or getattr(context, "node_id", None) or "0")
         
-        # Map Flower's client ID to 0, 1, 2, 3... for pretrained model loading
-        if num_clients is not None:
-            mapped_client_id = abs(hash(cid)) % num_clients
-        else:
-            mapped_client_id = abs(hash(cid)) % 100
+        # Map Flower's client ID to 0, 1, 2, 3... (use int(cid) when possible to avoid hash collisions)
+        try:
+            if str(cid).isdigit():
+                mapped_client_id = int(cid) % (num_clients or 4)
+            else:
+                mapped_client_id = abs(hash(str(cid))) % (num_clients or 4)
+        except (ValueError, TypeError):
+            mapped_client_id = abs(hash(str(cid))) % (num_clients or 4)
         
         base = 42 + (abs(hash(cid)) % 10000)
         random.seed(base)
         np.random.seed(base)
         torch.manual_seed(base)
 
-        # 2) env
-        # TODO: load env from config
-        env = _make_env(env_id, seed=base)
+        # 2) env (client-specific heterogeneity for Bandit2D)
+        env = _make_env(env_id, seed=base, client_id=mapped_client_id, num_clients=num_clients)
         obs_space, act_space = env.observation_space, env.action_space
         assert _is_box1d(obs_space) and _is_box1d(act_space), "Only Support 1D Box spaces."
 
@@ -657,7 +668,7 @@ def client_fn_builder(
             guidance=guidance,
             prior_ckpt=prior_ckpt,
             guidance_ckpt=guidance_ckpt,
-            # lr=3e-4, clip_eps=0.2, entropy_coef=0.02, value_coef=0.5, ...
+            init_log_std=init_log_std,
         )
 
         # 5) trainer
@@ -671,6 +682,8 @@ def client_fn_builder(
             minibatch_size=minibatch_size,
             lambda_local=lambda_local,
             lambda_guide=lambda_guide,
+            lambda_guide_anneal=lambda_guide_anneal,
+            lambda_guide_decay_rounds=lambda_guide_decay_rounds,
             online_guidance=online_guidance,
             online_prior=online_prior,
         )

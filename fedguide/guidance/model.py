@@ -2,9 +2,14 @@ import torch
 import torch.nn as nn
 import numpy as np
 import copy
-import wandb
 from collections import defaultdict
 import math
+
+try:
+    import wandb
+    _HAS_WANDB = True
+except ImportError:
+    _HAS_WANDB = False
 
 EXP_ADV_MAX = 100.
 EXP_ADV_MIN = 1e-40
@@ -12,10 +17,13 @@ ADV_MIN = -20.
 EXP_SP_MAX = 5.
 
 
-def marginal_prob_std(t, device="cuda"):
+def marginal_prob_std(t, device=None):
     """Compute the mean and standard deviation of $p_{0t}(x(t) | x(0))$.
     """
-    t = torch.tensor(t, device=device)
+    if device is None and hasattr(t, 'device'):
+        device = t.device
+    device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+    t = torch.tensor(t, device=device) if not isinstance(t, torch.Tensor) else t.to(device)
     beta_1 = 20.0
     beta_0 = 0.1
     log_mean_coeff = -0.25 * t ** 2 * (beta_1 - beta_0) - 0.5 * t * beta_0
@@ -360,7 +368,7 @@ class SDICE_Critic(Critic_Guide):
         # update target q0
         update_target(self.q0, self.q0_target, 0.005)
 
-        if (self.v0_step + 1) % 1000 == 0:
+        if (self.v0_step + 1) % 1000 == 0 and _HAS_WANDB and wandb.run is not None:
             wandb.log({"td_mean": np.mean(self.info["td_mean"]), "td_min": np.mean(self.info["td_min"]),
                        "td_max": np.mean(self.info["td_max"]), "v_value": np.mean(self.info["v_value"]),
                        "ensemble_loss": np.mean(self.info["ensemble_loss"]), }, step=self.v0_step)
@@ -392,7 +400,7 @@ class SDICE_Critic(Critic_Guide):
         dual_loss.backward()
         self.wt_optimizer.step()
 
-        if (self.wt_step + 1) % 1000 == 0:
+        if (self.wt_step + 1) % 1000 == 0 and _HAS_WANDB and wandb.run is not None:
             wandb.log({"energy_mean": np.mean(self.info["energy_mean"]), "energy_min": np.mean(self.info["energy_min"]),
                        "energy_max": np.mean(self.info["energy_max"])}, step=self.wt_step)
             for key in ["mean", "min", "max"]:

@@ -57,6 +57,10 @@ class FedKLTrainer:
         self.max_grad_norm = max_grad_norm
         self.eval_episodes = eval_episodes
         self.writer = writer
+        self.server_round = 0
+        self.log_std_anneal = False
+        self.log_std_anneal_rounds = 40
+        self.log_std_anneal_target = -2.0
         
         # Current observation
         reset_result = self.env.reset()
@@ -68,6 +72,10 @@ class FedKLTrainer:
         # Local policy snapshot (for local KL penalty)
         self.local_policy_snapshot = None
         self.local_log_std_snapshot = None
+    
+    def set_server_round(self, rnd: int):
+        """Set current server round (for log_std annealing)."""
+        self.server_round = int(rnd)
     
     # ---------------- Rollout + GAE ----------------
     def _rollout(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
@@ -153,6 +161,14 @@ class FedKLTrainer:
     def train_one_round(self) -> Dict[str, float]:
         """Train for one federated round (similar to FedGuide's train_one_round)."""
         t0 = time.time()
+        
+        # Anneal log_std (bandit-friendly: decay std over rounds)
+        if self.log_std_anneal and hasattr(self.agent, "anneal_log_std"):
+            self.agent.anneal_log_std(
+                self.server_round,
+                target=self.log_std_anneal_target,
+                decay_rounds=self.log_std_anneal_rounds,
+            )
         
         # Save local policy snapshot at start of round
         self.save_local_policy_snapshot()

@@ -51,6 +51,7 @@ class FedguideAgent(nn.Module):
         guidance_eta: float = 0.1,
         guide_align_coef: float = 0.0,
         entropy_coef: float = 0.0,
+        init_log_std: float = 0.0,
     ):
         super().__init__()
 
@@ -80,7 +81,7 @@ class FedguideAgent(nn.Module):
             nn.Linear(256, 256), nn.Tanh(),
             nn.Linear(256, action_dim),
         )
-        self.log_std = nn.Parameter(torch.zeros(action_dim))
+        self.log_std = nn.Parameter(torch.full((action_dim,), init_log_std))
         self.value_fn = nn.Sequential(
             nn.Linear(state_dim, 256), nn.Tanh(),
             nn.Linear(256, 256), nn.Tanh(),
@@ -401,13 +402,13 @@ class FedguideAgent(nn.Module):
                 # prefer new guide_align_coef if set (>0), else fall back to old self.guide_coef.
                 guide_weight = self.guide_align_coef if (getattr(self, "guide_align_coef", 0.0) > 0.0) else self.guide_coef
 
+                # Local KL: (mb_old_logp - logp).mean() = -KL(π||π_old); add +lambda_local*KL via -lambda_local*(mb_old_logp - logp)
                 loss = (
                     policy_loss
                     + self.vf_coef * value_loss
                     + self.ent_coef * entropy_loss
                     + prior_loss
                     + self.guide_coef * guide_align
-                    # + lambda_local * (mb_old_logp - logp).mean()
                     - lambda_local * (mb_old_logp - logp).mean()
                 )
 
