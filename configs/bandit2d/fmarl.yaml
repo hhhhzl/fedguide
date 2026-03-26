@@ -10,7 +10,7 @@ K: 4  # Number of peaks in bandit
 sigma: 0.2  # Standard deviation for reward function
 
 # Federated learning configuration
-rounds: 60  # Number of federated learning rounds
+rounds: 30  # Number of federated learning rounds
 cpus_per_client: 2  # Number of CPUs per client
 
 # Training configuration

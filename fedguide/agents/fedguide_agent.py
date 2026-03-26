@@ -45,6 +45,7 @@ class FedguideAgent(nn.Module):
         online_prior: bool = False,
         prior_lr: float = 1e-4,
         prior_reg_coef: float = 1e-3,
+        prior_adapt_fallback_all: bool = False,
         device: Optional[str] = None,
 
         use_sampling_guidance: bool = False,
@@ -72,6 +73,7 @@ class FedguideAgent(nn.Module):
         self.online_prior = online_prior
         self.prior_lr = prior_lr
         self.prior_reg_coef = prior_reg_coef
+        self.prior_adapt_fallback_all = bool(prior_adapt_fallback_all)
 
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
@@ -245,6 +247,11 @@ class FedguideAgent(nn.Module):
                 adapt.append(p)
             else:
                 frozen.append(p)
+        # Experimental fallback for priors without adapter/lora/head naming.
+        # Keeps default behavior unless explicitly enabled by config.
+        if len(adapt) == 0 and self.prior_adapt_fallback_all:
+            adapt = [p for _, p in named]
+            frozen = []
         for p in frozen:
             p.requires_grad = False
         for p in adapt:

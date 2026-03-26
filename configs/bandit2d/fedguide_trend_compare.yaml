@@ -1,0 +1,44 @@
+env_type: "bandit2d"
+data_dir: "data/bandit2d"
+num_clients: 4
+
+K: 4
+sigma: 0.4
+
+rounds: 30
+cpus_per_client: 2
+fraction_fit: 1.0
+fraction_evaluate: 1.0
+min_fit_clients: 4
+min_evaluate_clients: 4
+min_available_clients: 4
+
+aggregate_mode: "prior+guidance"
+n_steps: 800
+lambda_local: 0.05
+lambda_guide: 0.1
+lambda_guide_anneal: false
+lambda_guide_decay_rounds: 30
+online_guidance: false
+online_prior: false
+update_epochs: 10
+minibatch_size: 64
+init_log_std: 0.5
+
+use_pretrained_models: false
+prior_adapt_fallback_all: true
+client_specific_expert_routing: false
+num_experts_prior: 4
+num_experts_guidance: 4
+routing_debug: false
+
+use_wandb: false
+wandb_project: null
+run_name: "bandit2d-fedguide-trend-compare"
+
+output_dir: "./model/policy/bandit2d/fedguide_trend_compare"
+metrics_dir: "./metrics/bandit2d/fedguide_trend_compare"
+collect_metrics_every: 1
+
+device: "auto"
+seed: 0

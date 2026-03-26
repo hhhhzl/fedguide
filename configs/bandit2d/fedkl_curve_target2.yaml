@@ -1,0 +1,32 @@
+env_type: "bandit2d"
+data_dir: "data/bandit2d"
+num_clients: 4
+K: 4
+sigma: 0.4
+
+rounds: 30
+cpus_per_client: 2
+
+n_steps: 20
+lambda_global: 0.2
+lambda_local: 0.05
+update_epochs: 2
+minibatch_size: 64
+clip_eps: 0.2
+entropy_coef: 0.05
+value_coef: 0.5
+max_grad_norm: 0.5
+
+init_log_std: 1.5
+log_std_anneal: true
+log_std_anneal_rounds: 30
+log_std_anneal_target: -2.0
+
+hidden_dim: 256
+lr: 8e-5
+
+use_wandb: false
+metrics_dir: "./metrics/bandit2d/fedkl_curve_target2"
+output_dir: "./model/policy/bandit2d/fedkl_curve_target2"
+collect_metrics_every: 1
+seed: 0

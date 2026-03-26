@@ -12,6 +12,7 @@ import sys
 import yaml
 import torch
 import pickle
+import copy
 from typing import Dict, Any, Optional, Callable, List
 from pathlib import Path
 
@@ -363,6 +364,22 @@ def run_training(config: Dict[str, Any], args=None, device: Optional[str] = None
     is_federated = algorithm.lower() in federated_algorithms
     
     if is_federated:
+        raw_seed = config.get('seed')
+        if args is not None and getattr(args, 'seed', None) is not None:
+            raw_seed = args.seed
+        if isinstance(raw_seed, (list, tuple)):
+            base_metrics = config.get('metrics_dir')
+            base_output = config.get('output_dir')
+            last_hist = None
+            for s in raw_seed:
+                c = copy.deepcopy(config)
+                c['seed'] = int(s)
+                if base_metrics:
+                    c['metrics_dir'] = os.path.join(base_metrics, f'seed_{s}')
+                if base_output:
+                    c['output_dir'] = os.path.join(base_output, f'seed_{s}')
+                last_hist = _run_federated_training(env_type, algorithm, c, args, device)
+            return last_hist
         return _run_federated_training(env_type, algorithm, config, args, device)
     else:
         return _run_centralized_training(env_type, algorithm, config, args, device)

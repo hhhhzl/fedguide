@@ -148,6 +148,14 @@ def main():
             algorithm = 'ppo'
         elif 'sac' in config_path_lower:
             algorithm = 'sac'
+        elif 'fmarl' in config_path_lower:
+            algorithm = 'fmarl'
+        elif 'fedrep' in config_path_lower:
+            algorithm = 'fedrep'
+        elif 'fedmomentum' in config_path_lower:
+            algorithm = 'fedmomentum'
+        elif 'fedrl' in config_path_lower:
+            algorithm = 'fedrl'
         else:
             # Try to get from config
             algorithm = config.get('algorithm', 'ppo')  # Default

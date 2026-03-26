@@ -33,6 +33,11 @@ output_dir: "./model/policy/bandit2d/fedguide"  # Directory to save model checkp
 metrics_dir: "./metrics/bandit2d/fedguide"  # Directory to save metrics for visualization
 collect_metrics_every: 1  # Collect metrics every N rounds (0 to disable)
 
+# Experimental switches (default off, keeps current FedGuide behavior)
+client_specific_expert_routing: false  # Bandit2D-only experiment: route prior/guidance experts per client
+num_experts_prior: 1
+num_experts_guidance: 1
+
 # Device configuration
 device: "auto"  # "auto", "cpu", or "cuda"
 

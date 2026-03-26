@@ -32,13 +32,29 @@ def _is_box1d(space) -> bool:
     return isinstance(space, Box) and len(space.shape) == 1
 
 
-def _make_env(env_id: str, seed: Optional[int] = None):
+def _make_env(
+    env_id: str,
+    seed: Optional[int] = None,
+    client_id: Optional[int] = None,
+    num_clients: Optional[int] = None,
+    sigma: float = 0.2,
+    metadata_path: Optional[str] = None,
+):
     if env_id.lower() in ["bandit2d", "bandit_2d", "2dbandit"]:
         from fedguide.envs.bandit2d import Bandit2D
-        env = Bandit2D(K=4, sigma=0.2, seed=seed)
+        preferred_peak = (client_id % 4) if (client_id is not None and num_clients is not None) else None
+        env = Bandit2D(K=4, sigma=sigma, seed=seed, preferred_peak=preferred_peak)
         if seed is not None:
             env.reset(seed=seed)
         return env
+
+    if env_id.lower() == "reacher_hetero" and metadata_path:
+        import os
+        from fedguide.envs.reacher import make_hetero_reacher_env_from_metadata
+
+        if os.path.isfile(metadata_path):
+            idx = client_id if client_id is not None else 0
+            return make_hetero_reacher_env_from_metadata(metadata_path, idx, seed=seed)
     
     env = gym.make(env_id)
     try:
@@ -407,6 +423,9 @@ def client_fn_builder(
     run_name: Optional[str] = None,
     metrics_collector: Optional[Any] = None,
     num_clients: Optional[int] = None,  # For ID mapping
+    cid_mapping_file: Optional[str] = None,
+    sigma: float = 0.2,
+    metadata_path: Optional[str] = None,
 ):
     """
     Build client function for FMARL.
@@ -420,11 +439,16 @@ def client_fn_builder(
         # 1) per-client seed and ID mapping
         cid = str(getattr(context, "client_id", None) or getattr(context, "node_id", None) or "0")
         
-        # Map Flower's client ID to 0, 1, 2, 3...
-        if num_clients is not None:
-            mapped_client_id = abs(hash(cid)) % num_clients
+        # Map Flower cids to 0..num_clients-1 (file-based, same as FedKL)
+        num_c = num_clients or 4
+        if cid_mapping_file:
+            from fedguide.utils.client_id_mapping import get_mapped_client_id
+            mapped_client_id = get_mapped_client_id(cid, num_c, cid_mapping_file)
         else:
-            mapped_client_id = abs(hash(cid)) % 100
+            if num_clients is not None:
+                mapped_client_id = abs(hash(cid)) % num_clients
+            else:
+                mapped_client_id = abs(hash(cid)) % 100
         
         base = 42 + (abs(hash(cid)) % 10000)
         random.seed(base)
@@ -432,7 +456,14 @@ def client_fn_builder(
         torch.manual_seed(base)
         
         # 2) env
-        env = _make_env(env_id, seed=base)
+        env = _make_env(
+            env_id,
+            seed=base,
+            client_id=mapped_client_id,
+            num_clients=num_clients,
+            sigma=sigma,
+            metadata_path=metadata_path,
+        )
         obs_space, act_space = env.observation_space, env.action_space
         assert _is_box1d(obs_space) and _is_box1d(act_space), "Only Support 1D Box spaces."
         
@@ -495,14 +526,8 @@ def client_fn_builder(
         
         # Register agent with metrics collector for visualization
         if metrics_collector is not None:
-            if num_clients is not None:
-                mapped_id = abs(hash(cid)) % num_clients
-            else:
-                mapped_id = abs(hash(cid)) % 100
-            
-            # Register agent if method exists
             if hasattr(metrics_collector, 'register_client_agent'):
-                metrics_collector.register_client_agent(mapped_id, agent)
+                metrics_collector.register_client_agent(mapped_client_id, agent)
         
         # Convert NumPyClient to Client 
         return client.to_client()

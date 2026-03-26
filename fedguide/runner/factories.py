@@ -361,6 +361,11 @@ def _create_fedguide_client_fn(config: Dict[str, Any], **kwargs):
         run_name=config.get('run_name') or f"{env_type.lower()}-fedguide",
         metrics_collector=metrics_collector,
         num_clients=config.get('num_clients', 4),
+        cid_mapping_file=config.get('cid_mapping_file'),
+        sigma=config.get('sigma', 0.2),
+        prior_adapt_fallback_all=config.get('prior_adapt_fallback_all', False),
+        use_pretrained_models=config.get('use_pretrained_models', True),
+        metadata_path=config.get('metadata_path'),
     )
 
 
@@ -374,21 +379,22 @@ def _create_fedkl_client_fn(config: Dict[str, Any], **kwargs):
     return client_fn_builder(
         env_id=env_type,
         algo=config.get('algo', 'ppo'),
-        n_steps=config.get('n_steps', 200),
-        lambda_global=config.get('lambda_global', 15.0),
-        lambda_local=config.get('lambda_local', 0.05),
-        update_epochs=config.get('update_epochs', 10),
-        minibatch_size=config.get('minibatch_size', 64),
-        clip_eps=config.get('clip_eps', 0.2),
-        entropy_coef=config.get('entropy_coef', 0.01),
-        init_log_std=config.get('init_log_std', 0.0),
-        log_std_anneal=config.get('log_std_anneal', False),
-        log_std_anneal_rounds=config.get('log_std_anneal_rounds', 40),
-        log_std_anneal_target=config.get('log_std_anneal_target', -2.0),
+        n_steps=int(config.get('n_steps', 200)),
+        lambda_global=float(config.get('lambda_global', 15.0)),
+        lambda_local=float(config.get('lambda_local', 0.05)),
+        update_epochs=int(config.get('update_epochs', 10)),
+        minibatch_size=int(config.get('minibatch_size', 64)),
+        clip_eps=float(config.get('clip_eps', 0.2)),
+        entropy_coef=float(config.get('entropy_coef', 0.01)),
+        init_log_std=float(config.get('init_log_std', 0.0)),
+        log_std_anneal=bool(config.get('log_std_anneal', False)),
+        log_std_anneal_rounds=int(config.get('log_std_anneal_rounds', 40)),
+        log_std_anneal_target=float(config.get('log_std_anneal_target', -2.0)),
         metrics_collector=metrics_collector,
-        num_clients=config.get('num_clients', 4),
+        num_clients=int(config.get('num_clients', 4)),
         cid_mapping_file=config.get('cid_mapping_file'),
-        sigma=config.get('sigma', 0.2),
+        sigma=float(config.get('sigma', 0.2)),
+        metadata_path=config.get('metadata_path'),
     )
 
 
@@ -401,58 +407,74 @@ def _create_fmarl_client_fn(config: Dict[str, Any], **kwargs):
     
     return client_fn_builder(
         env_id=env_type,
-        algo=config.get('algo', 'ppo'),
-        n_steps=config.get('n_steps', 200),
-        lambda_global=config.get('lambda_global', 15.0),
-        lambda_local=config.get('lambda_local', 0.05),
-        update_epochs=config.get('update_epochs', 10),
-        minibatch_size=config.get('minibatch_size', 64),
-        clip_eps=config.get('clip_eps', 0.2),
-        entropy_coef=config.get('entropy_coef', 0.01),
+        algo=config.get('algo', 'fmarl'),
+        n_steps=int(config.get('n_steps', 200)),
+        gamma=float(config.get('gamma', 0.99)),
+        gae_lambda=float(config.get('gae_lambda', 0.95)),
+        clip_eps=float(config.get('clip_eps', 0.2)),
+        entropy_coef=float(config.get('entropy_coef', 0.01)),
+        value_coef=float(config.get('value_coef', 0.5)),
+        update_epochs=int(config.get('update_epochs', 10)),
+        minibatch_size=int(config.get('minibatch_size', 64)),
+        lambda_global=float(config.get('lambda_global', 15.0)),
+        lambda_local=float(config.get('lambda_local', 0.05)),
+        max_grad_norm=float(config.get('max_grad_norm', 0.5)),
+        hidden_dim=int(config.get('hidden_dim', 256)),
+        lr=float(config.get('lr', 3e-4)),
+        use_wandb=config.get('use_wandb', False),
+        wandb_project=config.get('wandb_project'),
+        run_name=config.get('run_name'),
         metrics_collector=metrics_collector,
-        num_clients=config.get('num_clients', 4),
+        num_clients=int(config.get('num_clients', 4)),
+        cid_mapping_file=config.get('cid_mapping_file'),
+        sigma=float(config.get('sigma', 0.2)),
+        metadata_path=config.get('metadata_path'),
     )
 
 
 def _create_fedrl_client_fn(config: Dict[str, Any], **kwargs):
-    """Create FedRL client function (DQN or DDPG)."""
+    """Create FedRL client function."""
     from fedguide.baselines.fedrl.client import client_fn_builder
     
     env_type = kwargs.get('env_type', 'Bandit2D')
     metrics_collector = kwargs.get('metrics_collector')
-    algo = config.get('algo', 'ddpg')
-    
-    common = dict(
+    dev = config.get('device', 'cpu')
+    if dev == 'auto':
+        dev = 'cuda' if torch.cuda.is_available() else 'cpu'
+    replay_initial = config.get('replay_initial')
+    if replay_initial is None and str(config.get('algo', 'dqn')).lower() == 'ddpg':
+        replay_initial = 1000
+    elif replay_initial is not None:
+        replay_initial = int(replay_initial)
+
+    return client_fn_builder(
         env_id=env_type,
-        algo=algo,
+        algo=config.get('algo', 'dqn'),
         gamma=float(config.get('gamma', 0.99)),
         lr=float(config.get('lr', 1e-4)),
         hidden_dim=int(config.get('hidden_dim', 256)),
-        metrics_collector=metrics_collector,
-        num_clients=config.get('num_clients', 4),
-        merge_interval=int(config.get('merge_interval', 500)),
+        epsilon=float(config.get('epsilon', 1.0)),
+        epsilon_decay=float(config.get('epsilon_decay', 0.99)),
+        epsilon_min=float(config.get('epsilon_min', 0.01)),
+        tau=float(config.get('tau', 0.001)),
+        threshold=float(config.get('threshold', 2.0)),
+        aggregate_critic=bool(config.get('aggregate_critic', False)),
         batch_size=int(config.get('batch_size', 64)),
-        replay_size=int(config.get('replay_size', 50000)),
-        replay_initial=config.get('replay_initial'),
+        replay_size=int(config.get('replay_size', 100000)),
+        replay_initial=replay_initial,
+        sync_interval=int(config.get('sync_interval', 10)),
+        merge_interval=int(config.get('merge_interval', config.get('n_steps', 200))),
         eval_episodes=int(config.get('eval_episodes', 1)),
-        device=str(config.get('device', 'cpu')),
+        add_noise=bool(config.get('add_noise', True)),
+        use_wandb=config.get('use_wandb', False),
+        wandb_project=config.get('wandb_project'),
+        run_name=config.get('run_name'),
+        metrics_collector=metrics_collector,
+        num_clients=int(config.get('num_clients', 4)),
+        device=str(dev),
+        cid_mapping_file=config.get('cid_mapping_file'),
+        metadata_path=config.get('metadata_path'),
     )
-    if algo.lower() == 'dqn':
-        return client_fn_builder(
-            **common,
-            epsilon=float(config.get('epsilon', 1.0)),
-            epsilon_decay=float(config.get('epsilon_decay', 0.99)),
-            epsilon_min=float(config.get('epsilon_min', 0.01)),
-            sync_interval=int(config.get('sync_interval', 10)),
-        )
-    else:  # ddpg
-        return client_fn_builder(
-            **common,
-            tau=float(config.get('tau', 0.001)),
-            threshold=float(config.get('threshold', 2.0)),
-            aggregate_critic=bool(config.get('aggregate_critic', False)),
-            add_noise=bool(config.get('add_noise', True)),
-        )
 
 
 def _create_fedrep_client_fn(config: Dict[str, Any], **kwargs):
@@ -464,29 +486,38 @@ def _create_fedrep_client_fn(config: Dict[str, Any], **kwargs):
     
     return client_fn_builder(
         env_id=env_type,
-        algo='fedrep',
+        algo=config.get('fedrep_algo', 'fedrep'),
         n_steps=int(config.get('n_steps', 200)),
         gamma=float(config.get('gamma', 0.99)),
         gae_lambda=float(config.get('gae_lambda', 0.95)),
+        update_epochs=int(config.get('update_epochs', 10)),
+        minibatch_size=int(config.get('minibatch_size', 64)),
         clip_eps=float(config.get('clip_eps', 0.2)),
         entropy_coef=float(config.get('entropy_coef', 0.01)),
         value_coef=float(config.get('value_coef', 0.5)),
-        update_epochs=int(config.get('update_epochs', 10)),
-        minibatch_size=int(config.get('minibatch_size', 64)),
         max_grad_norm=float(config.get('max_grad_norm', 0.5)),
         hidden_dim=int(config.get('hidden_dim', 256)),
         lr=float(config.get('lr', 3e-4)),
+        use_wandb=config.get('use_wandb', False),
+        wandb_project=config.get('wandb_project'),
+        run_name=config.get('run_name'),
         metrics_collector=metrics_collector,
-        num_clients=config.get('num_clients', 4),
+        num_clients=int(config.get('num_clients', 4)),
+        cid_mapping_file=config.get('cid_mapping_file'),
+        sigma=float(config.get('sigma', 0.2)),
+        metadata_path=config.get('metadata_path'),
     )
 
 
 def _create_fedmomentum_client_fn(config: Dict[str, Any], **kwargs):
     """Create FedMomentum client function."""
     from fedguide.baselines.fedmomentum.client import client_fn_builder
-
+    
     env_type = kwargs.get('env_type', 'Bandit2D')
     metrics_collector = kwargs.get('metrics_collector')
+    dev = config.get('device', 'cpu')
+    if dev == 'auto':
+        dev = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     return client_fn_builder(
         env_id=env_type,
@@ -502,14 +533,22 @@ def _create_fedmomentum_client_fn(config: Dict[str, Any], **kwargs):
         hidden_dim=int(config.get('hidden_dim', 256)),
         lr=float(config.get('lr', 3e-4)),
         algorithm=config.get('algorithm_type', 'svrpg'),
-        reference_update_freq=config.get('reference_update_freq', 5),
-        use_svrpg=config.get('use_svrpg', True),
-        hessian_alpha=config.get('hessian_alpha', 0.1),
-        use_diagonal_approx=config.get('use_diagonal_approx', True),
-        fisher_update_freq=config.get('fisher_update_freq', 1),
-        use_fisher_info=config.get('use_fisher_info', True),
+        reference_update_freq=int(config.get('reference_update_freq', 5)),
+        use_svrpg=bool(config.get('use_svrpg', True)),
+        hessian_alpha=float(config.get('hessian_alpha', 0.1)),
+        use_diagonal_approx=bool(config.get('use_diagonal_approx', True)),
+        fisher_update_freq=int(config.get('fisher_update_freq', 1)),
+        use_fisher_info=bool(config.get('use_fisher_info', True)),
+        eval_episodes=int(config.get('eval_episodes', 1)),
+        use_wandb=config.get('use_wandb', False),
+        wandb_project=config.get('wandb_project'),
+        run_name=config.get('run_name'),
         metrics_collector=metrics_collector,
-        num_clients=config.get('num_clients', 4),
+        num_clients=int(config.get('num_clients', 4)),
+        device=str(dev),
+        cid_mapping_file=config.get('cid_mapping_file'),
+        sigma=float(config.get('sigma', 0.2)),
+        metadata_path=config.get('metadata_path'),
     )
 
 
@@ -531,17 +570,25 @@ def _create_fedguide_server(config: Dict[str, Any], **kwargs):
     num_clients = config.get('num_clients', 4)
     evaluate_fn = kwargs.get('evaluate_fn')
     
+    min_fit_clients = int(config.get('min_fit_clients', num_clients))
+    min_eval_clients = int(config.get('min_evaluate_clients', num_clients))
+    min_available_clients = int(config.get('min_available_clients', num_clients))
+
     return FedGuideServer(
-        fraction_fit=1.0,
-        fraction_evaluate=1.0,
-        min_fit_clients=num_clients,
-        min_evaluate_clients=num_clients,
-        min_available_clients=num_clients,
+        fraction_fit=config.get('fraction_fit', 1.0),
+        fraction_evaluate=config.get('fraction_evaluate', 1.0),
+        min_fit_clients=min_fit_clients,
+        min_evaluate_clients=min_eval_clients,
+        min_available_clients=min_available_clients,
         on_fit_config_fn=lambda rnd: {"server_round": rnd},
         evaluate_fn=evaluate_fn,
         moe_enable=config.get('moe_enable', True),
         num_experts_prior=config.get('num_experts_prior', 1),
         num_experts_guidance=config.get('num_experts_guidance', 1),
+        client_specific_expert_routing=config.get('client_specific_expert_routing', False),
+        cid_mapping_file=config.get('cid_mapping_file'),
+        num_clients=num_clients,
+        routing_debug=config.get('routing_debug', False),
     )
 
 
@@ -625,8 +672,8 @@ def _create_fedmomentum_server(config: Dict[str, Any], **kwargs):
     evaluate_fn = kwargs.get('evaluate_fn')
     
     return FedMomentumStrategy(
-        momentum_beta=config.get('momentum_beta', 0.9),
-        server_lr=config.get('server_lr', 0.001),
+        momentum_beta=float(config.get('momentum_beta', 0.9)),
+        server_lr=float(config.get('server_lr', 0.001)),
         fraction_fit=1.0,
         fraction_evaluate=1.0,
         min_fit_clients=num_clients,

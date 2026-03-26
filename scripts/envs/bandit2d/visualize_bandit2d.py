@@ -778,20 +778,34 @@ def visualize_client_policies(metrics_path: str, output_path: str = None, round_
     fig, axes = plt.subplots(2, 3, figsize=(12, 8))  # 2x3: 4 clients + avg + empty or legend
     axes = axes.flatten()
 
-    # Unified color scale across all clients
+    # Unified color scale for average subplot
     all_densities = [np.array(metrics['client_metrics'][cid]['policy_density']) for cid in client_ids]
-    vmin, vmax = 0, 1
+    global_vmin, global_vmax = 0, 1
     if all_densities:
         concat = np.concatenate([d.ravel() for d in all_densities])
         valid = concat[~np.isnan(concat)]
         if len(valid) > 0:
-            vmax = np.percentile(valid, 99)
+            global_vmax = max(float(np.percentile(valid, 99)), 1e-8)
 
     for i, cid in enumerate(client_ids):
         ax = axes[i]
         pi = np.array(metrics['client_metrics'][cid]['policy_density'])
-        im = ax.imshow(pi, origin='lower', extent=[-1.5, 1.5, -1.5, 1.5], cmap='hot',
-                       vmin=vmin, vmax=vmax)
+        valid = pi[~np.isnan(pi)]
+        local_vmax = global_vmax
+        if valid.size > 0:
+            local_vmax = max(float(np.percentile(valid, 99)), 1e-8)
+        im = ax.imshow(
+            pi,
+            origin='lower',
+            extent=[-1.5, 1.5, -1.5, 1.5],
+            cmap='hot',
+            vmin=0.0,
+            vmax=local_vmax,
+        )
+        iy, ix = np.unravel_index(int(np.nanargmax(pi)), pi.shape)
+        x_peak = np.linspace(-1.5, 1.5, pi.shape[1])[ix]
+        y_peak = np.linspace(-1.5, 1.5, pi.shape[0])[iy]
+        ax.scatter([x_peak], [y_peak], c="cyan", marker="x", s=60, linewidths=1.5)
         ax.set_title(f"Client {cid} Policy")
         ax.set_xlabel("x")
         ax.set_ylabel("y")
@@ -800,8 +814,14 @@ def visualize_client_policies(metrics_path: str, output_path: str = None, round_
     # 5th subplot: average of all clients (same as server policy_density)
     ax_avg = axes[4]
     pi_avg = np.mean(all_densities, axis=0)
-    im_avg = ax_avg.imshow(pi_avg, origin='lower', extent=[-1.5, 1.5, -1.5, 1.5], cmap='hot',
-                           vmin=vmin, vmax=vmax)
+    im_avg = ax_avg.imshow(
+        pi_avg,
+        origin='lower',
+        extent=[-1.5, 1.5, -1.5, 1.5],
+        cmap='hot',
+        vmin=0.0,
+        vmax=global_vmax,
+    )
     ax_avg.set_title(f"{algorithm_label} Avg Policy\n(mean of {n} clients)")
     ax_avg.set_xlabel("x")
     ax_avg.set_ylabel("y")

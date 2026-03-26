@@ -1,0 +1,42 @@
+# FMARL — federated Reacher with client heterogeneity
+
+env_type: "reacher_hetero"
+metadata_path: "data/reacher/metadata.json"
+num_clients: 8
+random_select_clients: false
+
+rounds: 200
+cpus_per_client: 2
+
+n_steps: 2048
+lambda_global: 15.0
+lambda_local: 0.05
+update_epochs: 10
+minibatch_size: 64
+clip_eps: 0.2
+entropy_coef: 0.01
+value_coef: 0.5
+max_grad_norm: 0.5
+
+hidden_dim: 256
+lr: 3e-4
+gamma: 0.99
+gae_lambda: 0.95
+
+use_wandb: false
+wandb_project: null
+run_name: null
+
+output_dir: "./model/policy/reacher/fmarl"
+metrics_dir: "./metrics/reacher/fmarl"
+collect_metrics_every: 1
+
+device: "auto"
+
+seed: [0, 1, 2, 3, 4]
+
+render_eval: true
+render_mode: "video"
+render_save_dir: "./plots/reacher/fmarl"
+render_every_n_rounds: 10
+render_episodes: 5

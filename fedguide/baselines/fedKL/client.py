@@ -29,7 +29,14 @@ def _is_box1d(space) -> bool:
     return isinstance(space, Box) and len(space.shape) == 1
 
 
-def _make_env(env_id: str, seed: Optional[int] = None, client_id: Optional[int] = None, num_clients: Optional[int] = None, sigma: float = 0.2):
+def _make_env(
+    env_id: str,
+    seed: Optional[int] = None,
+    client_id: Optional[int] = None,
+    num_clients: Optional[int] = None,
+    sigma: float = 0.2,
+    metadata_path: Optional[str] = None,
+):
     if env_id.lower() in ["bandit2d", "bandit_2d", "2dbandit"]:
         from fedguide.envs.bandit2d import Bandit2D
         # Client-specific heterogeneity: each client prefers one peak (client_id % K)
@@ -38,6 +45,14 @@ def _make_env(env_id: str, seed: Optional[int] = None, client_id: Optional[int] 
         if seed is not None:
             env.reset(seed=seed)
         return env
+
+    if env_id.lower() == "reacher_hetero" and metadata_path:
+        import os
+        from fedguide.envs.reacher import make_hetero_reacher_env_from_metadata
+
+        if os.path.isfile(metadata_path):
+            idx = client_id if client_id is not None else 0
+            return make_hetero_reacher_env_from_metadata(metadata_path, idx, seed=seed)
     
     env = gym.make(env_id)
     try:
@@ -397,6 +412,7 @@ def client_fn_builder(
     num_clients: Optional[int] = None,  # For ID mapping
     cid_mapping_file: Optional[str] = None,  # File for deterministic cid->0..N-1 mapping
     sigma: float = 0.2,  # Bandit2D reward width (0.4 for hetero)
+    metadata_path: Optional[str] = None,  # Reacher heterogeneity (reacher_hetero)
 ):
     """
     Build client function for FedKL (matches FedGuide structure exactly).
@@ -431,8 +447,15 @@ def client_fn_builder(
         np.random.seed(base)
         torch.manual_seed(base)
         
-        # 2) env (client-specific heterogeneity for Bandit2D)
-        env = _make_env(env_id, seed=base, client_id=mapped_client_id, num_clients=num_clients, sigma=sigma)
+        # 2) env (client-specific heterogeneity for Bandit2D / Reacher)
+        env = _make_env(
+            env_id,
+            seed=base,
+            client_id=mapped_client_id,
+            num_clients=num_clients,
+            sigma=sigma,
+            metadata_path=metadata_path,
+        )
         obs_space, act_space = env.observation_space, env.action_space
         assert _is_box1d(obs_space) and _is_box1d(act_space), "Only Support 1D Box spaces."
         
