@@ -15,7 +15,7 @@ cpus_per_client: 2  # Number of CPUs per client
 
 # Training configuration
 n_steps: 200  # Number of steps per round
-lambda_global: 15.0  # Global KL penalty coefficient
+lambda_global: 0.5  # Global KL penalty (very weak - between FedAvg and strong FedKL)
 lambda_local: 0.05  # Local KL penalty coefficient
 update_epochs: 10  # Number of update epochs per round
 minibatch_size: 64  # Minibatch size for updates
@@ -23,6 +23,12 @@ clip_eps: 0.2  # PPO clipping epsilon
 entropy_coef: 0.01  # Entropy coefficient
 value_coef: 0.5  # Value loss coefficient
 max_grad_norm: 0.5  # Maximum gradient norm for clipping
+
+# Bandit-friendly: lower/anneal policy std for faster deterministic convergence
+init_log_std: -1.0  # Smaller init (std=0.37); default 0 gives std=1
+log_std_anneal: true  # Decay std over training
+log_std_anneal_rounds: 40
+log_std_anneal_target: -2.0  # std ≈ 0.14 by end
 
 # Network configuration
 hidden_dim: 256  # Hidden dimension for networks

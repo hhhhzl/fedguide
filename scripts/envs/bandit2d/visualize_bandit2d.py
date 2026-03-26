@@ -531,14 +531,15 @@ def visualize_bandit2d(metrics_path: str, output_path: str = None, round_num: in
         plt.show()
 
 
-def visualize_comparison(metrics_fedguide_path: str, metrics_fedkl_path: str = None, 
-                        output_path: str = None, round_num: int = -1):
+def visualize_comparison(metrics_fedguide_path: str, metrics_fedkl_path: str = None,
+                        metrics_fedavg_path: str = None, output_path: str = None, round_num: int = -1):
     """
-    Compare FedGuide and FedKL results.
+    Compare FedGuide, FedKL, and FedAvg results.
     
     Args:
         metrics_fedguide_path: Path to FedGuide metrics file
         metrics_fedkl_path: Path to FedKL metrics file (optional, for comparison)
+        metrics_fedavg_path: Path to FedAvg metrics file (optional, for fair comparison)
         output_path: Path to save figure
         round_num: Round number to visualize
     """
@@ -592,12 +593,12 @@ def visualize_comparison(metrics_fedguide_path: str, metrics_fedkl_path: str = N
         ax.set_xlabel("x")
         ax.set_ylabel("y")
     
-    # (d) FedGuide Policy
+    # (d) FedGuide Guided Density (Prior + Value)
     if 'server_metrics' in metrics_fg and 'fedguide_policy_density' in metrics_fg['server_metrics']:
         ax = axes[3]
         pi_fg = metrics_fg['server_metrics']['fedguide_policy_density']
         im = ax.imshow(pi_fg, origin='lower', extent=[-1.5, 1.5, -1.5, 1.5], cmap='hot')
-        ax.set_title("FedGuide Policy\n(Prior + Value)")
+        ax.set_title("FedGuide Guided Density\n(Prior + Value)")
         plt.colorbar(im, ax=ax)
         ax.set_xlabel("x")
         ax.set_ylabel("y")
@@ -613,20 +614,43 @@ def visualize_comparison(metrics_fedguide_path: str, metrics_fedkl_path: str = N
         ax.set_xlabel("x")
         ax.set_ylabel("y")
     
-    # (f) FedAvg policy (from FedGuide metrics, since FedAvg and FedKL aggregate policy the same way)
-    if metrics_fg['client_metrics']:
-        ax = axes[5]
+    # (f) FedAvg policy (from metrics_fedavg_path if provided, else from FedGuide client metrics)
+    pi_fedavg = None
+    if metrics_fedavg_path:
+        try:
+            collector_avg = Bandit2DMetricsCollector.load(metrics_fedavg_path)
+            if round_num < len(collector_avg.metrics_history):
+                metrics_avg = collector_avg.metrics_history[round_num]
+            else:
+                metrics_avg = collector_avg.metrics_history[-1] if collector_avg.metrics_history else {}
+            if 'server_metrics' in metrics_avg and 'policy_density' in metrics_avg['server_metrics']:
+                pi_fedavg = metrics_avg['server_metrics']['policy_density']
+            elif 'client_metrics' in metrics_avg:
+                policy_densities = []
+                for cid, cm in metrics_avg['client_metrics'].items():
+                    if 'policy_density' in cm:
+                        policy_densities.append(cm['policy_density'])
+                if policy_densities:
+                    pi_fedavg = np.mean(policy_densities, axis=0)
+        except Exception as e:
+            print(f"Warning: Failed to load FedAvg metrics from {metrics_fedavg_path}: {e}")
+    if pi_fedavg is None and metrics_fg['client_metrics']:
         policy_densities = []
         for client_id, client_metrics in metrics_fg['client_metrics'].items():
             if 'policy_density' in client_metrics:
                 policy_densities.append(client_metrics['policy_density'])
         if policy_densities:
             pi_fedavg = np.mean(policy_densities, axis=0)
-            im = ax.imshow(pi_fedavg, origin='lower', extent=[-1.5, 1.5, -1.5, 1.5], cmap='hot')
-            ax.set_title("FedAvg Policy\n(Avg Policy)")
-            plt.colorbar(im, ax=ax)
-            ax.set_xlabel("x")
-            ax.set_ylabel("y")
+    if pi_fedavg is not None:
+        ax = axes[5]
+        im = ax.imshow(pi_fedavg, origin='lower', extent=[-1.5, 1.5, -1.5, 1.5], cmap='hot')
+        ax.set_title("FedAvg Policy\n(Avg Policy)" + (" [from FedAvg run]" if metrics_fedavg_path else ""))
+        plt.colorbar(im, ax=ax)
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+    else:
+        axes[5].text(0.5, 0.5, "FedAvg policy not available", ha='center', va='center', transform=axes[5].transAxes)
+        axes[5].set_title("FedAvg Policy")
     
     # (g) FedKL-policy
     if metrics_fedkl_path:
@@ -693,15 +717,28 @@ def visualize_comparison(metrics_fedguide_path: str, metrics_fedkl_path: str = N
                 ax.set_xlabel("x")
                 ax.set_ylabel("y")
     
-    # (h) FedGuide Policy (display again for comparison)
-    if 'server_metrics' in metrics_fg and 'fedguide_policy_density' in metrics_fg['server_metrics']:
+    # (h) FedGuide Avg Policy Density (comparable to FedAvg/FedKL)
+    pi_fedguide_avg = None
+    if 'server_metrics' in metrics_fg and 'policy_density' in metrics_fg['server_metrics']:
+        pi_fedguide_avg = metrics_fg['server_metrics']['policy_density']
+    elif metrics_fg.get('client_metrics'):
+        policy_densities = []
+        for cid, cm in metrics_fg['client_metrics'].items():
+            if 'policy_density' in cm:
+                policy_densities.append(cm['policy_density'])
+        if policy_densities:
+            pi_fedguide_avg = np.mean(policy_densities, axis=0)
+    if pi_fedguide_avg is not None:
         ax = axes[7]
-        pi_fg = metrics_fg['server_metrics']['fedguide_policy_density']
-        im = ax.imshow(pi_fg, origin='lower', extent=[-1.5, 1.5, -1.5, 1.5], cmap='hot')
-        ax.set_title("FedGuide Policy\n(Prior + Value)")
+        im = ax.imshow(pi_fedguide_avg, origin='lower', extent=[-1.5, 1.5, -1.5, 1.5], cmap='hot')
+        ax.set_title("FedGuide Avg Policy\n(Policy Density)")
         plt.colorbar(im, ax=ax)
         ax.set_xlabel("x")
         ax.set_ylabel("y")
+    else:
+        axes[7].text(0.5, 0.5, "FedGuide avg policy\nnot available", ha='center', va='center',
+                    transform=axes[7].transAxes)
+        axes[7].set_title("FedGuide Avg Policy")
     
     plt.suptitle(f"Bandit2D Comparison - Round {round_num}", fontsize=14, y=0.995)
     plt.tight_layout()
@@ -713,27 +750,140 @@ def visualize_comparison(metrics_fedguide_path: str, metrics_fedkl_path: str = N
         plt.show()
 
 
+def visualize_client_policies(metrics_path: str, output_path: str = None, round_num: int = -1,
+                              algorithm_label: str = "FedGuide"):
+    """
+    Plot each client's policy_density in a 2x2 grid to check if they concentrate
+    at the same location (single peak after avg) or different locations (multi-peak after avg).
+    """
+    collector = Bandit2DMetricsCollector.load(metrics_path)
+    if len(collector.metrics_history) == 0:
+        raise ValueError(f"No metrics found in {metrics_path}")
+    if round_num < 0:
+        round_num = len(collector.metrics_history) - 1
+    round_num = min(round_num, len(collector.metrics_history) - 1)
+    metrics = collector.metrics_history[round_num]
+
+    client_ids = sorted([k for k in metrics.get('client_metrics', {}).keys()
+                        if 'policy_density' in metrics['client_metrics'][k]])
+    if not client_ids:
+        raise ValueError(f"No client policy_density found in {metrics_path} round {round_num}")
+
+    n = len(client_ids)
+    ncols = 2
+    nrows = (n + 1) // 2 + (1 if n > 2 else 0)  # 4 clients -> 2x2, add row for avg
+    if n <= 2:
+        nrows = n
+    # Layout: 2x2 for 4 clients, plus optional 5th for average
+    fig, axes = plt.subplots(2, 3, figsize=(12, 8))  # 2x3: 4 clients + avg + empty or legend
+    axes = axes.flatten()
+
+    # Unified color scale for average subplot
+    all_densities = [np.array(metrics['client_metrics'][cid]['policy_density']) for cid in client_ids]
+    global_vmin, global_vmax = 0, 1
+    if all_densities:
+        concat = np.concatenate([d.ravel() for d in all_densities])
+        valid = concat[~np.isnan(concat)]
+        if len(valid) > 0:
+            global_vmax = max(float(np.percentile(valid, 99)), 1e-8)
+
+    for i, cid in enumerate(client_ids):
+        ax = axes[i]
+        pi = np.array(metrics['client_metrics'][cid]['policy_density'])
+        valid = pi[~np.isnan(pi)]
+        local_vmax = global_vmax
+        if valid.size > 0:
+            local_vmax = max(float(np.percentile(valid, 99)), 1e-8)
+        im = ax.imshow(
+            pi,
+            origin='lower',
+            extent=[-1.5, 1.5, -1.5, 1.5],
+            cmap='hot',
+            vmin=0.0,
+            vmax=local_vmax,
+        )
+        iy, ix = np.unravel_index(int(np.nanargmax(pi)), pi.shape)
+        x_peak = np.linspace(-1.5, 1.5, pi.shape[1])[ix]
+        y_peak = np.linspace(-1.5, 1.5, pi.shape[0])[iy]
+        ax.scatter([x_peak], [y_peak], c="cyan", marker="x", s=60, linewidths=1.5)
+        ax.set_title(f"Client {cid} Policy")
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        plt.colorbar(im, ax=ax)
+
+    # 5th subplot: average of all clients (same as server policy_density)
+    ax_avg = axes[4]
+    pi_avg = np.mean(all_densities, axis=0)
+    im_avg = ax_avg.imshow(
+        pi_avg,
+        origin='lower',
+        extent=[-1.5, 1.5, -1.5, 1.5],
+        cmap='hot',
+        vmin=0.0,
+        vmax=global_vmax,
+    )
+    ax_avg.set_title(f"{algorithm_label} Avg Policy\n(mean of {n} clients)")
+    ax_avg.set_xlabel("x")
+    ax_avg.set_ylabel("y")
+    plt.colorbar(im_avg, ax=ax_avg)
+
+    # Hide 6th subplot
+    axes[5].set_visible(False)
+
+    plt.suptitle(f"{algorithm_label} Per-Client Policy Density (Round {round_num})\n"
+                 "If clients overlap → single peak after avg; if spread → multi-peak", fontsize=12, y=1.02)
+    plt.tight_layout()
+
+    if output_path:
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        print(f"Client policies figure saved to {output_path}")
+    else:
+        plt.show()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Visualize Bandit2D experiment metrics")
     parser.add_argument("--metrics_path", type=str, required=True,
-                       help="Path to metrics pickle file")
+                       help="Path to metrics pickle file (FedGuide for comparison)")
     parser.add_argument("--metrics_fedkl_path", type=str, default=None,
                        help="Path to FedKL metrics pickle file (for comparison)")
+    parser.add_argument("--metrics_fedavg_path", type=str, default=None,
+                       help="Path to FedAvg metrics pickle file (for fair 3-way comparison)")
     parser.add_argument("--output_path", type=str, default=None,
                        help="Path to save figure (if None, display)")
     parser.add_argument("--round_num", type=int, default=-1,
                        help="Round number to visualize (-1 for last round)")
     parser.add_argument("--comparison", action="store_true",
-                       help="Create comparison figure with FedKL")
+                       help="Create comparison figure with FedKL and optionally FedAvg")
+    parser.add_argument("--client_policies", action="store_true",
+                       help="Plot each client's policy_density (2x2 + avg) to check overlap")
+    parser.add_argument("--client_policies_output", type=str, default=None,
+                       help="Path to save client policies figure (default: same dir as output_path)")
     args = parser.parse_args()
     
     if args.comparison:
         visualize_comparison(
             args.metrics_path,
             args.metrics_fedkl_path,
+            args.metrics_fedavg_path,
             args.output_path,
             args.round_num
         )
-    else:
+    if args.client_policies:
+        out = args.client_policies_output
+        if out is None and args.output_path:
+            from pathlib import Path
+            out = str(Path(args.output_path).parent / "client_policies.png")
+        elif out is None:
+            out = "client_policies.png"
+        # Infer algorithm label from path (e.g. .../fedavg/... -> FedAvg)
+        p = args.metrics_path.lower()
+        label = "FedGuide"
+        if "/fedavg/" in p or "fedavg" in p.split("/")[-2:]:
+            label = "FedAvg"
+        elif "/fedkl/" in p or "fedkl" in p.split("/")[-2:]:
+            label = "FedKL"
+        visualize_client_policies(args.metrics_path, out, args.round_num, algorithm_label=label)
+    if not args.comparison and not args.client_policies:
         visualize_bandit2d(args.metrics_path, args.output_path, args.round_num)
 

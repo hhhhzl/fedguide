@@ -1,0 +1,40 @@
+# FedRL-DDPG Training Configuration for Bandit2D Environment
+
+env_type: "bandit2d"
+data_dir: "data/bandit2d"
+num_clients: 4
+
+K: 4
+sigma: 0.2
+
+algorithm: "fedrl"
+rounds: 30
+cpus_per_client: 2
+
+algo: "ddpg"
+
+merge_interval: 200
+gamma: 0.99
+tau: 0.001
+threshold: 2.0
+aggregate_critic: false
+batch_size: 64
+replay_size: 100000
+replay_initial: 1000
+eval_episodes: 1
+add_noise: true
+
+hidden_dim: 256
+lr: 1e-4
+
+use_wandb: false
+wandb_project: null
+run_name: null
+
+output_dir: "./model/policy/bandit2d/fedrl_ddpg"
+metrics_dir: "./metrics/bandit2d/fedrl_ddpg"
+collect_metrics_every: 1
+
+device: "cpu"
+
+seed: [0, 1, 2, 3, 4]

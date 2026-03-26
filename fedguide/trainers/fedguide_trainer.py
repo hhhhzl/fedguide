@@ -17,6 +17,8 @@ class FedguideTrainer:
         minibatch_size: int = 256,
         lambda_local: float = 0.0,
         lambda_guide: float = 0.0,
+        lambda_guide_anneal: bool = False,
+        lambda_guide_decay_rounds: int = 40,
         online_guidance: bool = False,
         online_prior: bool = False,
         eval_episodes: int = 1,
@@ -33,10 +35,17 @@ class FedguideTrainer:
         self.minibatch_size = minibatch_size
         self.lambda_local = lambda_local
         self.lambda_guide = lambda_guide
+        self.lambda_guide_anneal = lambda_guide_anneal
+        self.lambda_guide_decay_rounds = lambda_guide_decay_rounds
+        self.server_round = 0
         self.online_guidance = online_guidance
         self.online_prior = online_prior
         self.eval_episodes = eval_episodes
         self.writer = writer
+
+    def set_server_round(self, rnd: int):
+        """Set current server round for lambda_guide annealing."""
+        self.server_round = int(rnd)
 
         reset_result = self.env.reset()
         self._obs = reset_result[0] if isinstance(reset_result, tuple) else reset_result
@@ -117,12 +126,18 @@ class FedguideTrainer:
             "done": extras["done"],
         }
 
+        # Anneal lambda_guide: decay from lambda_guide to 0 over lambda_guide_decay_rounds
+        lambda_guide_eff = self.lambda_guide
+        if self.lambda_guide_anneal and self.lambda_guide_decay_rounds > 0:
+            progress = min(1.0, self.server_round / self.lambda_guide_decay_rounds)
+            lambda_guide_eff = self.lambda_guide * (1.0 - progress)
+
         logs = self.agent.update(
             batch,
             epochs=self.update_epochs,
             minibatch_size=self.minibatch_size,
             lambda_local=self.lambda_local,
-            lambda_guide=self.lambda_guide,
+            lambda_guide=lambda_guide_eff,
         )
 
         if self.online_guidance and hasattr(self.agent, "online_guidance_step"):

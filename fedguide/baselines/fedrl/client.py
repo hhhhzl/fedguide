@@ -39,16 +39,34 @@ def _is_discrete(space) -> bool:
     return isinstance(space, Discrete)
 
 
-def _make_env(env_id: str, seed: Optional[int] = None):
+def _make_env(
+    env_id: str,
+    seed: Optional[int] = None,
+    client_id: Optional[int] = None,
+    num_clients: Optional[int] = None,
+    metadata_path: Optional[str] = None,
+):
     """Create environment."""
     if env_id.lower() in ["bandit2d", "bandit_2d", "2dbandit"]:
         from fedguide.envs.bandit2d import Bandit2D
-        env = Bandit2D(K=4, sigma=0.2, seed=seed)
+        preferred_peak = (client_id % 4) if (client_id is not None and num_clients is not None) else None
+        env = Bandit2D(K=4, sigma=0.2, seed=seed, preferred_peak=preferred_peak)
         if seed is not None:
             env.reset(seed=seed)
         return env
-    
-    env = gym.make(env_id)
+
+    if env_id.lower() in ("reacher_hetero", "reacher") and metadata_path:
+        import os
+        from fedguide.envs.reacher import make_hetero_reacher_env_from_metadata
+
+        if os.path.isfile(metadata_path):
+            idx = client_id if client_id is not None else 0
+            return make_hetero_reacher_env_from_metadata(metadata_path, idx, seed=seed)
+
+    if env_id.lower() == "reacher":
+        env = gym.make("Reacher-v4")
+    else:
+        env = gym.make(env_id)
     try:
         env.reset(seed=seed)
     except TypeError:
@@ -414,6 +432,8 @@ def client_fn_builder(
     metrics_collector: Optional[Any] = None,
     num_clients: Optional[int] = None,  # For ID mapping
     device: str = "cpu",
+    cid_mapping_file: Optional[str] = None,
+    metadata_path: Optional[str] = None,
 ):
     """
     Build client function for FedRL (supports both DQN and DDPG).
@@ -435,11 +455,15 @@ def client_fn_builder(
         # 1) per-client seed and ID mapping
         cid = str(getattr(context, "client_id", None) or getattr(context, "node_id", None) or "0")
         
-        # Map Flower's client ID to 0, 1, 2, 3...
-        if num_clients is not None:
-            mapped_client_id = abs(hash(cid)) % num_clients
+        num_c = num_clients or 4
+        if cid_mapping_file:
+            from fedguide.utils.client_id_mapping import get_mapped_client_id
+            mapped_client_id = get_mapped_client_id(cid, num_c, cid_mapping_file)
         else:
-            mapped_client_id = abs(hash(cid)) % 100
+            if num_clients is not None:
+                mapped_client_id = abs(hash(cid)) % num_clients
+            else:
+                mapped_client_id = abs(hash(cid)) % 100
         
         base = 42 + (abs(hash(cid)) % 10000)
         random.seed(base)
@@ -447,7 +471,13 @@ def client_fn_builder(
         torch.manual_seed(base)
         
         # 2) env
-        env = _make_env(env_id, seed=base)
+        env = _make_env(
+            env_id,
+            seed=base,
+            client_id=mapped_client_id,
+            num_clients=num_clients,
+            metadata_path=metadata_path,
+        )
         obs_space, act_space = env.observation_space, env.action_space
         
         # Determine state and action dimensions

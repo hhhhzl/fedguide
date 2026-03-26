@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Callable, Iterable
+import json
 import random
 import numpy as np
 import torch
@@ -32,20 +33,38 @@ def _is_d4rl_env(env_id: str) -> bool:
     return any(env_id_lower.startswith(prefix) for prefix in d4rl_prefixes)
 
 
-def _make_env(env_id: str, seed: Optional[int] = None):
-    # Import d4rl to register all d4rl environments (maze2d, antmaze, flow, etc.)
-    try:
-        import d4rl
-    except ImportError:
-        pass  # d4rl not available, continue with other options
-
+def _make_env(
+    env_id: str,
+    seed: Optional[int] = None,
+    client_id: Optional[int] = None,
+    num_clients: Optional[int] = None,
+    sigma: float = 0.2,
+    metadata_path: Optional[str] = None,
+):
     # Handle custom environments
     if env_id.lower() in ["bandit2d", "bandit_2d", "2dbandit"]:
         from fedguide.envs.bandit2d import Bandit2D
-        env = Bandit2D(K=4, sigma=0.2, seed=seed)
+        # Client-specific heterogeneity: each client prefers one peak (client_id % K)
+        preferred_peak = (client_id % 4) if (client_id is not None and num_clients is not None) else None
+        env = Bandit2D(K=4, sigma=sigma, seed=seed, preferred_peak=preferred_peak)
         if seed is not None:
             env.reset(seed=seed)
         return env
+
+    if env_id.lower() == "reacher_hetero" and metadata_path:
+        import os
+        from fedguide.envs.reacher import make_hetero_reacher_env_from_metadata
+
+        if os.path.isfile(metadata_path):
+            idx = client_id if client_id is not None else 0
+            return make_hetero_reacher_env_from_metadata(metadata_path, idx, seed=seed)
+
+    # Only import d4rl when needed (avoid mujoco/d4rl dependency for Bandit2D)
+    if _is_d4rl_env(env_id):
+        try:
+            import d4rl  # noqa: F401
+        except ImportError:
+            pass
     elif env_id.lower() == "pointmazenarrow":
         from fedguide.envs.pointmaze_narrow import PointMazeNarrow
         env = PointMazeNarrow()
@@ -96,6 +115,8 @@ class FedGuideClient(FedRLClient):
         wandb_project: Optional[str] = None,
         logger_level: int = None,
         metrics_collector: Optional[Any] = None,  # Bandit2DMetricsCollector instance
+        mapped_client_id: Optional[int] = None,  # Deterministic ID for env/metrics (0..N-1)
+        num_clients: Optional[int] = None,
     ):
         super().__init__(
             agent=agent,
@@ -112,6 +133,9 @@ class FedGuideClient(FedRLClient):
         )
         self.aggregate_mode = (aggregate_mode or "policy").lower()
         self.metrics_collector = metrics_collector
+        self._mapped_client_id = mapped_client_id
+        self._num_clients = num_clients or 4
+        self._incoming_layout: Optional[Dict[str, Any]] = None
 
     def get_parameters(self, config: Dict[str, Any]):
         """Get parameters as a list for Flower compatibility.
@@ -192,22 +216,26 @@ class FedGuideClient(FedRLClient):
 
         mode = self.aggregate_mode
         
-        # If parameters is a list (from server's flattened format), try to reconstruct dict
-        # using layout from previous round's metrics, or skip if not available
         if not isinstance(parameters, dict):
-            # For module-based aggregation modes, we need dict format
-            # If we receive a list, we can't easily reconstruct without layout
-            # Skip setting for now - agent will use its current parameters
-            # This is OK for the first round when there are no aggregated parameters yet
+            # Reconstruct module dict from server-provided layout when available.
             if mode in ("prior+guidance", "prior_guidance", "prior-guidance", "prior", "all"):
-                # For first round, parameters might be None or empty list - that's OK
                 if parameters is None or (isinstance(parameters, list) and len(parameters) == 0):
                     return
-                # For subsequent rounds, we'd need layout to reconstruct - skip for now
-                # TODO: Implement layout-based reconstruction if needed
-                return
-            # For non-module modes, use parent's implementation
-            return super().set_parameters(parameters)
+                layout = self._incoming_layout
+                if layout is None:
+                    return
+                if isinstance(layout, str):
+                    try:
+                        layout = json.loads(layout)
+                    except Exception:
+                        return
+                modules = self._unflatten_to_modules(parameters, layout)
+                if modules:
+                    parameters = modules
+                else:
+                    return
+            else:
+                return super().set_parameters(parameters)
 
         allowed = set()
         if mode == "policy":
@@ -226,11 +254,65 @@ class FedGuideClient(FedRLClient):
         filtered = {k: v for k, v in parameters.items() if k in allowed}
         if filtered:
             self.agent.set_parameters(filtered)
+
+    def _unflatten_to_modules(self, flat_params, layout: Dict[str, Any]) -> Dict[str, Any]:
+        """Reconstruct {module: state_dict_like} from flattened list using layout."""
+        if not isinstance(layout, dict) or "order" not in layout:
+            return {}
+        try:
+            full = self.agent.get_parameters()
+        except Exception:
+            return {}
+
+        idx = 0
+        out: Dict[str, Any] = {}
+        for module_name, count in layout.get("order", []):
+            count = int(count)
+            chunk = flat_params[idx: idx + count]
+            idx += count
+            if module_name not in full:
+                continue
+            module_params = full[module_name]
+            if isinstance(module_params, dict):
+                keys = list(module_params.keys())
+                if len(keys) != count:
+                    continue
+                rebuilt = {}
+                for key, arr in zip(keys, chunk):
+                    if isinstance(module_params[key], torch.Tensor):
+                        rebuilt[key] = torch.tensor(
+                            np.asarray(arr), dtype=module_params[key].dtype
+                        )
+                    else:
+                        rebuilt[key] = np.asarray(arr)
+                out[module_name] = rebuilt
+            else:
+                if count > 0:
+                    arr0 = chunk[0]
+                    if isinstance(module_params, torch.Tensor):
+                        out[module_name] = torch.tensor(
+                            np.asarray(arr0), dtype=module_params.dtype
+                        )
+                    else:
+                        out[module_name] = np.asarray(arr0)
+        return out
     
     def fit(self, parameters, config):
         """Override fit to handle module-based parameters and collect actions for metrics."""
         cid = getattr(self, "cid", config.get("cid", "unknown"))
         rnd = int(config.get("server_round", 0))
+        self._incoming_layout = config.get("layout")
+        if "client_id_mapped" in config:
+            try:
+                self._mapped_client_id = int(config.get("client_id_mapped"))
+            except (TypeError, ValueError):
+                pass
+        if bool(config.get("routing_debug", False)):
+            print(
+                f"[FedGuideClientRouting] round={rnd} cid={cid} "
+                f"mapped={self._mapped_client_id} expert={config.get('expert_id', None)} "
+                f"has_layout={self._incoming_layout is not None}"
+            )
         
         # Set parameters first
         # Handle parameters - Flower may pass Parameters object or list
@@ -251,6 +333,10 @@ class FedGuideClient(FedRLClient):
         
         if hasattr(self, "metrics"):
             self.metrics.set_step(rnd)
+        
+        # Set server round for lambda_guide annealing (if trainer supports it)
+        if hasattr(self.trainer, "set_server_round"):
+            self.trainer.set_server_round(rnd)
         
         # Train one round
         train_result = self.trainer.train_one_round()
@@ -431,12 +517,23 @@ class FedGuideClient(FedRLClient):
         # Collect actions for metrics visualization (if collector is available)
         if self.metrics_collector is not None:
             try:
-                client_id = int(cid) if isinstance(cid, (int, str)) and str(cid).isdigit() else hash(cid) % 10000
+                client_id = (
+                    self._mapped_client_id
+                    if self._mapped_client_id is not None
+                    else (int(cid) if isinstance(cid, (int, str)) and str(cid).isdigit() else hash(cid) % 10000)
+                )
                 if hasattr(self.trainer, 'last_actions') and self.trainer.last_actions is not None:
                     actions = self.trainer.last_actions
                     self.metrics_collector.collect_client_actions(client_id, actions)
             except Exception:
                 pass
+
+        # Use deterministic mapped ID (must match env preferred_peak for heterogeneity)
+        mapped_id = (
+            self._mapped_client_id
+            if self._mapped_client_id is not None
+            else abs(hash(str(cid))) % (self._num_clients or 4)
+        )
         
         # Also pass actions through Flower metrics for server-side collection
         # This allows the server to collect actions even if collector is not shared
@@ -454,8 +551,6 @@ class FedGuideClient(FedRLClient):
                     actions_list = actions
                 # Store in metrics as JSON string (Flower only allows basic types)
                 fit_metrics["client_actions"] = json.dumps(actions_list)
-                # Also store client_id for mapping
-                mapped_id = abs(hash(cid)) % (getattr(self, '_num_clients', 100) if hasattr(self, '_num_clients') else 100)
                 fit_metrics["client_id_mapped"] = mapped_id
             except Exception as e:
                 # Silently fail if serialization fails
@@ -505,34 +600,60 @@ def client_fn_builder(
     minibatch_size: int = 64,
     lambda_local: float = 0.0,
     lambda_guide: float = 1.0,
+    lambda_guide_anneal: bool = False,
+    lambda_guide_decay_rounds: int = 40,
+    init_log_std: float = 0.0,
     online_guidance: bool = False,
     online_prior: bool = False,
+    prior_adapt_fallback_all: bool = False,
     # logging
     use_wandb: bool = False,
     wandb_project: Optional[str] = None,
     run_name: Optional[str] = None,
     metrics_collector: Optional[Any] = None,  # Bandit2DMetricsCollector instance (for backward compatibility)
     num_clients: Optional[int] = None,  # Total number of clients for ID mapping
+    cid_mapping_file: Optional[str] = None,  # File for deterministic cid->0..N-1 mapping
+    sigma: float = 0.2,  # Bandit2D reward width
+    use_pretrained_models: bool = True,
+    metadata_path: Optional[str] = None,
 ):
 
     def client_fn(context) -> Any:
         # 1) per-client seed and ID mapping
         cid = str(getattr(context, "client_id", None) or getattr(context, "node_id", None) or "0")
         
-        # Map Flower's client ID to 0, 1, 2, 3... for pretrained model loading
-        if num_clients is not None:
-            mapped_client_id = abs(hash(cid)) % num_clients
+        # Map Flower's long-int cid to 0..num_clients-1 (file-based to avoid collisions)
+        num_c = num_clients or 4
+        if cid_mapping_file:
+            from fedguide.utils.client_id_mapping import get_mapped_client_id
+
+            mapped_client_id = get_mapped_client_id(cid, num_c, cid_mapping_file)
         else:
-            mapped_client_id = abs(hash(cid)) % 100
+            try:
+                if str(cid).isdigit() and int(cid) < 10000:
+                    mapped_client_id = int(cid) % num_c
+                else:
+                    import hashlib
+
+                    h = int(hashlib.sha256(str(cid).encode()).hexdigest()[:8], 16)
+                    mapped_client_id = h % num_c
+            except (ValueError, TypeError):
+                mapped_client_id = abs(hash(str(cid))) % num_c
         
         base = 42 + (abs(hash(cid)) % 10000)
         random.seed(base)
         np.random.seed(base)
         torch.manual_seed(base)
 
-        # 2) env
-        # TODO: load env from config
-        env = _make_env(env_id, seed=base)
+        # 2) env (client-specific heterogeneity for Bandit2D / Reacher)
+        env = _make_env(
+            env_id,
+            seed=base,
+            client_id=mapped_client_id,
+            num_clients=num_clients,
+            sigma=sigma,
+            metadata_path=metadata_path,
+        )
         obs_space, act_space = env.observation_space, env.action_space
         assert _is_box1d(obs_space) and _is_box1d(act_space), "Only Support 1D Box spaces."
 
@@ -542,7 +663,9 @@ def client_fn_builder(
         # 3) Load pretrained prior and guidance models
         prior, guidance = None, None
         prior_ckpt, guidance_ckpt = None, None
-        
+        if not use_pretrained_models:
+            prior_ckpt, guidance_ckpt = None, None
+
         import os
         # Map env_id to pretrain model directory name
         env_name_map = {
@@ -554,6 +677,8 @@ def client_fn_builder(
         
         # Build checkpoint paths using mapped client ID (0, 1, 2, 3...)
         try:
+            if not use_pretrained_models:
+                raise FileNotFoundError("pretrained model loading disabled by config")
             # Use mapped_client_id instead of raw cid for model path
             client_id = mapped_client_id
             # Use relative path to match pretrain script: ./model/models_prior
@@ -645,7 +770,10 @@ def client_fn_builder(
                 # Guidance is optional - only created if pretrained with guidance_mode != "off"
                 print(f"[Client {cid} (mapped to {client_id})] No pretrained guidance found at: {guidance_path} (optional, will use prior only)")
         except Exception as e:
-            print(f"[Client {cid} (mapped to {mapped_client_id})] Failed to load pretrained models: {e}")
+            if not use_pretrained_models:
+                print(f"[Client {cid} (mapped to {mapped_client_id})] Pretrained loading disabled; training from scratch.")
+            else:
+                print(f"[Client {cid} (mapped to {mapped_client_id})] Failed to load pretrained models: {e}")
             prior, guidance = None, None
             prior_ckpt, guidance_ckpt = None, None
 
@@ -657,7 +785,8 @@ def client_fn_builder(
             guidance=guidance,
             prior_ckpt=prior_ckpt,
             guidance_ckpt=guidance_ckpt,
-            # lr=3e-4, clip_eps=0.2, entropy_coef=0.02, value_coef=0.5, ...
+            init_log_std=init_log_std,
+            prior_adapt_fallback_all=prior_adapt_fallback_all,
         )
 
         # 5) trainer
@@ -671,6 +800,8 @@ def client_fn_builder(
             minibatch_size=minibatch_size,
             lambda_local=lambda_local,
             lambda_guide=lambda_guide,
+            lambda_guide_anneal=lambda_guide_anneal,
+            lambda_guide_decay_rounds=lambda_guide_decay_rounds,
             online_guidance=online_guidance,
             online_prior=online_prior,
         )
@@ -707,18 +838,15 @@ def client_fn_builder(
             use_wandb=use_wandb,
             wandb_project=wandb_project,
             metrics_collector=metrics_collector,
+            mapped_client_id=mapped_client_id,
+            num_clients=num_clients,
         )
         # Store client_id for metrics collection
         client.cid = cid
         
         # Register agent with metrics collector for visualization
         if metrics_collector is not None:
-            # Map Flower client ID to sequential ID for metrics
-            if num_clients is not None:
-                mapped_id = abs(hash(cid)) % num_clients
-            else:
-                mapped_id = abs(hash(cid)) % 100
-            metrics_collector.register_client_agent(mapped_id, agent)
+            metrics_collector.register_client_agent(mapped_client_id, agent)
         
         # Convert NumPyClient to Client
         return client.to_client()

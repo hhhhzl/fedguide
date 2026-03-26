@@ -1,6 +1,8 @@
 import gymnasium as gym
 import numpy as np
 import json, os
+from typing import Optional
+
 from gymnasium.envs.mujoco.reacher_v4 import ReacherEnv
 from gymnasium.wrappers import TimeLimit
 from gymnasium.spaces import Box, Discrete
@@ -174,6 +176,42 @@ class Reacher(object):
 
     def cleanup(self):
         self.env.close()
+
+
+def make_hetero_reacher_env_from_metadata(
+    metadata_path: str,
+    client_index: int,
+    seed: Optional[int] = None,
+):
+    """
+    Build a single-client Reacher env from data/reacher/metadata.json (or compatible file).
+    Used by federated clients so each mapped_client_id matches metadata.clients[client_index].
+    """
+    from gymnasium.wrappers import TimeLimit
+
+    from fedguide.utils.seeds import set_all_seeds
+
+    with open(metadata_path, "r") as f:
+        meta = json.load(f)
+    clients = meta.get("clients", [])
+    if client_index < 0 or client_index >= len(clients):
+        raise ValueError(
+            f"client_index {client_index} out of range for metadata ({len(clients)} clients)"
+        )
+    cfg = clients[client_index]
+    env = TimeLimit(
+        CustomizedReacherEnv(
+            qpos_high_low=cfg["qpos_high_low"],
+            action_noise=np.asarray(cfg["action_noise"], dtype=np.float64),
+            reward_scale=float(cfg["reward_scale"]),
+            angle_noise=float(cfg["angle_noise"]),
+            variant=cfg.get("variant", "medium-v2"),
+        ),
+        max_episode_steps=50,
+    )
+    if seed is not None:
+        set_all_seeds(seed, env)
+    return env
 
 
 class CustomizedReacherEnv(ReacherEnv):

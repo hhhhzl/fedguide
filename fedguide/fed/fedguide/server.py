@@ -74,6 +74,11 @@ class FedGuideStrategy(Strategy):
             cost_fn_prior: Callable[[List[np.ndarray], List[np.ndarray]], float] = _l2_cost_fn,
             cost_fn_guidance: Callable[[List[np.ndarray], List[np.ndarray]], float] = _l2_cost_fn,
             moe_keys: Tuple[str, ...] = ("prior_adapt", "guidance"),
+            # Experimental: client-specific expert routing for Bandit2D
+            client_specific_expert_routing: bool = False,
+            cid_mapping_file: Optional[str] = None,
+            num_clients: int = 4,
+            routing_debug: bool = False,
     ):
         # Standard Flower Strategy parameters
         self.fraction_fit = fraction_fit
@@ -96,9 +101,15 @@ class FedGuideStrategy(Strategy):
         self.num_experts_guidance = int(num_experts_guidance)
         self.cost_fn_prior = cost_fn_prior
         self.cost_fn_guidance = cost_fn_guidance
+        self.client_specific_expert_routing = bool(client_specific_expert_routing)
+        self.cid_mapping_file = cid_mapping_file
+        self.num_clients = int(num_clients)
+        self.routing_debug = bool(routing_debug)
 
         # experts_map[module_key] = List[List[np.ndarray]]  # M x L
         self.experts_map: Dict[str, List[List[np.ndarray]]] = {}
+        self._latest_global_modules: Dict[str, List[np.ndarray]] = {}
+        self._latest_layout_json: Optional[str] = None
 
     # ---- Strategy ----
     def __repr__(self) -> str:
@@ -148,10 +159,42 @@ class FedGuideStrategy(Strategy):
                 fit_config = self.on_fit_config_fn(server_round)
             else:
                 fit_config = {"server_round": server_round}
-            
+
+            fit_parameters = parameters
+
+            # Experimental mode: route prior/guidance experts by mapped client id.
+            # This keeps federated learning but uses client-specific shared experts.
+            if self.client_specific_expert_routing:
+                mapped_id = self._resolve_mapped_client_id(getattr(client, "cid", "0"))
+                fit_config["client_id_mapped"] = int(mapped_id)
+                routed_modules = self._build_routed_modules(mapped_id)
+                if routed_modules:
+                    expert_id = int(mapped_id)
+                    for moe_key in self.moe_keys:
+                        experts = self.experts_map.get(moe_key)
+                        if experts:
+                            expert_id = int(mapped_id) % len(experts)
+                            break
+                    fit_config["expert_id"] = int(expert_id)
+                    flat, layout = self._flatten_module_dict(routed_modules)
+                    fit_parameters = ndarrays_to_parameters(flat)
+                    fit_config["layout"] = json.dumps(layout)
+                    if self.routing_debug:
+                        print(
+                            f"[FedGuideRouting] round={server_round} cid={getattr(client, 'cid', 'unknown')} "
+                            f"mapped={mapped_id} expert={expert_id} modules={list(routed_modules.keys())}"
+                        )
+                elif self._latest_layout_json is not None:
+                    fit_config["layout"] = self._latest_layout_json
+            elif self._latest_layout_json is not None:
+                # Non-routing mode can still use layout to reconstruct module dict on clients.
+                fit_config["layout"] = self._latest_layout_json
+            if self.routing_debug:
+                fit_config["routing_debug"] = True
+
             # Create FitIns with parameters and config
             fit_ins = FitIns(
-                parameters=parameters,  # Current global parameters
+                parameters=fit_parameters,
                 config=fit_config,
             )
             client_instructions.append((client, fit_ins))
@@ -319,6 +362,8 @@ class FedGuideStrategy(Strategy):
             new_global = self._aggregate_by_modules(modules_list)
             flat, layout = self._flatten_module_dict(new_global)
             params = ndarrays_to_parameters(flat)
+            self._latest_global_modules = new_global
+            self._latest_layout_json = json.dumps(layout)
             aggregated_metrics["layout"] = json.dumps(layout)
             return params, aggregated_metrics
 
@@ -508,6 +553,42 @@ class FedGuideStrategy(Strategy):
             new_global[k] = self._fedavg_arrays(wl)
 
         return new_global
+
+    def _resolve_mapped_client_id(self, cid: str) -> int:
+        cid_str = str(cid)
+        if self.cid_mapping_file:
+            from fedguide.utils.client_id_mapping import get_mapped_client_id
+
+            return int(get_mapped_client_id(cid_str, self.num_clients, self.cid_mapping_file))
+        try:
+            if cid_str.isdigit() and int(cid_str) < 10000:
+                return int(cid_str) % max(self.num_clients, 1)
+            import hashlib
+
+            h = int(hashlib.sha256(cid_str.encode()).hexdigest()[:8], 16)
+            return h % max(self.num_clients, 1)
+        except Exception:
+            return abs(hash(cid_str)) % max(self.num_clients, 1)
+
+    def _build_routed_modules(self, mapped_id: int) -> Dict[str, List[np.ndarray]]:
+        if not self._latest_global_modules and not self.experts_map:
+            return {}
+
+        routed: Dict[str, List[np.ndarray]] = {}
+        # Always include non-MoE modules from latest global state.
+        for key, arrs in self._latest_global_modules.items():
+            if key not in self.moe_keys:
+                routed[key] = arrs
+
+        # Replace MoE keys with client-routed experts.
+        for moe_key in self.moe_keys:
+            experts = self.experts_map.get(moe_key)
+            if experts:
+                idx = int(mapped_id) % len(experts)
+                routed[moe_key] = experts[idx]
+            elif moe_key in self._latest_global_modules:
+                routed[moe_key] = self._latest_global_modules[moe_key]
+        return routed
 
     def _flatten_module_dict(
             self, modules: Dict[str, List[np.ndarray]]

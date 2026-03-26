@@ -72,7 +72,8 @@ def run_training(config: Dict[str, Any], seed: int, algorithm: str = None) -> bo
     if algorithm is None:
         algorithm = config.get('algorithm', 'ppo')
     
-    # Override seed in config
+    # Override config for this run
+    config['algorithm'] = algorithm
     config['seed'] = seed
     
     # Add seed subfolder to output directories
@@ -141,10 +142,20 @@ def main():
             algorithm = 'fedguide'
         elif 'fedkl' in config_path_lower:
             algorithm = 'fedkl'
+        elif 'fedavg' in config_path_lower:
+            algorithm = 'fedkl'  # FedAvg uses FedKL impl with lambda=0
         elif 'ppo' in config_path_lower:
             algorithm = 'ppo'
         elif 'sac' in config_path_lower:
             algorithm = 'sac'
+        elif 'fmarl' in config_path_lower:
+            algorithm = 'fmarl'
+        elif 'fedrep' in config_path_lower:
+            algorithm = 'fedrep'
+        elif 'fedmomentum' in config_path_lower:
+            algorithm = 'fedmomentum'
+        elif 'fedrl' in config_path_lower:
+            algorithm = 'fedrl'
         else:
             # Try to get from config
             algorithm = config.get('algorithm', 'ppo')  # Default

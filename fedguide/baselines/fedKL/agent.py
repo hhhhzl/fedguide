@@ -90,6 +90,7 @@ class FedKLAgent(nn.Module):
         vf_coef: float = 0.5,
         max_grad_norm: float = 0.5,
         device: Optional[str] = None,
+        init_log_std: float = 0.0,
     ):
         super().__init__()
         
@@ -101,6 +102,7 @@ class FedKLAgent(nn.Module):
         self.ent_coef = ent_coef
         self.vf_coef = vf_coef
         self.max_grad_norm = max_grad_norm
+        self.init_log_std = init_log_std
         
         if device == "auto":
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -108,7 +110,7 @@ class FedKLAgent(nn.Module):
         
         # Local policy network
         self.policy = PolicyNetwork(state_dim, action_dim, hidden_dim).to(self.device)
-        self.log_std = nn.Parameter(torch.zeros(action_dim, device=self.device))
+        self.log_std = nn.Parameter(torch.full((action_dim,), init_log_std, device=self.device))
         
         # Value network (remains local, not aggregated)
         self.value_fn = ValueNetwork(state_dim, hidden_dim).to(self.device)
@@ -120,6 +122,11 @@ class FedKLAgent(nn.Module):
         # Copy initial parameters to global policy
         self.global_policy.load_state_dict(self.policy.state_dict())
         self.global_log_std.data = self.log_std.data.clone()
+        
+        # For log_std annealing (bandit-friendly): decay std over rounds
+        self.log_std_anneal_target = -2.0  # std ≈ 0.14 by end
+        self.log_std_anneal_rounds = 40
+        self.log_std_anneal_enabled = False  # set via anneal_log_std(round, enabled=True)
         
         # Optimizer
         self.lr = lr
@@ -251,6 +258,16 @@ class FedKLAgent(nn.Module):
     def update_global_policy(self):
         """Update the global policy reference from current local policy."""
         self.global_policy.load_state_dict(self.policy.state_dict())
+        self.global_log_std.data = self.log_std.data.clone()
+    
+    def anneal_log_std(self, server_round: int, target: float = -2.0, decay_rounds: int = 40):
+        """Linearly decay log_std from init_log_std to target over decay_rounds (bandit-friendly)."""
+        if decay_rounds <= 0:
+            return
+        progress = min(1.0, server_round / decay_rounds)
+        new_val = self.init_log_std + (target - self.init_log_std) * progress
+        new_val = max(-5.0, min(2.0, new_val))
+        self.log_std.data.fill_(new_val)
         self.global_log_std.data = self.log_std.data.clone()
     
     # ========= Update (similar to FedGuide.update) =========

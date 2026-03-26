@@ -29,13 +29,30 @@ def _is_box1d(space) -> bool:
     return isinstance(space, Box) and len(space.shape) == 1
 
 
-def _make_env(env_id: str, seed: Optional[int] = None):
+def _make_env(
+    env_id: str,
+    seed: Optional[int] = None,
+    client_id: Optional[int] = None,
+    num_clients: Optional[int] = None,
+    sigma: float = 0.2,
+    metadata_path: Optional[str] = None,
+):
     if env_id.lower() in ["bandit2d", "bandit_2d", "2dbandit"]:
         from fedguide.envs.bandit2d import Bandit2D
-        env = Bandit2D(K=4, sigma=0.2, seed=seed)
+        # Client-specific heterogeneity: each client prefers one peak (client_id % K)
+        preferred_peak = (client_id % 4) if (client_id is not None and num_clients is not None) else None
+        env = Bandit2D(K=4, sigma=sigma, seed=seed, preferred_peak=preferred_peak)
         if seed is not None:
             env.reset(seed=seed)
         return env
+
+    if env_id.lower() == "reacher_hetero" and metadata_path:
+        import os
+        from fedguide.envs.reacher import make_hetero_reacher_env_from_metadata
+
+        if os.path.isfile(metadata_path):
+            idx = client_id if client_id is not None else 0
+            return make_hetero_reacher_env_from_metadata(metadata_path, idx, seed=seed)
     
     env = gym.make(env_id)
     try:
@@ -69,6 +86,8 @@ class FedKLClient(FedRLClient):
         wandb_project: Optional[str] = None,
         logger_level: int = None,
         metrics_collector: Optional[Any] = None,  # Bandit2DMetricsCollector instance
+        mapped_client_id: Optional[int] = None,  # Deterministic ID for env/metrics (0..N-1)
+        num_clients: Optional[int] = None,
     ):
         super().__init__(
             agent=agent,
@@ -84,6 +103,8 @@ class FedKLClient(FedRLClient):
             logger_level=(logger_level or 20),
         )
         self.metrics_collector = metrics_collector
+        self._mapped_client_id = mapped_client_id
+        self._num_clients = num_clients or 4
     
     def get_parameters(self, config: Dict[str, Any]):
         """Get parameters as a list for Flower compatibility (same as FedGuide)."""
@@ -185,6 +206,9 @@ class FedKLClient(FedRLClient):
                 print("Parameter loading failed in fit():", e)
         if hasattr(self, "metrics"):
             self.metrics.set_step(rnd)
+        
+        if hasattr(self.trainer, "set_server_round"):
+            self.trainer.set_server_round(rnd)
         
         # Train one round (same as FedGuide)
         train_result = self.trainer.train_one_round()
@@ -298,12 +322,17 @@ class FedKLClient(FedRLClient):
         # Collect actions for metrics visualization (same as FedGuide)
         if self.metrics_collector is not None:
             try:
-                client_id = int(cid) if isinstance(cid, (int, str)) and str(cid).isdigit() else hash(cid) % 10000
+                client_id = self._mapped_client_id if self._mapped_client_id is not None else (int(cid) if isinstance(cid, (int, str)) and str(cid).isdigit() else hash(cid) % 10000)
                 if hasattr(self.trainer, 'last_actions') and self.trainer.last_actions is not None:
                     actions = self.trainer.last_actions
                     self.metrics_collector.collect_client_actions(client_id, actions)
             except Exception:
                 pass
+        
+        # Use deterministic mapped ID (must match env preferred_peak for heterogeneity)
+        mapped_id = self._mapped_client_id if self._mapped_client_id is not None else (
+            abs(hash(str(cid))) % (self._num_clients or 4)
+        )
         
         # Also pass actions through Flower metrics for server-side collection (same as FedGuide)
         if hasattr(self.trainer, 'last_actions') and self.trainer.last_actions is not None:
@@ -319,12 +348,12 @@ class FedKLClient(FedRLClient):
                     actions_list = actions
                 # Store in metrics as JSON string
                 fit_metrics["client_actions"] = json.dumps(actions_list)
-                # Also store client_id for mapping
-                mapped_id = abs(hash(cid)) % (getattr(self, '_num_clients', 100) if hasattr(self, '_num_clients') else 100)
                 fit_metrics["client_id_mapped"] = mapped_id
             except Exception:
                 # Silently fail if serialization fails
                 pass
+        else:
+            fit_metrics["client_id_mapped"] = mapped_id
         
         # Evaluate policy on grid and pass through metrics (same as FedGuide)
         if self.metrics_collector is not None:
@@ -333,7 +362,7 @@ class FedKLClient(FedRLClient):
                 # Evaluate agent on grid
                 grid_metrics = self.metrics_collector.evaluate_on_grid(
                     agent=self.agent,
-                    client_id=mapped_id if 'mapped_id' in locals() else None,
+                    client_id=mapped_id,
                     round_num=rnd
                 )
                 # Serialize grid metrics to JSON
@@ -371,12 +400,19 @@ def client_fn_builder(
     max_grad_norm: float = 0.5,
     hidden_dim: int = 256,
     lr: float = 3e-4,
+    init_log_std: float = 0.0,
+    log_std_anneal: bool = False,
+    log_std_anneal_rounds: int = 40,
+    log_std_anneal_target: float = -2.0,
     # logging (same as FedGuide)
     use_wandb: bool = False,
     wandb_project: Optional[str] = None,
     run_name: Optional[str] = None,
     metrics_collector: Optional[Any] = None,
     num_clients: Optional[int] = None,  # For ID mapping
+    cid_mapping_file: Optional[str] = None,  # File for deterministic cid->0..N-1 mapping
+    sigma: float = 0.2,  # Bandit2D reward width (0.4 for hetero)
+    metadata_path: Optional[str] = None,  # Reacher heterogeneity (reacher_hetero)
 ):
     """
     Build client function for FedKL (matches FedGuide structure exactly).
@@ -390,19 +426,36 @@ def client_fn_builder(
         # 1) per-client seed and ID mapping (same as FedGuide)
         cid = str(getattr(context, "client_id", None) or getattr(context, "node_id", None) or "0")
         
-        # Map Flower's client ID to 0, 1, 2, 3...
-        if num_clients is not None:
-            mapped_client_id = abs(hash(cid)) % num_clients
+        # Map Flower's long-int cids to 0..num_clients-1 (file-based to avoid collisions)
+        num_c = num_clients or 4
+        if cid_mapping_file:
+            from fedguide.utils.client_id_mapping import get_mapped_client_id
+            mapped_client_id = get_mapped_client_id(cid, num_c, cid_mapping_file)
         else:
-            mapped_client_id = abs(hash(cid)) % 100
+            try:
+                if cid.isdigit() and int(cid) < 10000:
+                    mapped_client_id = int(cid) % num_c
+                else:
+                    import hashlib
+                    h = int(hashlib.sha256(cid.encode()).hexdigest()[:8], 16)
+                    mapped_client_id = h % num_c
+            except (ValueError, TypeError):
+                mapped_client_id = abs(hash(cid)) % num_c
         
         base = 42 + (abs(hash(cid)) % 10000)
         random.seed(base)
         np.random.seed(base)
         torch.manual_seed(base)
         
-        # 2) env (same as FedGuide)
-        env = _make_env(env_id, seed=base)
+        # 2) env (client-specific heterogeneity for Bandit2D / Reacher)
+        env = _make_env(
+            env_id,
+            seed=base,
+            client_id=mapped_client_id,
+            num_clients=num_clients,
+            sigma=sigma,
+            metadata_path=metadata_path,
+        )
         obs_space, act_space = env.observation_space, env.action_space
         assert _is_box1d(obs_space) and _is_box1d(act_space), "Only Support 1D Box spaces."
         
@@ -416,6 +469,7 @@ def client_fn_builder(
             hidden_dim=hidden_dim,
             lr=lr,
             device="cpu",
+            init_log_std=init_log_std,
         )
         
         # 4) trainer
@@ -435,6 +489,9 @@ def client_fn_builder(
             max_grad_norm=max_grad_norm,
             device="cpu",
         )
+        trainer.log_std_anneal = log_std_anneal
+        trainer.log_std_anneal_rounds = log_std_anneal_rounds
+        trainer.log_std_anneal_target = log_std_anneal_target
         
         # Get collector from global variable if not passed directly (same as FedGuide)
         nonlocal metrics_collector
@@ -455,6 +512,8 @@ def client_fn_builder(
             env=env,
             trainer=trainer,
             run_name=run_name or f"{env_id}-{algo}-cid{cid}",
+            mapped_client_id=mapped_client_id,
+            num_clients=num_clients,
             seed=base,
             use_wandb=use_wandb,
             wandb_project=wandb_project,
@@ -463,16 +522,9 @@ def client_fn_builder(
         # Store client_id for metrics collection (same as FedGuide)
         client.cid = cid
         
-        # Register agent with metrics collector for visualization (same as FedGuide)
-        if metrics_collector is not None:
-            if num_clients is not None:
-                mapped_id = abs(hash(cid)) % num_clients
-            else:
-                mapped_id = abs(hash(cid)) % 100
-            
-            # Register agent if method exists
-            if hasattr(metrics_collector, 'register_client_agent'):
-                metrics_collector.register_client_agent(mapped_id, agent)
+        # Register agent with metrics collector for visualization (use mapped_client_id)
+        if metrics_collector is not None and hasattr(metrics_collector, 'register_client_agent'):
+            metrics_collector.register_client_agent(mapped_client_id, agent)
         
         # Convert NumPyClient to Client 
         return client.to_client()

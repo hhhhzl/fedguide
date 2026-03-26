@@ -1,0 +1,38 @@
+env_type: "bandit2d"
+data_dir: "data/bandit2d"
+num_clients: 4
+
+K: 4
+sigma: 0.4
+
+rounds: 30
+cpus_per_client: 2
+
+n_steps: 80
+lambda_global: 0.0
+lambda_local: 0.0
+update_epochs: 4
+minibatch_size: 64
+clip_eps: 0.2
+entropy_coef: 0.02
+value_coef: 0.5
+max_grad_norm: 0.5
+
+init_log_std: 1.0
+log_std_anneal: true
+log_std_anneal_rounds: 30
+log_std_anneal_target: -2.0
+
+hidden_dim: 256
+lr: 1e-4
+
+use_wandb: false
+wandb_project: null
+run_name: "bandit2d-fedavg-curve-target"
+
+output_dir: "./model/policy/bandit2d/fedavg_curve_target"
+metrics_dir: "./metrics/bandit2d/fedavg_curve_target"
+collect_metrics_every: 1
+
+device: "auto"
+seed: 0

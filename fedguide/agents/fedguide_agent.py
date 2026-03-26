@@ -45,12 +45,14 @@ class FedguideAgent(nn.Module):
         online_prior: bool = False,
         prior_lr: float = 1e-4,
         prior_reg_coef: float = 1e-3,
+        prior_adapt_fallback_all: bool = False,
         device: Optional[str] = None,
 
         use_sampling_guidance: bool = False,
         guidance_eta: float = 0.1,
         guide_align_coef: float = 0.0,
         entropy_coef: float = 0.0,
+        init_log_std: float = 0.0,
     ):
         super().__init__()
 
@@ -71,6 +73,7 @@ class FedguideAgent(nn.Module):
         self.online_prior = online_prior
         self.prior_lr = prior_lr
         self.prior_reg_coef = prior_reg_coef
+        self.prior_adapt_fallback_all = bool(prior_adapt_fallback_all)
 
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
@@ -80,7 +83,7 @@ class FedguideAgent(nn.Module):
             nn.Linear(256, 256), nn.Tanh(),
             nn.Linear(256, action_dim),
         )
-        self.log_std = nn.Parameter(torch.zeros(action_dim))
+        self.log_std = nn.Parameter(torch.full((action_dim,), init_log_std))
         self.value_fn = nn.Sequential(
             nn.Linear(state_dim, 256), nn.Tanh(),
             nn.Linear(256, 256), nn.Tanh(),
@@ -244,6 +247,11 @@ class FedguideAgent(nn.Module):
                 adapt.append(p)
             else:
                 frozen.append(p)
+        # Experimental fallback for priors without adapter/lora/head naming.
+        # Keeps default behavior unless explicitly enabled by config.
+        if len(adapt) == 0 and self.prior_adapt_fallback_all:
+            adapt = [p for _, p in named]
+            frozen = []
         for p in frozen:
             p.requires_grad = False
         for p in adapt:
@@ -401,13 +409,13 @@ class FedguideAgent(nn.Module):
                 # prefer new guide_align_coef if set (>0), else fall back to old self.guide_coef.
                 guide_weight = self.guide_align_coef if (getattr(self, "guide_align_coef", 0.0) > 0.0) else self.guide_coef
 
+                # Local KL: (mb_old_logp - logp).mean() = -KL(π||π_old); add +lambda_local*KL via -lambda_local*(mb_old_logp - logp)
                 loss = (
                     policy_loss
                     + self.vf_coef * value_loss
                     + self.ent_coef * entropy_loss
                     + prior_loss
                     + self.guide_coef * guide_align
-                    # + lambda_local * (mb_old_logp - logp).mean()
                     - lambda_local * (mb_old_logp - logp).mean()
                 )
 
