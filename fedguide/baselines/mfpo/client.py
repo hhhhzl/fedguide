@@ -31,6 +31,7 @@ def _default_method_conf(config: Dict[str, Any]) -> Dict[str, Any]:
         "c": float(config.get("c", 3.0)),
         "decay_rate": float(config.get("decay_rate", 0.99)),
         "decay_start_iter_id": int(config.get("decay_start_iter_id", 500)),
+        "mfpo_test_episodes": int(config.get("mfpo_test_episodes", 10)),
     }
 
 

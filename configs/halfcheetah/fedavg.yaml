@@ -8,9 +8,9 @@ num_clients: 8
 random_select_clients: false
 
 # Training configuration
-rounds: 150
+rounds: 50
 cpus_per_client: 2
-n_steps: 2048
+n_steps: 4096
 update_epochs: 10
 minibatch_size: 64
 
