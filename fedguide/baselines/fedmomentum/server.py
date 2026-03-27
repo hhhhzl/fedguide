@@ -1,10 +1,10 @@
 """
-FedMomentum Server Implementation
+FedMomentum server: global policy update from federated policy gradients.
 
-This module implements the FedMomentum server strategy with momentum-based aggregation.
-Based on the paper: "Momentum for the Win: Collaborative Federated Reinforcement Learning across Heterogeneous Environments"
-
-The server aggregates policy gradients from clients and applies momentum updates.
+Aligned with FedSVRPG-M (arxiv:2405.19499): server step θ ← θ + λ · u where u is the
+(weighted) mean of client policy gradients — equivalent in direction to
+(1/(ηNK))ΣΔ from Algorithm 1 under local SGD. Optional server-side EMA is *not*
+part of the paper; use use_server_momentum=True only as a legacy add-on.
 """
 
 import flwr as fl
@@ -24,7 +24,6 @@ from flwr.server.client_manager import ClientManager
 from flwr.server.strategy import Strategy
 import json
 import numpy as np
-import copy
 
 
 class FedMomentumStrategy(Strategy):
@@ -42,8 +41,13 @@ class FedMomentumStrategy(Strategy):
         self,
         *,
         # Momentum parameters
-        momentum_beta: float = 0.9,  # Momentum coefficient (paper default: 0.9)
-        server_lr: float = 0.001,  # Server learning rate for parameter updates
+        momentum_beta: float = 0.9,  # Only if use_server_momentum=True (not FedSVRPG-M server)
+        server_lr: float = 0.001,  # λ in arxiv:2405.19499 (global step on aggregated direction)
+        use_server_momentum: bool = False,  # FedSVRPG-M uses θ←θ+λu, not Polyak momentum on server
+        # FedSVRPG-M strict (Algorithm 1 + Eq. (4)): clients send Δ; u = (1/(ηNK))ΣΔ; θ←θ+λu
+        use_fedsvrpgm_strict: bool = False,
+        eta: float = 0.01,  # η local step size (denominator in server u)
+        local_steps_k: int = 5,  # K local iterations per round
         # Standard Flower Strategy parameters
         fraction_fit: float = 1.0,
         fraction_evaluate: float = 0.0,
@@ -61,9 +65,18 @@ class FedMomentumStrategy(Strategy):
         # Momentum parameters
         self.momentum_beta = momentum_beta
         self.server_lr = server_lr
+        self.use_server_momentum = use_server_momentum
         self.use_gradient_aggregation = use_gradient_aggregation
-        
-        # Server momentum buffer (initialized on first aggregation)
+        self.use_fedsvrpgm_strict = use_fedsvrpgm_strict
+        self.eta = float(eta)
+        self.local_steps_k = int(local_steps_k)
+
+        # FedSVRPG-M strict: server-side θ, u_{r+1}, θ_{r-1} for next round's IS
+        self._global_param_arrays: Optional[List[np.ndarray]] = None
+        self._theta_prev_flat: Optional[List[np.ndarray]] = None
+        self._u_next_flat: Optional[List[np.ndarray]] = None
+
+        # Server momentum buffer (only if use_server_momentum; not part of FedSVRPG-M Algorithm 1)
         self.server_momentum = None
         
         # Standard Flower Strategy parameters
@@ -81,12 +94,110 @@ class FedMomentumStrategy(Strategy):
         self.init_parameters = initial_parameters or init_parameters
     
     def __repr__(self) -> str:
-        return f"FedMomentumStrategy(momentum_beta={self.momentum_beta}, server_lr={self.server_lr})"
+        return (
+            f"FedMomentumStrategy(server_lr={self.server_lr}, "
+            f"use_server_momentum={self.use_server_momentum}, "
+            f"use_fedsvrpgm_strict={self.use_fedsvrpgm_strict})"
+        )
+
+    @staticmethod
+    def _ordered_gradient_keys(grad_dict: Dict[str, np.ndarray]) -> list:
+        """Match FedMomentumAgent.get_parameters / compute_policy_gradient key order."""
+        pk = sorted(k for k in grad_dict.keys() if k.startswith("policy."))
+        if "log_std" in grad_dict:
+            pk.append("log_std")
+        return pk
     
     def initialize_parameters(self, client_manager: ClientManager) -> Optional[Parameters]:
         """Initialize global model parameters."""
+        if self.init_parameters is not None and self.use_fedsvrpgm_strict:
+            nd = parameters_to_ndarrays(self.init_parameters)
+            self._global_param_arrays = [np.copy(x) for x in nd]
+            self._theta_prev_flat = [np.copy(x) for x in nd]
+            self._u_next_flat = [np.zeros_like(x) for x in nd]
         return self.init_parameters
-    
+
+    def _ensure_fedsvrpgm_state(self, parameters: Optional[Parameters]) -> None:
+        """Sync θ_r from Flower and init θ_{r-1}, u for first round."""
+        if parameters is None:
+            return
+        nd = parameters_to_ndarrays(parameters)
+        self._global_param_arrays = [np.copy(x) for x in nd]
+        if self._theta_prev_flat is None:
+            self._theta_prev_flat = [np.copy(x) for x in nd]
+        if self._u_next_flat is None:
+            self._u_next_flat = [np.zeros_like(x) for x in nd]
+
+    def _aggregate_fedsvrpgm_strict(
+        self,
+        server_round: int,
+        results: List[Tuple[ClientProxy, FitRes]],
+        aggregated_metrics: Dict[str, Scalar],
+    ) -> Optional[Parameters]:
+        """
+        u_{r+1} = (1/(η N K)) Σ_i Δ_r^(i),  θ_{r+1} = θ_r + λ u_{r+1}.
+        Broadcast next round: u ← u_{r+1}, θ_{r-1} ← θ_r (pre-update snapshot).
+        """
+        if self._global_param_arrays is None:
+            if self.init_parameters is None:
+                return None
+            nd = parameters_to_ndarrays(self.init_parameters)
+            self._global_param_arrays = [np.copy(x) for x in nd]
+            if self._theta_prev_flat is None:
+                self._theta_prev_flat = [np.copy(x) for x in nd]
+            if self._u_next_flat is None:
+                self._u_next_flat = [np.zeros_like(x) for x in nd]
+
+        theta_old = [np.copy(x) for x in self._global_param_arrays]
+
+        deltas_list: List[List[np.ndarray]] = []
+        for _, fit_res in results:
+            if isinstance(fit_res, dict):
+                metrics = fit_res.get("metrics", {})
+            else:
+                metrics = fit_res.metrics
+            if "policy_delta" not in metrics:
+                print("[FedMomentum] FedSVRPG-M strict: missing policy_delta; fallback to gradient/FedAvg")
+                return None
+            pd_str = metrics["policy_delta"]
+            if isinstance(pd_str, bytes):
+                pd_str = pd_str.decode("utf-8")
+            raw = json.loads(pd_str)
+            deltas_list.append([np.asarray(x, dtype=np.float32) for x in raw])
+
+        if not deltas_list:
+            return None
+
+        n = len(deltas_list)
+        num_layers = len(deltas_list[0])
+        delta_sum = [np.zeros_like(deltas_list[0][i]) for i in range(num_layers)]
+        for d in deltas_list:
+            if len(d) != num_layers:
+                print("[FedMomentum] FedSVRPG-M strict: mismatched policy_delta depth")
+                return None
+            for i in range(num_layers):
+                if delta_sum[i].shape != d[i].shape:
+                    print("[FedMomentum] FedSVRPG-M strict: shape mismatch in policy_delta")
+                    return None
+                delta_sum[i] = delta_sum[i] + d[i]
+
+        denom = float(self.eta * n * self.local_steps_k)
+        u_next = [x / denom for x in delta_sum]
+        theta_new = [
+            theta_old[i] + float(self.server_lr) * u_next[i]
+            for i in range(len(theta_old))
+        ]
+
+        self._theta_prev_flat = [np.copy(x) for x in theta_old]
+        self._u_next_flat = [np.copy(x) for x in u_next]
+        self._global_param_arrays = [np.copy(x) for x in theta_new]
+
+        print(
+            f"[Round {server_round}] FedSVRPG-M strict: θ update θ←θ+λu, "
+            f"λ={self.server_lr}, η={self.eta}, N={n}, K={self.local_steps_k}"
+        )
+        return ndarrays_to_parameters(theta_new)
+
     def configure_fit(
         self,
         server_round: int,
@@ -113,17 +224,27 @@ class FedMomentumStrategy(Strategy):
         client_instructions = []
         for client in sampled_clients:
             if self.on_fit_config_fn is not None:
-                fit_config = self.on_fit_config_fn(server_round)
+                fit_config = dict(self.on_fit_config_fn(server_round))
             else:
                 fit_config = {"server_round": server_round}
-            
-            # Create FitIns with parameters and config
+            if self.use_fedsvrpgm_strict:
+                self._ensure_fedsvrpgm_state(parameters)
+                fit_config["use_fedsvrpgm_strict"] = True
+                fit_config["eta"] = float(self.eta)
+                fit_config["local_steps_k"] = int(self.local_steps_k)
+                fit_config["u_r_flat_json"] = json.dumps(
+                    [x.tolist() for x in self._u_next_flat]
+                )
+                fit_config["theta_prev_flat_json"] = json.dumps(
+                    [x.tolist() for x in self._theta_prev_flat]
+                )
+
             fit_ins = FitIns(
                 parameters=parameters,
                 config=fit_config,
             )
             client_instructions.append((client, fit_ins))
-        
+
         return client_instructions
     
     def aggregate_fit(
@@ -288,7 +409,14 @@ class FedMomentumStrategy(Strategy):
         if not hasattr(self, '_collected_client_metrics'):
             self._collected_client_metrics = {}
         self._collected_client_metrics[server_round] = collected_client_metrics
-        
+
+        if self.use_fedsvrpgm_strict:
+            strict_params = self._aggregate_fedsvrpgm_strict(
+                server_round, results, aggregated_metrics
+            )
+            if strict_params is not None:
+                return strict_params, aggregated_metrics
+
         # Aggregate using gradients with momentum (if available)
         if use_gradients and client_gradients and len(client_gradients) > 0:
             aggregated_params = self._aggregate_gradients_with_momentum(
@@ -348,127 +476,98 @@ class FedMomentumStrategy(Strategy):
         gradient_weights: List[int],
     ) -> Optional[Parameters]:
         """
-        Aggregate policy gradients from clients and apply momentum update.
-        
-        Algorithm:
-        1. Weighted average of client gradients (FedAvg-style)
-        2. Update momentum buffer: m_t = β * m_{t-1} + (1-β) * g_t
-        3. Update parameters: θ_t = θ_{t-1} + α * m_t
-        
-        Args:
-            server_round: Current server round
-            results: Client fit results
-            client_gradients: List of gradient dictionaries from clients
-            gradient_weights: Weights for each client (typically num_examples)
-        
-        Returns:
-            Updated global parameters
+        Global policy update from client policy gradients.
+
+        FedSVRPG-M (arxiv:2405.19499, Algorithm 1) uses
+        θ_{r+1} = θ_r + λ u_{r+1} with u_{r+1} = (1/(η N K)) Σ_i Δ_r^(i).
+        Under local SGD, averaging client gradients is equivalent to the direction
+        of u_{r+1} up to scaling; we apply θ ← θ + λ * (weighted average of g_i).
+
+        Momentum β in the paper appears in the *local* VR estimator (Eq. 4), not as
+        Polyak averaging on the server. If use_server_momentum is True, we optionally
+        apply an *extra* server-side EMA (legacy heuristic).
         """
         if not client_gradients or not gradient_weights:
             return None
-        
-        # Get current global parameters
+
         if len(results) == 0:
             return None
-        
+
         _, first_fit_res = results[0]
         if isinstance(first_fit_res, dict):
             current_params = first_fit_res.get("parameters", None)
         else:
             current_params = first_fit_res.parameters
-        
+
         if current_params is None:
             return None
-        
+
         current_param_arrays = parameters_to_ndarrays(current_params)
-        
-        # 1. Weighted average of client gradients
-        total_weight = sum(gradient_weights)
-        if total_weight == 0:
+
+        total_weight = float(sum(gradient_weights))
+        if total_weight <= 0:
             return None
-        
-        # Get all gradient keys (should be consistent across clients)
-        if not client_gradients:
-            return None
-        
-        gradient_keys = list(client_gradients[0].keys())
-        aggregated_grad = {}
-        
-        for key in gradient_keys:
-            # Weighted sum of gradients
-            weighted_grad = None
+
+        # 1) Weighted average of client gradients (same keys across clients)
+        keys = self._ordered_gradient_keys(client_gradients[0])
+        aggregated_grad: Dict[str, np.ndarray] = {}
+        for key in keys:
+            acc = None
             for grad_dict, weight in zip(client_gradients, gradient_weights):
                 if key not in grad_dict:
                     continue
-                
-                grad = grad_dict[key]
-                if not isinstance(grad, np.ndarray):
-                    grad = np.array(grad)
-                
-                if weighted_grad is None:
-                    weighted_grad = grad * (weight / total_weight)
-                else:
-                    weighted_grad += grad * (weight / total_weight)
-            
-            if weighted_grad is not None:
-                aggregated_grad[key] = weighted_grad
-        
-        # 2. Initialize momentum buffer if needed
-        if self.server_momentum is None:
-            self.server_momentum = {}
-            # Initialize momentum with current parameter structure
-            # We need to map gradient keys to parameter array indices
-            # For now, assume gradient keys match parameter structure
-            # This will be properly initialized in first update
-        
-        # 3. Update momentum buffer
-        # Map gradients to parameter arrays by matching shapes
-        # For simplicity, assume gradients are in same order as parameters
-        # More robust: match by shape and key name
-        param_idx = 0
-        momentum_arrays = []
-        
-        for param_array in current_param_arrays:
-            # Try to find matching gradient by shape
-            matching_grad = None
-            for key, grad_array in aggregated_grad.items():
-                if grad_array.shape == param_array.shape:
-                    matching_grad = grad_array
-                    break
-            
-            if matching_grad is None:
-                # No matching gradient, skip this parameter
-                momentum_arrays.append(np.zeros_like(param_array))
-                continue
-            
-            # Initialize momentum for this parameter if needed
-            momentum_key = f"param_{param_idx}"
-            if momentum_key not in self.server_momentum:
-                self.server_momentum[momentum_key] = np.zeros_like(matching_grad)
-            
-            # Update momentum: m_t = β * m_{t-1} + (1-β) * g_t
-            self.server_momentum[momentum_key] = (
-                self.momentum_beta * self.server_momentum[momentum_key] +
-                (1 - self.momentum_beta) * matching_grad
+                g = grad_dict[key]
+                if not isinstance(g, np.ndarray):
+                    g = np.asarray(g, dtype=np.float64)
+                w = float(weight) / total_weight
+                acc = g * w if acc is None else acc + g * w
+            if acc is not None:
+                aggregated_grad[key] = acc.astype(np.float32, copy=False)
+
+        if len(aggregated_grad) == 0:
+            return None
+
+        key_order = self._ordered_gradient_keys(aggregated_grad)
+        if len(key_order) != len(current_param_arrays):
+            print(
+                f"[FedMomentum] Warning: grad len {len(key_order)} != {len(current_param_arrays)}"
+                " params; falling back to FedAvg"
             )
-            
-            momentum_arrays.append(self.server_momentum[momentum_key].copy())
-            param_idx += 1
-        
-        # 4. Update parameters: θ_t = θ_{t-1} + α * m_t
-        updated_param_arrays = []
-        for i, (param_array, momentum_array) in enumerate(zip(current_param_arrays, momentum_arrays)):
-            if momentum_array.shape == param_array.shape:
-                updated_param = param_array + self.server_lr * momentum_array
+            return None
+
+        if not self.use_server_momentum:
+            self.server_momentum = None
+
+        momentum_arrays: List[np.ndarray] = []
+        for i, param_array in enumerate(current_param_arrays):
+            key = key_order[i]
+            g = aggregated_grad[key]
+            if g.shape != param_array.shape:
+                print(
+                    f"[FedMomentum] Warning: shape mismatch for {key}: {g.shape} vs {param_array.shape}"
+                )
+                return None
+            if self.use_server_momentum:
+                mk = f"param_{i}"
+                if self.server_momentum is None:
+                    self.server_momentum = {}
+                if mk not in self.server_momentum:
+                    self.server_momentum[mk] = np.zeros_like(g)
+                self.server_momentum[mk] = (
+                    self.momentum_beta * self.server_momentum[mk]
+                    + (1.0 - self.momentum_beta) * g
+                )
+                step_dir = self.server_momentum[mk]
             else:
-                # Shape mismatch, use original parameter
-                updated_param = param_array.copy()
-            updated_param_arrays.append(updated_param)
-        
-        # Convert back to Parameters object
-        updated_parameters = ndarrays_to_parameters(updated_param_arrays)
-        
-        return updated_parameters
+                step_dir = g
+
+            momentum_arrays.append(np.asarray(step_dir, dtype=np.float32))
+
+        updated_param_arrays = [
+            param_array + self.server_lr * m
+            for param_array, m in zip(current_param_arrays, momentum_arrays)
+        ]
+        return ndarrays_to_parameters(updated_param_arrays)
     
     def _fedavg_arrays(
         self, 
@@ -656,6 +755,7 @@ def run_fedmomentum_server(
         accept_failures=True,
         momentum_beta=momentum_beta,
         server_lr=server_lr,
+        use_server_momentum=False,
         use_gradient_aggregation=True,
     )
     

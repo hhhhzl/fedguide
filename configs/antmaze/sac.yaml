@@ -3,6 +3,8 @@
 # Environment configuration
 env_type: "d4rl"  # Environment type: "bandit2d" or "d4rl"
 env_name: "antmaze-umaze-v0"  # D4RL environment name
+reward_type: "dense"  # AntMaze: override registered sparse reward
+metadata_path: null  # Optional: data/antmaze/metadata.json for heterogeneity
 num_clients: 1  # Number of clients (for data splitting)
 
 # Training configuration

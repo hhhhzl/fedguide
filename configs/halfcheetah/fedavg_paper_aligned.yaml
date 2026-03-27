@@ -1,0 +1,37 @@
+# FedAvg (FedKL lambda=0) paper-aligned baseline for HalfCheetah.
+# Uses nominal metadata (no extra unstable penalty, no strong dynamics offsets).
+
+env_type: "d4rl"
+env_name: "HalfCheetah-v4"
+metadata_path: "data/halfcheetah/metadata_nominal64.json"
+num_clients: 8
+random_select_clients: false
+
+rounds: 150
+cpus_per_client: 2
+n_steps: 2048
+update_epochs: 10
+minibatch_size: 64
+
+hidden_dim: 256
+lr: 1e-4
+gamma: 0.99
+gae_lambda: 0.95
+clip_eps: 0.2
+entropy_coef: 0.0
+value_coef: 0.5
+max_grad_norm: 0.5
+
+lambda_global: 0
+lambda_local: 0
+eval_episodes: 10
+
+output_dir: "./model/policy/halfcheetah/fedavg_paper_aligned"
+metrics_dir: "./metrics/halfcheetah/fedavg_paper_aligned"
+save_every: 10
+
+device: "auto"
+gpus_per_client: 0.25
+seed: [0]
+
+render_eval: false

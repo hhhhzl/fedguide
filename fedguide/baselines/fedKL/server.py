@@ -21,6 +21,8 @@ from flwr.server.client_proxy import ClientProxy
 from flwr.server.client_manager import ClientManager
 from flwr.server.strategy import Strategy
 import json
+import os
+import pickle
 import numpy as np
 
 class FedKLStrategy(Strategy):
@@ -46,6 +48,8 @@ class FedKLStrategy(Strategy):
         accept_failures: bool = True,
         initial_parameters: Optional[Parameters] = None,
         init_parameters: Optional[Parameters] = None,  # Alias for backward compatibility
+        policy_save_dir: Optional[str] = None,
+        total_rounds: Optional[int] = None,
     ):
         # Standard Flower Strategy parameters
         self.fraction_fit = fraction_fit
@@ -60,7 +64,9 @@ class FedKLStrategy(Strategy):
         
         # Handle both initial_parameters and init_parameters for compatibility
         self.init_parameters = initial_parameters or init_parameters
-    
+        self.policy_save_dir = policy_save_dir
+        self.total_rounds = int(total_rounds) if total_rounds is not None else None
+
     def __repr__(self) -> str:
         return "FedKLStrategy(fedavg aggregation with KL penalties)"
     
@@ -270,6 +276,27 @@ class FedKLStrategy(Strategy):
         if weighted_params:
             aggregated_arrays = self._fedavg_arrays(weighted_params)
             aggregated_parameters = ndarrays_to_parameters(aggregated_arrays)
+
+            if (
+                self.policy_save_dir
+                and self.total_rounds is not None
+                and int(server_round) == self.total_rounds
+                and aggregated_arrays
+            ):
+                try:
+                    os.makedirs(self.policy_save_dir, exist_ok=True)
+                    path = os.path.join(
+                        self.policy_save_dir, "final_global_policy_flat.pkl"
+                    )
+                    with open(path, "wb") as f:
+                        pickle.dump(aggregated_arrays, f)
+                    print(
+                        f"[FedKLStrategy] Saved final global policy "
+                        f"({len(aggregated_arrays)} tensors) to {path}",
+                        flush=True,
+                    )
+                except Exception as e:
+                    print(f"[FedKLStrategy] Warning: could not save final policy: {e}")
             
             # Print aggregated metrics for monitoring
             print(f"[Round {server_round}] Aggregated metrics:")

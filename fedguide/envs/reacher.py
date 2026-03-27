@@ -182,6 +182,7 @@ def make_hetero_reacher_env_from_metadata(
     metadata_path: str,
     client_index: int,
     seed: Optional[int] = None,
+    render_mode: Optional[str] = None,
 ):
     """
     Build a single-client Reacher env from data/reacher/metadata.json (or compatible file).
@@ -199,14 +200,20 @@ def make_hetero_reacher_env_from_metadata(
             f"client_index {client_index} out of range for metadata ({len(clients)} clients)"
         )
     cfg = clients[client_index]
+    env_kwargs: dict = {
+        "qpos_high_low": cfg["qpos_high_low"],
+        "action_noise": np.asarray(cfg["action_noise"], dtype=np.float64),
+        "reward_scale": float(cfg["reward_scale"]),
+        "angle_noise": float(cfg["angle_noise"]),
+        "variant": cfg.get("variant", "medium-v2"),
+    }
+    if render_mode is not None:
+        env_kwargs["render_mode"] = render_mode
+        from fedguide.utils.mujoco_headless import ensure_mujoco_headless_gl_if_needed
+
+        ensure_mujoco_headless_gl_if_needed()
     env = TimeLimit(
-        CustomizedReacherEnv(
-            qpos_high_low=cfg["qpos_high_low"],
-            action_noise=np.asarray(cfg["action_noise"], dtype=np.float64),
-            reward_scale=float(cfg["reward_scale"]),
-            angle_noise=float(cfg["angle_noise"]),
-            variant=cfg.get("variant", "medium-v2"),
-        ),
+        CustomizedReacherEnv(**env_kwargs),
         max_episode_steps=50,
     )
     if seed is not None:

@@ -29,6 +29,12 @@ class FedRepTrainer:
         max_grad_norm: float = 0.5,
         eval_episodes: int = 1,
         writer: Optional[Any] = None,
+        render_eval: bool = False,
+        render_mode: str = "video",
+        render_save_dir: Optional[str] = None,
+        render_every_n_rounds: int = 10,
+        render_episodes: int = 5,
+        render_client_tag: str = "0",
     ):
         self.agent = agent
         self.env = env
@@ -45,13 +51,23 @@ class FedRepTrainer:
         self.max_grad_norm = max_grad_norm
         self.eval_episodes = eval_episodes
         self.writer = writer
-        
+        self.server_round = 0
+        self.render_eval = render_eval
+        self.render_mode = render_mode
+        self.render_save_dir = render_save_dir
+        self.render_every_n_rounds = render_every_n_rounds
+        self.render_episodes = render_episodes
+        self.render_client_tag = render_client_tag
+
         # Current observation
         reset_result = self.env.reset()
         self._obs = reset_result[0] if isinstance(reset_result, tuple) else reset_result
         
         # Store last rollout actions for metrics collection
         self.last_actions = None
+
+    def set_server_round(self, rnd: int):
+        self.server_round = int(rnd)
     
     def _rollout(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         """Collect rollout data."""
@@ -62,8 +78,9 @@ class FedRepTrainer:
             a, logp, v = self.agent.select_action(self._obs, deterministic=False)
             a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
             
-            # Step environment
-            next_obs, r, d, _trunc, _info = self.env.step(a)
+            # Step environment (Gymnasium: use terminated | truncated)
+            next_obs, r, terminated, truncated, _info = self.env.step(a)
+            d = bool(terminated) or bool(truncated)
             
             # Store transition
             obs_buf.append(torch.tensor(self._obs, dtype=torch.float32))
@@ -71,7 +88,7 @@ class FedRepTrainer:
             logp_buf.append(torch.tensor(logp, dtype=torch.float32).reshape(()))
             rew_buf.append(torch.tensor(r, dtype=torch.float32).reshape(()))
             val_buf.append(torch.tensor(v, dtype=torch.float32).reshape(()))
-            done_buf.append(torch.tensor(d, dtype=torch.float32).reshape(()))
+            done_buf.append(torch.tensor(float(d), dtype=torch.float32).reshape(()))
             
             # Update observation
             self._obs = next_obs
@@ -174,8 +191,28 @@ class FedRepTrainer:
                     self.writer.log({k: v})
             except Exception:
                 pass
-        
+
+        from fedguide.utils.federated_render import maybe_save_federated_eval_video
+
+        maybe_save_federated_eval_video(
+            self.env,
+            server_round=self.server_round,
+            render_eval=self.render_eval,
+            render_mode=self.render_mode,
+            render_save_dir=self.render_save_dir,
+            render_every_n_rounds=self.render_every_n_rounds,
+            render_episodes=self.render_episodes,
+            eval_episodes=self.eval_episodes,
+            client_tag=self.render_client_tag,
+            act_fn=self._policy_action_for_render,
+        )
+
         return out
+
+    def _policy_action_for_render(self, obs: Any) -> Any:
+        a, _, _ = self.agent.select_action(obs, deterministic=True)
+        a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
+        return a
     
     def _eval_episode(self) -> float:
         """Evaluate policy for one episode."""
@@ -186,7 +223,8 @@ class FedRepTrainer:
         while not done:
             a, _, _ = self.agent.select_action(obs, deterministic=True)
             a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
-            obs, r, done, _trunc, _info = self.env.step(a)
+            obs, r, terminated, truncated, _info = self.env.step(a)
+            done = bool(terminated) or bool(truncated)
             ep_ret += r
         return ep_ret
     
@@ -205,7 +243,8 @@ class FedRepTrainer:
         while not done:
             a, _, _ = self.agent.select_action(obs, deterministic=True)
             a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
-            obs, r, done, _trunc, _info = self.env.step(a)
+            obs, r, terminated, truncated, _info = self.env.step(a)
+            done = bool(terminated) or bool(truncated)
             ep_ret += r
             traj.append(obs.copy() if hasattr(obs, 'copy') else np.array(obs))
         

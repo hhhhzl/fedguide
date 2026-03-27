@@ -23,6 +23,12 @@ class FedguideTrainer:
         online_prior: bool = False,
         eval_episodes: int = 1,
         writer: Optional[Any] = None,
+        render_eval: bool = False,
+        render_mode: str = "video",
+        render_save_dir: Optional[str] = None,
+        render_every_n_rounds: int = 10,
+        render_episodes: int = 5,
+        render_client_tag: str = "0",
     ):
         self.agent = agent
         self.env = env
@@ -42,6 +48,12 @@ class FedguideTrainer:
         self.online_prior = online_prior
         self.eval_episodes = eval_episodes
         self.writer = writer
+        self.render_eval = render_eval
+        self.render_mode = render_mode
+        self.render_save_dir = render_save_dir
+        self.render_every_n_rounds = render_every_n_rounds
+        self.render_episodes = render_episodes
+        self.render_client_tag = render_client_tag
 
     def set_server_round(self, rnd: int):
         """Set current server round for lambda_guide annealing."""
@@ -166,7 +178,27 @@ class FedguideTrainer:
             except Exception:
                 pass
 
+        from fedguide.utils.federated_render import maybe_save_federated_eval_video
+
+        maybe_save_federated_eval_video(
+            self.env,
+            server_round=self.server_round,
+            render_eval=self.render_eval,
+            render_mode=self.render_mode,
+            render_save_dir=self.render_save_dir,
+            render_every_n_rounds=self.render_every_n_rounds,
+            render_episodes=self.render_episodes,
+            eval_episodes=self.eval_episodes,
+            client_tag=self.render_client_tag,
+            act_fn=self._policy_action_for_render,
+        )
+
         return out
+
+    def _policy_action_for_render(self, obs: Any) -> Any:
+        a, _, _ = self.agent.select_action(obs, deterministic=True)
+        a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
+        return a
 
     def _eval_episode(self) -> float:
         reset_result = self.env.reset()

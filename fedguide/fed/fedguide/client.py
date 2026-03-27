@@ -15,17 +15,10 @@ import gym as old_gym  # Old gym package for d4rl environments
 from fedguide.agents.fedguide_agent import FedguideAgent
 from fedguide.trainers.fedguide_trainer import FedguideTrainer
 from fedguide.fed.client import FedRLClient
+from fedguide.utils.gym_space_utils import is_box1d as _is_box1d
 
 
 # --------- Helpers ---------
-def _is_box1d(space) -> bool:
-    try:
-        from gymnasium.spaces import Box
-    except Exception:
-        from gym.spaces import Box
-    return isinstance(space, Box) and len(space.shape) == 1
-
-
 def _is_d4rl_env(env_id: str) -> bool:
     """Check if env_id is a d4rl environment that needs old gym."""
     d4rl_prefixes = ["maze2d-", "antmaze-", "flow-", "kitchen-", "pen-", "door-", "hammer-", "relocate-", "push-", "stick-"]
@@ -40,6 +33,8 @@ def _make_env(
     num_clients: Optional[int] = None,
     sigma: float = 0.2,
     metadata_path: Optional[str] = None,
+    render_mode: Optional[str] = None,
+    reward_type: Optional[str] = None,
 ):
     # Handle custom environments
     if env_id.lower() in ["bandit2d", "bandit_2d", "2dbandit"]:
@@ -57,7 +52,39 @@ def _make_env(
 
         if os.path.isfile(metadata_path):
             idx = client_id if client_id is not None else 0
-            return make_hetero_reacher_env_from_metadata(metadata_path, idx, seed=seed)
+            return make_hetero_reacher_env_from_metadata(
+                metadata_path, idx, seed=seed, render_mode=render_mode
+            )
+
+    from fedguide.envs.halfcheetah_hetero import make_halfcheetah_env_if_applicable
+
+    _hc_env = make_halfcheetah_env_if_applicable(
+        metadata_path, client_id, seed, render_mode, render_eval=False
+    )
+    if _hc_env is not None:
+        return _hc_env
+
+    # AntMaze + metadata.json (env=antmaze) — per-client D4RL variant + noise/scale
+    if _is_d4rl_env(env_id) and env_id.lower().startswith("antmaze-") and metadata_path:
+        import os
+
+        if os.path.isfile(metadata_path):
+            with open(metadata_path, "r") as f:
+                _meta = json.load(f)
+            _clients = _meta.get("clients") or []
+            if _meta.get("env") == "antmaze" or (
+                _clients and str(_clients[0].get("variant", "")).startswith("antmaze-")
+            ):
+                from fedguide.envs.antmaze_hetero import make_hetero_antmaze_env_from_metadata
+
+                idx = client_id if client_id is not None else 0
+                return make_hetero_antmaze_env_from_metadata(
+                    metadata_path,
+                    idx,
+                    seed=seed,
+                    reward_type=reward_type,
+                    render_eval=False,
+                )
 
     # Only import d4rl when needed (avoid mujoco/d4rl dependency for Bandit2D)
     if _is_d4rl_env(env_id):
@@ -78,7 +105,12 @@ def _make_env(
     # Use old_gym.make for d4rl environments (they register with old gym, not gymnasium)
     # Use gym.make (gymnasium) for standard gymnasium environments
     if _is_d4rl_env(env_id):
-        env = old_gym.make(env_id)
+        from fedguide.envs.antmaze_hetero import build_d4rl_make_kwargs
+
+        mkw = build_d4rl_make_kwargs(
+            env_id, {"reward_type": reward_type, "d4rl_env_kwargs": {}}
+        )
+        env = old_gym.make(env_id, **mkw)
     else:
         env = gym.make(env_id)
     
@@ -616,6 +648,13 @@ def client_fn_builder(
     sigma: float = 0.2,  # Bandit2D reward width
     use_pretrained_models: bool = True,
     metadata_path: Optional[str] = None,
+    reward_type: Optional[str] = None,
+    render_eval: bool = False,
+    render_mode: str = "video",
+    render_save_dir: Optional[str] = None,
+    render_every_n_rounds: int = 10,
+    render_episodes: int = 5,
+    reacher_render_mode: Optional[str] = None,
 ):
 
     def client_fn(context) -> Any:
@@ -653,6 +692,8 @@ def client_fn_builder(
             num_clients=num_clients,
             sigma=sigma,
             metadata_path=metadata_path,
+            render_mode=reacher_render_mode,
+            reward_type=reward_type,
         )
         obs_space, act_space = env.observation_space, env.action_space
         assert _is_box1d(obs_space) and _is_box1d(act_space), "Only Support 1D Box spaces."
@@ -804,6 +845,12 @@ def client_fn_builder(
             lambda_guide_decay_rounds=lambda_guide_decay_rounds,
             online_guidance=online_guidance,
             online_prior=online_prior,
+            render_eval=render_eval,
+            render_mode=render_mode,
+            render_save_dir=render_save_dir,
+            render_every_n_rounds=render_every_n_rounds,
+            render_episodes=render_episodes,
+            render_client_tag=str(mapped_client_id),
         )
 
         # Get collector from global variable if not passed directly

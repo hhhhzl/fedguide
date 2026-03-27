@@ -8,6 +8,7 @@ Only the policy parameters are aggregated; value networks remain local.
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Callable, Iterable
+import json
 import random
 import numpy as np
 import torch
@@ -17,16 +18,28 @@ try:
 except Exception:
     import gym
 
+import gym as old_gym
+
 from fedguide.fed.client import FedRLClient
+from fedguide.utils.gym_space_utils import is_box1d as _is_box1d
 
 
 # --------- Helpers ---------
-def _is_box1d(space) -> bool:
-    try:
-        from gymnasium.spaces import Box
-    except Exception:
-        from gym.spaces import Box
-    return isinstance(space, Box) and len(space.shape) == 1
+def _is_d4rl_env(env_id: str) -> bool:
+    d4rl_prefixes = [
+        "maze2d-",
+        "antmaze-",
+        "flow-",
+        "kitchen-",
+        "pen-",
+        "door-",
+        "hammer-",
+        "relocate-",
+        "push-",
+        "stick-",
+    ]
+    e = env_id.lower()
+    return any(e.startswith(p) for p in d4rl_prefixes)
 
 
 def _make_env(
@@ -36,6 +49,8 @@ def _make_env(
     num_clients: Optional[int] = None,
     sigma: float = 0.2,
     metadata_path: Optional[str] = None,
+    render_mode: Optional[str] = None,
+    reward_type: Optional[str] = None,
 ):
     if env_id.lower() in ["bandit2d", "bandit_2d", "2dbandit"]:
         from fedguide.envs.bandit2d import Bandit2D
@@ -52,8 +67,56 @@ def _make_env(
 
         if os.path.isfile(metadata_path):
             idx = client_id if client_id is not None else 0
-            return make_hetero_reacher_env_from_metadata(metadata_path, idx, seed=seed)
-    
+            return make_hetero_reacher_env_from_metadata(
+                metadata_path, idx, seed=seed, render_mode=render_mode
+            )
+
+    from fedguide.envs.halfcheetah_hetero import make_halfcheetah_env_if_applicable
+
+    _hc_env = make_halfcheetah_env_if_applicable(
+        metadata_path, client_id, seed, render_mode, render_eval=False
+    )
+    if _hc_env is not None:
+        return _hc_env
+
+    if _is_d4rl_env(env_id) and env_id.lower().startswith("antmaze-") and metadata_path:
+        import os
+
+        if os.path.isfile(metadata_path):
+            with open(metadata_path, "r") as f:
+                _meta = json.load(f)
+            _clients = _meta.get("clients") or []
+            if _meta.get("env") == "antmaze" or (
+                _clients and str(_clients[0].get("variant", "")).startswith("antmaze-")
+            ):
+                from fedguide.envs.antmaze_hetero import make_hetero_antmaze_env_from_metadata
+
+                idx = client_id if client_id is not None else 0
+                return make_hetero_antmaze_env_from_metadata(
+                    metadata_path,
+                    idx,
+                    seed=seed,
+                    reward_type=reward_type,
+                    render_eval=False,
+                )
+
+    if _is_d4rl_env(env_id):
+        try:
+            import d4rl  # noqa: F401
+        except ImportError:
+            pass
+        from fedguide.envs.antmaze_hetero import build_d4rl_make_kwargs
+
+        mkw = build_d4rl_make_kwargs(
+            env_id, {"reward_type": reward_type, "d4rl_env_kwargs": {}}
+        )
+        env = old_gym.make(env_id, **mkw)
+        try:
+            env.reset(seed=seed)
+        except TypeError:
+            pass
+        return env
+
     env = gym.make(env_id)
     try:
         env.reset(seed=seed)
@@ -105,6 +168,7 @@ class FedKLClient(FedRLClient):
         self.metrics_collector = metrics_collector
         self._mapped_client_id = mapped_client_id
         self._num_clients = num_clients or 4
+        self._device_reported = False
     
     def get_parameters(self, config: Dict[str, Any]):
         """Get parameters as a list for Flower compatibility (same as FedGuide)."""
@@ -188,6 +252,17 @@ class FedKLClient(FedRLClient):
         """Override fit to handle parameters and collect actions for metrics (matches FedGuide)."""
         cid = getattr(self, "cid", config.get("cid", "unknown"))
         rnd = int(config.get("server_round", 0))
+        if not self._device_reported:
+            try:
+                pdev = next(self.agent.policy.parameters()).device
+                print(
+                    f"[FedKLClient] cid={cid} round={rnd} policy_device={pdev} "
+                    f"cuda_available={torch.cuda.is_available()}",
+                    flush=True,
+                )
+            except Exception:
+                pass
+            self._device_reported = True
         
         # Handle parameters - Flower may pass Parameters object or list (same as FedGuide)
         if parameters is not None:
@@ -400,6 +475,7 @@ def client_fn_builder(
     max_grad_norm: float = 0.5,
     hidden_dim: int = 256,
     lr: float = 3e-4,
+    eval_episodes: int = 1,
     init_log_std: float = 0.0,
     log_std_anneal: bool = False,
     log_std_anneal_rounds: int = 40,
@@ -413,6 +489,14 @@ def client_fn_builder(
     cid_mapping_file: Optional[str] = None,  # File for deterministic cid->0..N-1 mapping
     sigma: float = 0.2,  # Bandit2D reward width (0.4 for hetero)
     metadata_path: Optional[str] = None,  # Reacher heterogeneity (reacher_hetero)
+    reward_type: Optional[str] = None,  # D4RL AntMaze dense/sparse
+    device: Optional[str] = None,  # cuda / cpu / auto; forwarded from runner config
+    render_eval: bool = False,
+    render_mode: str = "video",
+    render_save_dir: Optional[str] = None,
+    render_every_n_rounds: int = 10,
+    render_episodes: int = 5,
+    reacher_render_mode: Optional[str] = None,
 ):
     """
     Build client function for FedKL (matches FedGuide structure exactly).
@@ -447,6 +531,12 @@ def client_fn_builder(
         np.random.seed(base)
         torch.manual_seed(base)
         
+        train_device = device
+        if train_device is None or train_device == "auto":
+            train_device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            train_device = str(train_device)
+        
         # 2) env (client-specific heterogeneity for Bandit2D / Reacher)
         env = _make_env(
             env_id,
@@ -455,6 +545,8 @@ def client_fn_builder(
             num_clients=num_clients,
             sigma=sigma,
             metadata_path=metadata_path,
+            render_mode=reacher_render_mode,
+            reward_type=reward_type,
         )
         obs_space, act_space = env.observation_space, env.action_space
         assert _is_box1d(obs_space) and _is_box1d(act_space), "Only Support 1D Box spaces."
@@ -468,7 +560,7 @@ def client_fn_builder(
             action_dim=action_dim,
             hidden_dim=hidden_dim,
             lr=lr,
-            device="cpu",
+            device=train_device,
             init_log_std=init_log_std,
         )
         
@@ -487,7 +579,14 @@ def client_fn_builder(
             lambda_global=lambda_global,
             lambda_local=lambda_local,
             max_grad_norm=max_grad_norm,
-            device="cpu",
+            eval_episodes=eval_episodes,
+            device=train_device,
+            render_eval=render_eval,
+            render_mode=render_mode,
+            render_save_dir=render_save_dir,
+            render_every_n_rounds=render_every_n_rounds,
+            render_episodes=render_episodes,
+            render_client_tag=str(mapped_client_id),
         )
         trainer.log_std_anneal = log_std_anneal
         trainer.log_std_anneal_rounds = log_std_anneal_rounds
@@ -515,6 +614,7 @@ def client_fn_builder(
             mapped_client_id=mapped_client_id,
             num_clients=num_clients,
             seed=base,
+            device=train_device,
             use_wandb=use_wandb,
             wandb_project=wandb_project,
             metrics_collector=metrics_collector,

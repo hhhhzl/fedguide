@@ -73,7 +73,7 @@ def register_default_hooks(registry):
     reg = registry if registry is not None else get_registry()
     
     # Register Bandit2D metrics hook for federated algorithms
-    federated_algorithms = ['fedguide', 'fedkl', 'fmarl', 'fedrl', 'fedrep', 'fedmomentum']
+    federated_algorithms = ['fedguide', 'fedkl', 'fmarl', 'fedrl', 'fedrep', 'fedmomentum', 'mfpo']
     for algorithm in federated_algorithms:
         hook = Bandit2DMetricsHook()
         reg.register_hook('bandit2d', algorithm, hook)

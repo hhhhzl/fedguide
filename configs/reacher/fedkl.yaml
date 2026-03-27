@@ -1,5 +1,4 @@
 # FedKL Training Configuration for Reacher with Client Heterogeneity
-# Based on paper settings: 200 rounds
 
 # Environment configuration
 env_type: "reacher_hetero"  # Environment type: "bandit2d", "d4rl", "minari", or "reacher_hetero"
@@ -7,8 +6,8 @@ metadata_path: "data/reacher/metadata.json"  # Path to reacher metadata.json fil
 num_clients: 8  # Number of clients to use (selects first N clients from metadata.json, or random if random_select_clients=true)
 random_select_clients: false  # If true, randomly select num_clients from metadata.json; if false, select first num_clients
 
-# Training configuration (matching paper: 200 rounds)
-rounds: 200  # Number of federated rounds (paper reports 200 rounds)
+# Training configuration
+rounds: 150  # Number of federated rounds
 n_steps: 2048  # Number of rollout steps per round (on-policy)
 update_epochs: 10  # Number of PPO update epochs per round
 minibatch_size: 64  # Minibatch size for PPO updates
@@ -37,10 +36,10 @@ save_every: 10
 
 # Device configuration
 device: "auto"  # "auto", "cpu", or "cuda"
+# Ray Flower VCE: GPU fraction per virtual client (match fedavg; smaller => more parallel actors)
+gpus_per_client: 0.25
 
-# Random seed configuration
-# Can be a single integer or a list of integers
-# If list, will run training for each seed
+# Seed configuration
 seed: [0, 1, 2, 3, 4]  # Run 5 different seeds
 
 # Rendering configuration (for MuJoCo/Maze environments)

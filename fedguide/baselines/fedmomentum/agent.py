@@ -201,17 +201,16 @@ class FedMomentumAgent(nn.Module):
         self.optimizer.zero_grad()
         policy_loss.backward()
         
-        # Extract gradients
+        # Extract gradients in the same key order as get_parameters() / Flower flat list
+        # (sorted policy state_dict keys, then log_std) — required for server aggregation.
         policy_grad = {}
-        
-        # Policy network gradients
-        for name, param in self.policy.named_parameters():
-            if param.grad is not None:
-                policy_grad[f"policy.{name}"] = param.grad.clone()
-        
-        # Log std gradient
-        if self.log_std.grad is not None:
-            policy_grad["log_std"] = self.log_std.grad.clone()
+        params_by_name = {n: p for n, p in self.policy.named_parameters()}
+        for key in sorted(params_by_name.keys()):
+            param = params_by_name[key]
+            g = param.grad if param.grad is not None else torch.zeros_like(param.data)
+            policy_grad[f"policy.{key}"] = g.clone()
+        g_ls = self.log_std.grad if self.log_std.grad is not None else torch.zeros_like(self.log_std.data)
+        policy_grad["log_std"] = g_ls.clone()
         
         # Clear gradients (we'll compute them again during actual update)
         self.optimizer.zero_grad()
@@ -273,8 +272,8 @@ class FedMomentumAgent(nn.Module):
                 mb_advantages = advantages[batch_indices]
                 mb_old_logps = old_logps[batch_indices] if old_logps is not None else None
                 
-                # Evaluate current policy
-                logps, entropy, values = self.evaluate(mb_states, mb_actions)
+                # Evaluate current policy (evaluate returns log_prob, entropy, value, mu)
+                logps, entropy, values, _mu = self.evaluate(mb_states, mb_actions)
                 
                 # Compute policy loss (PPO clipped objective)
                 if mb_old_logps is not None:

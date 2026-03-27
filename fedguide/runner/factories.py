@@ -6,6 +6,8 @@ dynamic creation of components based on configuration.
 """
 
 from typing import Dict, Any, List, Optional, Callable
+import json
+import numpy as np
 import torch
 import os
 import sys
@@ -116,13 +118,35 @@ def _create_bandit2d_env(config: Dict[str, Any], **kwargs):
     )
 
 
+def _reacher_render_mode_for_config(config: Dict[str, Any]) -> Optional[str]:
+    """Gymnasium needs render_mode at env creation for env.render() to return pixels."""
+    if not config.get("render_eval"):
+        return None
+    rm = str(config.get("render_mode", "rgb_array")).lower()
+    if rm in ("video", "rgb_array"):
+        return "rgb_array"
+    if rm == "human":
+        return "human"
+    return None
+
+
 def _create_reacher_env(config: Dict[str, Any], **kwargs):
     """Create Reacher environment."""
+    seed = kwargs.get('seed', config.get('seed', 42))
+    render_mode = _reacher_render_mode_for_config(config)
+    # Headless (no DISPLAY): MuJoCo must use EGL before GLFW/X11 loads.
+    if render_mode == "rgb_array":
+        from fedguide.utils.mujoco_headless import ensure_mujoco_headless_gl_if_needed
+
+        ensure_mujoco_headless_gl_if_needed()
+
     from fedguide.envs.reacher import CustomizedReacherEnv
     from gymnasium.wrappers import TimeLimit
     from fedguide.utils.seeds import set_all_seeds
     
-    seed = kwargs.get('seed', config.get('seed', 42))
+    reacher_kw: Dict[str, Any] = {}
+    if render_mode is not None:
+        reacher_kw["render_mode"] = render_mode
     
     # Load metadata if provided
     metadata_path = config.get('metadata_path')
@@ -147,7 +171,8 @@ def _create_reacher_env(config: Dict[str, Any], **kwargs):
                     action_noise=client_config["action_noise"],
                     reward_scale=client_config["reward_scale"],
                     angle_noise=client_config["angle_noise"],
-                    variant=variant
+                    variant=variant,
+                    **reacher_kw,
                 ),
                 max_episode_steps=50
             )
@@ -161,7 +186,8 @@ def _create_reacher_env(config: Dict[str, Any], **kwargs):
             action_noise=[0, 0],
             reward_scale=1.0,
             angle_noise=0.0,
-            variant='medium-v2'
+            variant='medium-v2',
+            **reacher_kw,
         ),
         max_episode_steps=50
     )
@@ -169,16 +195,98 @@ def _create_reacher_env(config: Dict[str, Any], **kwargs):
     return env
 
 
+def _set_gym_mujoco_render_mode_rgb(env) -> None:
+    """
+    Gym 0.26+ MuJoCo envs require render_mode='rgb_array' for pixel output.
+    D4RL-built envs leave it unset; calling render() then errors or returns None,
+    and the PPO trainer swallows exceptions — so no video is saved.
+    """
+    try:
+        from gym.envs.mujoco import mujoco_env as _gym_mujoco
+    except ImportError:
+        return
+    cur = env
+    for _ in range(32):
+        if isinstance(cur, _gym_mujoco.MujocoEnv):
+            cur.render_mode = "rgb_array"
+            return
+        nxt = getattr(cur, "env", None) or getattr(cur, "_wrapped_env", None)
+        if nxt is None:
+            break
+        cur = nxt
+
+
 def _create_d4rl_env(config: Dict[str, Any], **kwargs):
-    """Create D4RL environment."""
-    import gymnasium as gym
-    import d4rl
-    
+    """Create D4RL environment (or Gymnasium HalfCheetah when metadata env=halfcheetah)."""
+    from fedguide.utils.mujoco_headless import ensure_mujoco_headless_gl_if_needed
+
+    ensure_mujoco_headless_gl_if_needed()
+
+    metadata_path = config.get("metadata_path")
+    if metadata_path and os.path.exists(metadata_path):
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        clients = meta.get("clients") or []
+        if str(meta.get("env", "")).lower() == "halfcheetah":
+            from fedguide.envs.halfcheetah_hetero import make_hetero_halfcheetah_env_from_metadata
+
+            seed = kwargs.get("seed", config.get("seed", 42))
+            return make_hetero_halfcheetah_env_from_metadata(
+                metadata_path,
+                0,
+                seed=seed,
+                render_mode=None,
+                render_eval=bool(config.get("render_eval")),
+            )
+        if meta.get("env") == "antmaze" or (
+            clients and str(clients[0].get("variant", "")).startswith("antmaze-")
+        ):
+            from fedguide.envs.antmaze_hetero import make_hetero_antmaze_env_from_metadata
+
+            seed = kwargs.get("seed", config.get("seed", 42))
+            return make_hetero_antmaze_env_from_metadata(
+                metadata_path,
+                0,
+                seed=seed,
+                reward_type=config.get("reward_type"),
+                render_eval=bool(config.get("render_eval")),
+            )
+
+    # D4RL registers envs with the `gym` package, not Gymnasium's registry.
+    import gym as gym_legacy
+    import d4rl  # noqa: F401 — register envs
+    from fedguide.envs.antmaze_hetero import build_d4rl_make_kwargs
+
+    class _D4RLObservationSpaceFix(gym_legacy.Wrapper):
+        """Some D4RL envs (e.g. antmaze) report a wrong Box shape vs actual reset/step obs."""
+
+        def __init__(self, env, obs_dim: int):
+            super().__init__(env)
+            self.observation_space = gym_legacy.spaces.Box(
+                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            )
+
     env_name = config.get('env_name', 'halfcheetah-medium-v2')
-    env = gym.make(env_name)
-    
+    mkw = build_d4rl_make_kwargs(env_name, config)
+    env = gym_legacy.make(env_name, **mkw)
+
     seed = kwargs.get('seed', config.get('seed', 42))
-    env.reset(seed=seed)
+    try:
+        out = env.reset(seed=seed)
+    except TypeError:
+        env.reset()
+        if hasattr(env, "action_space") and hasattr(env.action_space, "seed"):
+            env.action_space.seed(seed)
+        out = env.reset()
+    o0 = out[0] if isinstance(out, tuple) else out
+    actual_dim = int(np.asarray(o0, dtype=np.float32).ravel().shape[0])
+    decl_dim = int(np.asarray(env.observation_space.shape).prod())
+    if actual_dim != decl_dim:
+        env = _D4RLObservationSpaceFix(env, actual_dim)
+
+    if config.get("render_eval"):
+        _set_gym_mujoco_render_mode_rgb(env)
+
     return env
 
 
@@ -221,23 +329,26 @@ def _create_ppo_agent(env, config: Dict[str, Any], **kwargs):
     
     obs_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
-    action_low = kwargs.get('action_low')
-    action_high = kwargs.get('action_high')
-    device = kwargs.get('device', 'cpu')
-    
+    # Registry calls factory(env, config) only — device/bounds live on config, not kwargs.
+    action_low = config.get('action_low')
+    action_high = config.get('action_high')
+    device = config.get('device', 'cpu')
+    if device == 'auto':
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    # YAML may load scientific notation (e.g. 3e-4) as str; optimizers require float.
     return PPOAgent(
         state_dim=obs_dim,
         action_dim=action_dim,
-        hidden_dim=config.get('hidden_dim', 256),
-        lr=config.get('lr', 3e-4),
-        gamma=config.get('gamma', 0.99),
-        clip_eps=config.get('clip_eps', 0.2),
-        gae_lambda=config.get('gae_lambda', 0.95),
-        entropy_coef=config.get('entropy_coef', 0.01),
-        value_coef=config.get('value_coef', 0.5),
-        max_grad_norm=config.get('max_grad_norm', 0.5),
-        action_std=config.get('action_std', 0.1),
-        learnable_std=config.get('learnable_std', True),
+        hidden_dim=int(config.get('hidden_dim', 256)),
+        lr=float(config.get('lr', 3e-4)),
+        gamma=float(config.get('gamma', 0.99)),
+        clip_eps=float(config.get('clip_eps', 0.2)),
+        gae_lambda=float(config.get('gae_lambda', 0.95)),
+        entropy_coef=float(config.get('entropy_coef', 0.01)),
+        value_coef=float(config.get('value_coef', 0.5)),
+        max_grad_norm=float(config.get('max_grad_norm', 0.5)),
+        action_std=float(config.get('action_std', 0.1)),
+        learnable_std=bool(config.get('learnable_std', True)),
         device=device,
         action_low=action_low,
         action_high=action_high,
@@ -250,22 +361,24 @@ def _create_sac_agent(env, config: Dict[str, Any], **kwargs):
     
     obs_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
-    action_low = kwargs.get('action_low')
-    action_high = kwargs.get('action_high')
-    device = kwargs.get('device', 'cpu')
+    action_low = config.get('action_low')
+    action_high = config.get('action_high')
+    device = config.get('device', 'cpu')
+    if device == 'auto':
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     return SACAgent(
         state_dim=obs_dim,
         action_dim=action_dim,
-        hidden_dim=config.get('hidden_dim', 256),
-        lr=config.get('lr', 3e-4),
-        gamma=config.get('gamma', 0.99),
-        tau=config.get('tau', 0.005),
-        alpha=config.get('alpha', 0.2),
+        hidden_dim=int(config.get('hidden_dim', 256)),
+        lr=float(config.get('lr', 3e-4)),
+        gamma=float(config.get('gamma', 0.99)),
+        tau=float(config.get('tau', 0.005)),
+        alpha=float(config.get('alpha', 0.2)),
         device=device,
         action_low=action_low,
         action_high=action_high,
-        action_std=config.get('action_std', 0.1),
+        action_std=float(config.get('action_std', 0.1)),
     )
 
 
@@ -280,25 +393,28 @@ def _create_ppo_trainer(agent, env, datasets, config: Dict[str, Any], **kwargs):
     """Create PPO trainer."""
     from fedguide.baselines.ppo.trainer import CentralPPOTrainer
     
-    device = kwargs.get('device', 'cpu')
+    device = config.get('device', 'cpu')
+    if device == 'auto':
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
+    mb = config.get('minibatch_size')
     return CentralPPOTrainer(
         agent=agent,
         datasets=datasets,
         env=env,
-        steps_per_round=config.get('steps_per_round', 2000),
-        update_epochs=config.get('update_epochs', 4),
-        minibatch_size=config.get('minibatch_size'),
-        gamma=config.get('gamma', 0.99),
-        gae_lambda=config.get('gae_lambda', 0.95),
-        eval_episodes=config.get('eval_episodes', 10),
-        eval_stochastic_samples=config.get('eval_stochastic_samples', 64),
+        steps_per_round=int(config.get('steps_per_round', 2000)),
+        update_epochs=int(config.get('update_epochs', 4)),
+        minibatch_size=int(mb) if mb is not None else None,
+        gamma=float(config.get('gamma', 0.99)),
+        gae_lambda=float(config.get('gae_lambda', 0.95)),
+        eval_episodes=int(config.get('eval_episodes', 10)),
+        eval_stochastic_samples=int(config.get('eval_stochastic_samples', 64)),
         device=device,
-        render_eval=config.get('render_eval', False),
-        render_mode=config.get('render_mode', 'video'),
+        render_eval=bool(config.get('render_eval', False)),
+        render_mode=str(config.get('render_mode', 'video')),
         render_save_dir=config.get('render_save_dir'),
-        render_every_n_rounds=config.get('render_every_n_rounds', 10),
-        render_episodes=config.get('render_episodes', 1),
+        render_every_n_rounds=int(config.get('render_every_n_rounds', 10)),
+        render_episodes=int(config.get('render_episodes', 1)),
     )
 
 
@@ -306,7 +422,9 @@ def _create_sac_trainer(agent, env, datasets, config: Dict[str, Any], **kwargs):
     """Create SAC trainer."""
     from fedguide.baselines.sac.trainer import CentralSACTrainer
     
-    device = kwargs.get('device', 'cpu')
+    device = config.get('device', 'cpu')
+    if device == 'auto':
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     # For SAC, use update_steps instead of steps_per_round for offline training
     # If steps_per_round is provided, use it; otherwise use update_steps
@@ -337,15 +455,32 @@ _registry.register_trainer_factory('sac', _create_sac_trainer)
 
 # ============= Federated Client Factories =============
 
+def _federated_client_env_id(config: Dict[str, Any], env_type: str) -> str:
+    """For D4RL, Flower clients need the concrete env id (e.g. antmaze-umaze-v0), not 'd4rl'."""
+    if env_type == "d4rl":
+        mp = config.get("metadata_path")
+        if mp and os.path.isfile(mp):
+            try:
+                with open(mp, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                if str(meta.get("env", "")).lower() == "halfcheetah":
+                    return str(meta.get("env_name") or "HalfCheetah-v4")
+            except (json.JSONDecodeError, OSError):
+                pass
+        return config.get("env_name") or "halfcheetah-medium-v2"
+    return env_type
+
+
 def _create_fedguide_client_fn(config: Dict[str, Any], **kwargs):
     """Create FedGuide client function."""
     from fedguide.fed.fedguide.client import client_fn_builder
-    
+    from fedguide.utils.federated_render import reacher_env_render_mode_from_config
+
     env_type = kwargs.get('env_type', 'Bandit2D')
     metrics_collector = kwargs.get('metrics_collector')
-    
+    env_id = _federated_client_env_id(config, env_type)
     return client_fn_builder(
-        env_id=env_type,
+        env_id=env_id,
         algo=config.get('algo', 'ppo'),
         aggregate_mode=config.get('aggregate_mode', 'policy'),
         n_steps=config.get('n_steps', 200),
@@ -366,26 +501,50 @@ def _create_fedguide_client_fn(config: Dict[str, Any], **kwargs):
         prior_adapt_fallback_all=config.get('prior_adapt_fallback_all', False),
         use_pretrained_models=config.get('use_pretrained_models', True),
         metadata_path=config.get('metadata_path'),
+        reward_type=config.get('reward_type'),
+        render_eval=bool(config.get('render_eval', False)),
+        render_mode=str(config.get('render_mode', 'video')),
+        render_save_dir=config.get('render_save_dir'),
+        render_every_n_rounds=int(config.get('render_every_n_rounds', 10)),
+        render_episodes=int(config.get('render_episodes', 5)),
+        reacher_render_mode=reacher_env_render_mode_from_config(
+            bool(config.get('render_eval', False)),
+            str(config.get('render_mode', 'video')),
+        ),
     )
 
 
 def _create_fedkl_client_fn(config: Dict[str, Any], **kwargs):
     """Create FedKL client function."""
     from fedguide.baselines.fedKL.client import client_fn_builder
+    from fedguide.utils.federated_render import reacher_env_render_mode_from_config
 
     env_type = kwargs.get('env_type', 'Bandit2D')
     metrics_collector = kwargs.get('metrics_collector')
+    dev = kwargs.get('device')
+    if dev is None:
+        dev = config.get('device', 'auto')
+    if dev == 'auto':
+        dev = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+    env_id = _federated_client_env_id(config, env_type)
     return client_fn_builder(
-        env_id=env_type,
+        env_id=env_id,
         algo=config.get('algo', 'ppo'),
         n_steps=int(config.get('n_steps', 200)),
+        gamma=float(config.get('gamma', 0.99)),
+        gae_lambda=float(config.get('gae_lambda', 0.95)),
+        value_coef=float(config.get('value_coef', 0.5)),
         lambda_global=float(config.get('lambda_global', 15.0)),
         lambda_local=float(config.get('lambda_local', 0.05)),
         update_epochs=int(config.get('update_epochs', 10)),
         minibatch_size=int(config.get('minibatch_size', 64)),
         clip_eps=float(config.get('clip_eps', 0.2)),
         entropy_coef=float(config.get('entropy_coef', 0.01)),
+        hidden_dim=int(config.get('hidden_dim', 256)),
+        lr=float(config.get('lr', 3e-4)),
+        max_grad_norm=float(config.get('max_grad_norm', 0.5)),
+        eval_episodes=int(config.get('eval_episodes', 1)),
         init_log_std=float(config.get('init_log_std', 0.0)),
         log_std_anneal=bool(config.get('log_std_anneal', False)),
         log_std_anneal_rounds=int(config.get('log_std_anneal_rounds', 40)),
@@ -395,18 +554,36 @@ def _create_fedkl_client_fn(config: Dict[str, Any], **kwargs):
         cid_mapping_file=config.get('cid_mapping_file'),
         sigma=float(config.get('sigma', 0.2)),
         metadata_path=config.get('metadata_path'),
+        reward_type=config.get('reward_type'),
+        device=str(dev),
+        render_eval=bool(config.get('render_eval', False)),
+        render_mode=str(config.get('render_mode', 'video')),
+        render_save_dir=config.get('render_save_dir'),
+        render_every_n_rounds=int(config.get('render_every_n_rounds', 10)),
+        render_episodes=int(config.get('render_episodes', 5)),
+        reacher_render_mode=reacher_env_render_mode_from_config(
+            bool(config.get('render_eval', False)),
+            str(config.get('render_mode', 'video')),
+        ),
     )
 
 
 def _create_fmarl_client_fn(config: Dict[str, Any], **kwargs):
     """Create FMARL client function."""
     from fedguide.baselines.fmarl.client import client_fn_builder
-    
+    from fedguide.utils.federated_render import reacher_env_render_mode_from_config
+
     env_type = kwargs.get('env_type', 'Bandit2D')
     metrics_collector = kwargs.get('metrics_collector')
-    
+    dev = kwargs.get('device')
+    if dev is None:
+        dev = config.get('device', 'auto')
+    if dev == 'auto':
+        dev = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    env_id = _federated_client_env_id(config, env_type)
     return client_fn_builder(
-        env_id=env_type,
+        env_id=env_id,
         algo=config.get('algo', 'fmarl'),
         n_steps=int(config.get('n_steps', 200)),
         gamma=float(config.get('gamma', 0.99)),
@@ -429,13 +606,24 @@ def _create_fmarl_client_fn(config: Dict[str, Any], **kwargs):
         cid_mapping_file=config.get('cid_mapping_file'),
         sigma=float(config.get('sigma', 0.2)),
         metadata_path=config.get('metadata_path'),
+        render_eval=bool(config.get('render_eval', False)),
+        render_mode=str(config.get('render_mode', 'video')),
+        render_save_dir=config.get('render_save_dir'),
+        render_every_n_rounds=int(config.get('render_every_n_rounds', 10)),
+        render_episodes=int(config.get('render_episodes', 5)),
+        reacher_render_mode=reacher_env_render_mode_from_config(
+            bool(config.get('render_eval', False)),
+            str(config.get('render_mode', 'video')),
+        ),
+        device=str(dev),
     )
 
 
 def _create_fedrl_client_fn(config: Dict[str, Any], **kwargs):
     """Create FedRL client function."""
     from fedguide.baselines.fedrl.client import client_fn_builder
-    
+    from fedguide.utils.federated_render import reacher_env_render_mode_from_config
+
     env_type = kwargs.get('env_type', 'Bandit2D')
     metrics_collector = kwargs.get('metrics_collector')
     dev = config.get('device', 'cpu')
@@ -447,8 +635,9 @@ def _create_fedrl_client_fn(config: Dict[str, Any], **kwargs):
     elif replay_initial is not None:
         replay_initial = int(replay_initial)
 
+    env_id = _federated_client_env_id(config, env_type)
     return client_fn_builder(
-        env_id=env_type,
+        env_id=env_id,
         algo=config.get('algo', 'dqn'),
         gamma=float(config.get('gamma', 0.99)),
         lr=float(config.get('lr', 1e-4)),
@@ -466,6 +655,12 @@ def _create_fedrl_client_fn(config: Dict[str, Any], **kwargs):
         merge_interval=int(config.get('merge_interval', config.get('n_steps', 200))),
         eval_episodes=int(config.get('eval_episodes', 1)),
         add_noise=bool(config.get('add_noise', True)),
+        replay_persist_across_rounds=bool(config.get('replay_persist_across_rounds', False)),
+        ou_enabled=bool(config.get('ou_enabled', True)),
+        ou_mu=float(config.get('ou_mu', 0.0)),
+        ou_theta=float(config.get('ou_theta', 0.15)),
+        ou_sigma=float(config.get('ou_sigma', 0.2)),
+        ou_epsilon=float(config.get('ou_epsilon', 1.0)),
         use_wandb=config.get('use_wandb', False),
         wandb_project=config.get('wandb_project'),
         run_name=config.get('run_name'),
@@ -474,18 +669,32 @@ def _create_fedrl_client_fn(config: Dict[str, Any], **kwargs):
         device=str(dev),
         cid_mapping_file=config.get('cid_mapping_file'),
         metadata_path=config.get('metadata_path'),
+        render_eval=bool(config.get('render_eval', False)),
+        render_mode=str(config.get('render_mode', 'video')),
+        render_save_dir=config.get('render_save_dir'),
+        render_every_n_rounds=int(config.get('render_every_n_rounds', 10)),
+        render_episodes=int(config.get('render_episodes', 5)),
+        reacher_render_mode=reacher_env_render_mode_from_config(
+            bool(config.get('render_eval', False)),
+            str(config.get('render_mode', 'video')),
+        ),
     )
 
 
 def _create_fedrep_client_fn(config: Dict[str, Any], **kwargs):
     """Create FedRep client function."""
     from fedguide.baselines.fedrep.client import client_fn_builder
-    
+    from fedguide.utils.federated_render import reacher_env_render_mode_from_config
+
     env_type = kwargs.get('env_type', 'Bandit2D')
     metrics_collector = kwargs.get('metrics_collector')
-    
+    dev = config.get("device", "cpu")
+    if dev == "auto":
+        dev = "cuda" if torch.cuda.is_available() else "cpu"
+
+    env_id = _federated_client_env_id(config, env_type)
     return client_fn_builder(
-        env_id=env_type,
+        env_id=env_id,
         algo=config.get('fedrep_algo', 'fedrep'),
         n_steps=int(config.get('n_steps', 200)),
         gamma=float(config.get('gamma', 0.99)),
@@ -506,21 +715,34 @@ def _create_fedrep_client_fn(config: Dict[str, Any], **kwargs):
         cid_mapping_file=config.get('cid_mapping_file'),
         sigma=float(config.get('sigma', 0.2)),
         metadata_path=config.get('metadata_path'),
+        device=str(dev),
+        render_eval=bool(config.get('render_eval', False)),
+        render_mode=str(config.get('render_mode', 'video')),
+        render_save_dir=config.get('render_save_dir'),
+        render_every_n_rounds=int(config.get('render_every_n_rounds', 10)),
+        render_episodes=int(config.get('render_episodes', 5)),
+        eval_episodes=int(config.get('eval_episodes', 1)),
+        reacher_render_mode=reacher_env_render_mode_from_config(
+            bool(config.get('render_eval', False)),
+            str(config.get('render_mode', 'video')),
+        ),
     )
 
 
 def _create_fedmomentum_client_fn(config: Dict[str, Any], **kwargs):
     """Create FedMomentum client function."""
     from fedguide.baselines.fedmomentum.client import client_fn_builder
-    
+    from fedguide.utils.federated_render import reacher_env_render_mode_from_config
+
     env_type = kwargs.get('env_type', 'Bandit2D')
     metrics_collector = kwargs.get('metrics_collector')
     dev = config.get('device', 'cpu')
     if dev == 'auto':
         dev = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+    env_id = _federated_client_env_id(config, env_type)
     return client_fn_builder(
-        env_id=env_type,
+        env_id=env_id,
         n_steps=int(config.get('n_steps', 200)),
         gamma=float(config.get('gamma', 0.99)),
         gae_lambda=float(config.get('gae_lambda', 0.95)),
@@ -549,6 +771,65 @@ def _create_fedmomentum_client_fn(config: Dict[str, Any], **kwargs):
         cid_mapping_file=config.get('cid_mapping_file'),
         sigma=float(config.get('sigma', 0.2)),
         metadata_path=config.get('metadata_path'),
+        render_eval=bool(config.get('render_eval', False)),
+        render_mode=str(config.get('render_mode', 'video')),
+        render_save_dir=config.get('render_save_dir'),
+        render_every_n_rounds=int(config.get('render_every_n_rounds', 10)),
+        render_episodes=int(config.get('render_episodes', 5)),
+        reacher_render_mode=reacher_env_render_mode_from_config(
+            bool(config.get('render_eval', False)),
+            str(config.get('render_mode', 'video')),
+        ),
+        use_fedsvrpgm_strict=bool(config.get('use_fedsvrpgm_strict', False)),
+        fedsvrpgm_eta=float(config.get('fedsvrpgm_eta', 0.01)),
+        fedsvrpgm_beta=float(config.get('fedsvrpgm_beta', 0.2)),
+        local_steps_k=int(config.get('local_steps_k', 5)),
+        fedsvrpgm_max_horizon=int(config.get('fedsvrpgm_max_horizon', config.get('max_horizon', 500))),
+    )
+
+
+def _create_mfpo_client_fn(config: Dict[str, Any], **kwargs):
+    """Create MFPO (INFOCOM 2024) federated client — 1:1 with MFPO-INFOCOM24."""
+    from fedguide.baselines.mfpo.client import client_fn_builder
+    from fedguide.utils.federated_render import reacher_env_render_mode_from_config
+
+    env_type = kwargs.get('env_type', 'Bandit2D')
+    metrics_collector = kwargs.get('metrics_collector')
+    dev = config.get('device', 'cpu')
+    if dev == 'auto':
+        dev = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    env_id = _federated_client_env_id(config, env_type)
+    return client_fn_builder(
+        env_id=env_id,
+        batch_size=int(config.get('batch_size', 20)),
+        local_update=int(config.get('local_update', 10)),
+        device=str(dev),
+        num_clients=int(config.get('num_clients', 4)),
+        cid_mapping_file=config.get('cid_mapping_file'),
+        metadata_path=config.get('metadata_path'),
+        render_eval=bool(config.get('render_eval', False)),
+        render_mode=str(config.get('render_mode', 'video')),
+        render_save_dir=config.get('render_save_dir'),
+        render_every_n_rounds=int(config.get('render_every_n_rounds', 10)),
+        render_episodes=int(config.get('render_episodes', 5)),
+        reacher_render_mode=reacher_env_render_mode_from_config(
+            bool(config.get('render_eval', False)),
+            str(config.get('render_mode', 'video')),
+        ),
+        use_wandb=config.get('use_wandb', False),
+        wandb_project=config.get('wandb_project'),
+        run_name=config.get('run_name'),
+        metrics_collector=metrics_collector,
+        learning_rate_a=float(config.get('learning_rate_a', config.get('lr_a', 1e-4))),
+        learning_rate_c=float(config.get('learning_rate_c', config.get('lr_c', 1e-4))),
+        gamma=float(config.get('gamma', 0.99)),
+        eps=float(config.get('eps', 1e-5)),
+        average_type=str(config.get('average_type', 'target')),
+        c=float(config.get('c', 3.0)),
+        decay_rate=float(config.get('decay_rate', 0.99)),
+        decay_start_iter_id=int(config.get('decay_start_iter_id', 500)),
+        fault_type=config.get('fault_type'),
     )
 
 
@@ -559,6 +840,7 @@ _registry.register_federated_client_factory('fmarl', _create_fmarl_client_fn)
 _registry.register_federated_client_factory('fedrl', _create_fedrl_client_fn)
 _registry.register_federated_client_factory('fedrep', _create_fedrep_client_fn)
 _registry.register_federated_client_factory('fedmomentum', _create_fedmomentum_client_fn)
+_registry.register_federated_client_factory('mfpo', _create_mfpo_client_fn)
 
 
 # ============= Federated Server Factories =============
@@ -607,6 +889,8 @@ def _create_fedkl_server(config: Dict[str, Any], **kwargs):
         min_available_clients=num_clients,
         on_fit_config_fn=lambda rnd: {"server_round": rnd},
         evaluate_fn=evaluate_fn,
+        policy_save_dir=config.get("metrics_dir"),
+        total_rounds=int(config.get("rounds", 60)),
     )
 
 
@@ -646,6 +930,24 @@ def _create_fedrl_server(config: Dict[str, Any], **kwargs):
     )
 
 
+def _create_mfpo_server(config: Dict[str, Any], **kwargs):
+    """MFPO uses the same FedAvg aggregation as MFPO-INFOCOM24 server.average_weights."""
+    from fedguide.baselines.fedrl.server import FedRLStrategy
+
+    num_clients = config.get('num_clients', 4)
+    evaluate_fn = kwargs.get('evaluate_fn')
+
+    return FedRLStrategy(
+        fraction_fit=1.0,
+        fraction_evaluate=1.0,
+        min_fit_clients=num_clients,
+        min_evaluate_clients=num_clients,
+        min_available_clients=num_clients,
+        on_fit_config_fn=lambda rnd: {"server_round": rnd},
+        evaluate_fn=evaluate_fn,
+    )
+
+
 def _create_fedrep_server(config: Dict[str, Any], **kwargs):
     """Create FedRep server strategy."""
     from fedguide.baselines.fedrep.server import FedRepStrategy as FedRepServer
@@ -674,6 +976,10 @@ def _create_fedmomentum_server(config: Dict[str, Any], **kwargs):
     return FedMomentumStrategy(
         momentum_beta=float(config.get('momentum_beta', 0.9)),
         server_lr=float(config.get('server_lr', 0.001)),
+        use_server_momentum=bool(config.get('use_server_momentum', False)),
+        use_fedsvrpgm_strict=bool(config.get('use_fedsvrpgm_strict', False)),
+        eta=float(config.get('fedsvrpgm_eta', 0.01)),
+        local_steps_k=int(config.get('local_steps_k', 5)),
         fraction_fit=1.0,
         fraction_evaluate=1.0,
         min_fit_clients=num_clients,
@@ -689,6 +995,7 @@ _registry.register_federated_server_factory('fedguide', _create_fedguide_server)
 _registry.register_federated_server_factory('fedkl', _create_fedkl_server)
 _registry.register_federated_server_factory('fmarl', _create_fmarl_server)
 _registry.register_federated_server_factory('fedrl', _create_fedrl_server)
+_registry.register_federated_server_factory('mfpo', _create_mfpo_server)
 _registry.register_federated_server_factory('fedrep', _create_fedrep_server)
 _registry.register_federated_server_factory('fedmomentum', _create_fedmomentum_server)
 

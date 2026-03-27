@@ -5,7 +5,7 @@ metadata_path: "data/reacher/metadata.json"
 num_clients: 8
 random_select_clients: false
 
-rounds: 200
+rounds: 150
 cpus_per_client: 2
 
 n_steps: 2048
@@ -21,6 +21,8 @@ lr: 3e-4
 gamma: 0.99
 gae_lambda: 0.95
 
+eval_episodes: 5
+
 use_wandb: false
 wandb_project: null
 run_name: null
@@ -29,11 +31,13 @@ output_dir: "./model/policy/reacher/fedrep"
 metrics_dir: "./metrics/reacher/fedrep"
 collect_metrics_every: 1
 
-device: "auto"
-
+# Device configuration
+device: "auto"  # "auto", "cpu", or "cuda"
+# Ray Flower VCE: GPU fraction per virtual client (match fedavg; smaller => more parallel actors)
+gpus_per_client: 0.25
 seed: [0, 1, 2, 3, 4]
 
-render_eval: true
+render_eval: false
 render_mode: "video"
 render_save_dir: "./plots/reacher/fedrep"
 render_every_n_rounds: 10

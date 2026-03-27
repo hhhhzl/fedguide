@@ -7,7 +7,7 @@ The client computes policy gradients and transmits them to the server for moment
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Callable, Iterable
+from typing import Any, Dict, Optional, Callable, Iterable, List
 import random
 import numpy as np
 import torch
@@ -19,18 +19,10 @@ except Exception:
     import gym
 
 from fedguide.fed.client import FedRLClient as BaseFedRLClient
+from fedguide.utils.gym_space_utils import is_box1d as _is_box1d
 
 
 # --------- Helpers ---------
-def _is_box1d(space) -> bool:
-    """Check if space is 1D Box (continuous action space)."""
-    try:
-        from gymnasium.spaces import Box
-    except Exception:
-        from gym.spaces import Box
-    return isinstance(space, Box) and len(space.shape) == 1
-
-
 def _make_env(
     env_id: str,
     seed: Optional[int] = None,
@@ -38,6 +30,7 @@ def _make_env(
     num_clients: Optional[int] = None,
     sigma: float = 0.2,
     metadata_path: Optional[str] = None,
+    render_mode: Optional[str] = None,
 ):
     """Create environment."""
     if env_id.lower() in ["bandit2d", "bandit_2d", "2dbandit"]:
@@ -54,8 +47,18 @@ def _make_env(
 
         if os.path.isfile(metadata_path):
             idx = client_id if client_id is not None else 0
-            return make_hetero_reacher_env_from_metadata(metadata_path, idx, seed=seed)
-    
+            return make_hetero_reacher_env_from_metadata(
+                metadata_path, idx, seed=seed, render_mode=render_mode
+            )
+
+    from fedguide.envs.halfcheetah_hetero import make_halfcheetah_env_if_applicable
+
+    _hc_env = make_halfcheetah_env_if_applicable(
+        metadata_path, client_id, seed, render_mode, render_eval=False
+    )
+    if _hc_env is not None:
+        return _hc_env
+
     env = gym.make(env_id)
     try:
         env.reset(seed=seed)
@@ -274,11 +277,29 @@ class FedMomentumClient(BaseFedRLClient):
         
         if hasattr(self, "metrics"):
             self.metrics.set_step(rnd)
-        
-        # Train one round (computes policy gradient internally)
-        train_result = self.trainer.train_one_round()
+
+        if hasattr(self.trainer, "set_server_round"):
+            self.trainer.set_server_round(rnd)
+
+        use_strict = bool(config.get("use_fedsvrpgm_strict", False))
+        if use_strict:
+            u_json = config.get("u_r_flat_json", "[]")
+            tp_json = config.get("theta_prev_flat_json", "[]")
+            u_raw = json.loads(u_json) if isinstance(u_json, str) else u_json
+            tp_raw = json.loads(tp_json) if isinstance(tp_json, str) else tp_json
+            fed = {
+                "u_r_flat": [np.asarray(x, dtype=np.float32) for x in u_raw],
+                "theta_prev_flat": [np.asarray(x, dtype=np.float32) for x in tp_raw],
+            }
+            train_result = self.trainer.train_one_round(fed)
+        else:
+            train_result = self.trainer.train_one_round()
         
         # Extract loss and other metrics from trainer result
+        delta_flat: Optional[List[np.ndarray]] = None
+        if isinstance(train_result, tuple) and len(train_result) == 2:
+            tr_dict, delta_flat = train_result[0], train_result[1]
+            train_result = tr_dict
         if isinstance(train_result, dict):
             loss = train_result.get("loss", train_result.get("train/loss", 0.0))
             train_return = train_result.get("train/return", None)
@@ -300,23 +321,22 @@ class FedMomentumClient(BaseFedRLClient):
             except (TypeError, ValueError):
                 loss = 0.0
         
-        # Get policy gradient from trainer
+        # Get policy gradient from trainer (SVRPG path; not used for FedSVRPG-M strict)
         policy_gradient = None
-        try:
-            if hasattr(self.trainer, "get_policy_gradient"):
-                policy_gradient = self.trainer.get_policy_gradient()
-                
-                # Convert to numpy arrays
-                grad_dict_np = self._gradient_to_dict(policy_gradient)
-                
-                # Serialize for transmission
-                grad_json = self._serialize_gradient(grad_dict_np)
-            else:
-                print(f"[FedMomentumClient {cid}] Warning: Trainer does not have get_policy_gradient method")
-        except Exception as e:
-            print(f"[FedMomentumClient {cid}] Warning: Failed to get policy gradient: {e}")
-            import traceback
-            traceback.print_exc()
+        if not use_strict:
+            try:
+                if hasattr(self.trainer, "get_policy_gradient"):
+                    policy_gradient = self.trainer.get_policy_gradient()
+
+                    grad_dict_np = self._gradient_to_dict(policy_gradient)
+
+                    grad_json = self._serialize_gradient(grad_dict_np)
+                else:
+                    print(f"[FedMomentumClient {cid}] Warning: Trainer does not have get_policy_gradient method")
+            except Exception as e:
+                print(f"[FedMomentumClient {cid}] Warning: Failed to get policy gradient: {e}")
+                import traceback
+                traceback.print_exc()
         
         # Eval/save
         success = self.trainer.save_eval(cid, rnd)
@@ -336,6 +356,10 @@ class FedMomentumClient(BaseFedRLClient):
             fit_metrics["train/return"] = float(train_return)
         if eval_return is not None:
             fit_metrics["eval/return"] = float(eval_return)
+
+        # Strict FedSVRPG-M: eval/return must come from evaluate(global θ), not post-local train
+        if use_strict and "eval/return" in fit_metrics:
+            del fit_metrics["eval/return"]
         
         # Add policy gradient to metrics (if available)
         if policy_gradient is not None:
@@ -346,6 +370,12 @@ class FedMomentumClient(BaseFedRLClient):
                 print(f"[FedMomentumClient {cid}] Policy gradient serialized (size: {len(grad_json)} bytes)")
             except Exception as e:
                 print(f"[FedMomentumClient {cid}] Warning: Failed to serialize gradient: {e}")
+
+        if use_strict and delta_flat is not None:
+            try:
+                fit_metrics["policy_delta"] = json.dumps([arr.tolist() for arr in delta_flat])
+            except Exception as e:
+                print(f"[FedMomentumClient {cid}] Warning: Failed to serialize policy_delta: {e}")
         
         # Get new parameters (as list) - still needed for compatibility
         new_params_list = self.get_parameters(config)
@@ -412,6 +442,37 @@ class FedMomentumClient(BaseFedRLClient):
         
         return new_params_list, samples, fit_metrics
 
+    def evaluate(self, parameters, config):
+        """
+        Distributed eval of the *global* model θ_r (broadcast by server before local training).
+
+        Flower records this under History.metrics_distributed (evaluate), not metrics_distributed_fit.
+        Do not confuse with train/return from fit (on-policy rollouts during local updates).
+        """
+        from flwr.common import parameters_to_ndarrays
+
+        if parameters is not None:
+            try:
+                if hasattr(parameters, "tensors") or hasattr(parameters, "tensor_type"):
+                    param_list = parameters_to_ndarrays(parameters)
+                else:
+                    param_list = parameters
+                self.set_parameters(param_list)
+            except Exception as e:
+                print(f"[FedMomentumClient evaluate] set_parameters failed: {e}")
+
+        rnd = int(config.get("server_round", 0))
+        cid = getattr(self, "cid", config.get("cid", "unknown"))
+        n_ep = max(1, int(getattr(self.trainer, "eval_episodes", 1)))
+        if not hasattr(self.trainer, "_eval_episode"):
+            return float("nan"), 1, {}
+        total = 0.0
+        for _ in range(n_ep):
+            total += float(self.trainer._eval_episode())
+        avg = total / float(n_ep)
+        print(f"[FedMomentumClient {cid}] evaluate round {rnd}: eval/return (global θ) = {avg:.4f}")
+        return float("nan"), 1, {"eval/return": float(avg)}
+
 
 # --------- client_fn_builder ----------
 def client_fn_builder(
@@ -452,6 +513,17 @@ def client_fn_builder(
     cid_mapping_file: Optional[str] = None,
     sigma: float = 0.2,
     metadata_path: Optional[str] = None,
+    render_eval: bool = False,
+    render_mode: str = "video",
+    render_save_dir: Optional[str] = None,
+    render_every_n_rounds: int = 10,
+    render_episodes: int = 5,
+    reacher_render_mode: Optional[str] = None,
+    use_fedsvrpgm_strict: bool = False,
+    fedsvrpgm_eta: float = 0.01,
+    fedsvrpgm_beta: float = 0.2,
+    local_steps_k: int = 5,
+    fedsvrpgm_max_horizon: int = 500,
 ):
     """
     Build client function for FedMomentum (SVRPG-based).
@@ -495,6 +567,7 @@ def client_fn_builder(
             num_clients=num_clients,
             sigma=sigma,
             metadata_path=metadata_path,
+            render_mode=reacher_render_mode,
         )
         obs_space, act_space = env.observation_space, env.action_space
         
@@ -520,49 +593,80 @@ def client_fn_builder(
         )
         
         # 4) trainer (select based on algorithm type)
-        algorithm_lower = algorithm.lower()
-        if algorithm_lower == "hapg":
-            trainer = HAPGTrainer(
+        if use_fedsvrpgm_strict:
+            from fedguide.baselines.fedmomentum.fedsvrpgm_strict import FedSVRPGMStrictTrainer
+
+            trainer = FedSVRPGMStrictTrainer(
                 agent=agent,
                 env=env,
                 device=device,
-                n_steps=n_steps,
                 gamma=gamma,
-                gae_lambda=gae_lambda,
-                clip_eps=clip_eps,
-                entropy_coef=entropy_coef,
-                value_coef=value_coef,
-                update_epochs=update_epochs,
-                minibatch_size=minibatch_size,
-                max_grad_norm=max_grad_norm,
+                eta=fedsvrpgm_eta,
+                beta=fedsvrpgm_beta,
+                local_steps_k=local_steps_k,
+                max_horizon=fedsvrpgm_max_horizon,
                 eval_episodes=eval_episodes,
-                # HAPG-specific
-                hessian_alpha=hessian_alpha,
-                use_diagonal_approx=use_diagonal_approx,
-                fisher_update_freq=fisher_update_freq,
-                use_fisher_info=use_fisher_info,
-                # Optional SVRPG combination
-                reference_update_freq=reference_update_freq,
-                use_svrpg=False,  # Can be enabled to combine with SVRPG
+                render_eval=render_eval,
+                render_mode=render_mode,
+                render_save_dir=render_save_dir,
+                render_every_n_rounds=render_every_n_rounds,
+                render_episodes=render_episodes,
+                render_client_tag=str(mapped_client_id),
             )
-        else:  # Default to SVRPG
-            trainer = SVRPGTrainer(
-                agent=agent,
-                env=env,
-                device=device,
-                n_steps=n_steps,
-                gamma=gamma,
-                gae_lambda=gae_lambda,
-                clip_eps=clip_eps,
-                entropy_coef=entropy_coef,
-                value_coef=value_coef,
-                update_epochs=update_epochs,
-                minibatch_size=minibatch_size,
-                max_grad_norm=max_grad_norm,
-                eval_episodes=eval_episodes,
-                reference_update_freq=reference_update_freq,
-                use_svrpg=use_svrpg,
-            )
+        else:
+            algorithm_lower = algorithm.lower()
+            if algorithm_lower == "hapg":
+                trainer = HAPGTrainer(
+                    agent=agent,
+                    env=env,
+                    device=device,
+                    n_steps=n_steps,
+                    gamma=gamma,
+                    gae_lambda=gae_lambda,
+                    clip_eps=clip_eps,
+                    entropy_coef=entropy_coef,
+                    value_coef=value_coef,
+                    update_epochs=update_epochs,
+                    minibatch_size=minibatch_size,
+                    max_grad_norm=max_grad_norm,
+                    eval_episodes=eval_episodes,
+                    hessian_alpha=hessian_alpha,
+                    use_diagonal_approx=use_diagonal_approx,
+                    fisher_update_freq=fisher_update_freq,
+                    use_fisher_info=use_fisher_info,
+                    reference_update_freq=reference_update_freq,
+                    use_svrpg=False,
+                    render_eval=render_eval,
+                    render_mode=render_mode,
+                    render_save_dir=render_save_dir,
+                    render_every_n_rounds=render_every_n_rounds,
+                    render_episodes=render_episodes,
+                    render_client_tag=str(mapped_client_id),
+                )
+            else:
+                trainer = SVRPGTrainer(
+                    agent=agent,
+                    env=env,
+                    device=device,
+                    n_steps=n_steps,
+                    gamma=gamma,
+                    gae_lambda=gae_lambda,
+                    clip_eps=clip_eps,
+                    entropy_coef=entropy_coef,
+                    value_coef=value_coef,
+                    update_epochs=update_epochs,
+                    minibatch_size=minibatch_size,
+                    max_grad_norm=max_grad_norm,
+                    eval_episodes=eval_episodes,
+                    reference_update_freq=reference_update_freq,
+                    use_svrpg=use_svrpg,
+                    render_eval=render_eval,
+                    render_mode=render_mode,
+                    render_save_dir=render_save_dir,
+                    render_every_n_rounds=render_every_n_rounds,
+                    render_episodes=render_episodes,
+                    render_client_tag=str(mapped_client_id),
+                )
         
         # Get collector from global variable if not passed directly
         nonlocal metrics_collector

@@ -267,6 +267,40 @@ class DQNAgent(nn.Module):
 
 
 # ============================================================================
+# Ornstein–Uhlenbeck noise (FedRL/deep/DeepRLAlgo.py AgentDDPG)
+# ============================================================================
+
+
+class OrnsteinUhlenbeckNoise:
+    """Stateful OU process for DDPG exploration (matches ptan AgentDDPG defaults)."""
+
+    __slots__ = ("mu", "theta", "sigma", "epsilon_scale", "_state")
+
+    def __init__(
+        self,
+        mu: float = 0.0,
+        theta: float = 0.15,
+        sigma: float = 0.2,
+        epsilon_scale: float = 1.0,
+    ):
+        self.mu = float(mu)
+        self.theta = float(theta)
+        self.sigma = float(sigma)
+        self.epsilon_scale = float(epsilon_scale)
+        self._state: Optional[np.ndarray] = None
+
+    def reset(self) -> None:
+        self._state = None
+
+    def sample(self, action_shape: Tuple[int, ...]) -> np.ndarray:
+        if self._state is None or self._state.shape != action_shape:
+            self._state = np.zeros(action_shape, dtype=np.float32)
+        self._state += self.theta * (self.mu - self._state)
+        self._state += self.sigma * np.random.normal(size=action_shape).astype(np.float32)
+        return self.epsilon_scale * self._state
+
+
+# ============================================================================
 # DDPG Networks and Agent
 # ============================================================================
 
@@ -358,6 +392,11 @@ class DDPGAgent(nn.Module):
         threshold: float = 2.0,  # Action clipping threshold
         device: Optional[str] = None,
         aggregate_critic: bool = False,  # Whether to aggregate critic parameters
+        ou_enabled: bool = True,
+        ou_mu: float = 0.0,
+        ou_theta: float = 0.15,
+        ou_sigma: float = 0.2,
+        ou_epsilon: float = 1.0,
     ):
         super().__init__()
         self.state_dim = state_dim
@@ -366,7 +405,15 @@ class DDPGAgent(nn.Module):
         self.tau = tau
         self.threshold = threshold
         self.aggregate_critic = aggregate_critic
-        
+        self.ou_enabled = ou_enabled
+        self.ou_mu = ou_mu
+        self.ou_theta = ou_theta
+        self.ou_sigma = ou_sigma
+        self.ou_epsilon = ou_epsilon
+        self._ou_noise = OrnsteinUhlenbeckNoise(
+            mu=ou_mu, theta=ou_theta, sigma=ou_sigma, epsilon_scale=ou_epsilon
+        )
+
         if device == "auto":
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device or "cpu")
@@ -387,7 +434,11 @@ class DDPGAgent(nn.Module):
         self.lr = lr
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=lr)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=lr)
-    
+
+    def reset_ou_noise(self) -> None:
+        """Reset OU process (call on episode boundary or after federated weight sync)."""
+        self._ou_noise.reset()
+
     @torch.no_grad()
     def select_action(self, state: np.ndarray, deterministic: bool = True, add_noise: bool = False) -> np.ndarray:
         """
@@ -396,21 +447,20 @@ class DDPGAgent(nn.Module):
         Args:
             state: Current state (numpy array)
             deterministic: If True, use deterministic policy (for evaluation)
-            add_noise: If True, add exploration noise (for training)
+            add_noise: If True, add OU exploration noise (for training)
         
         Returns:
             Selected action (numpy array)
         """
         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-        action = self.actor(state_tensor)
-        
-        if add_noise and not deterministic:
-            # Add OU noise for exploration (simplified version)
-            noise = torch.randn_like(action) * 0.1
-            action = action + noise
-        
-        action = action.clamp(-self.threshold, self.threshold)
-        return action.squeeze(0).cpu().numpy()
+        mu = self.actor(state_tensor).squeeze(0).cpu().numpy()
+
+        if add_noise and not deterministic and self.ou_enabled:
+            noise = self._ou_noise.sample(mu.shape)
+            mu = mu + noise
+
+        mu = np.clip(mu, -self.threshold, self.threshold)
+        return mu.astype(np.float32)
     
     def update(self, batch: List[Tuple]) -> Dict[str, float]:
         """
@@ -515,12 +565,14 @@ class DDPGAgent(nn.Module):
             )
             # Also update target critic
             self.target_critic.load_state_dict(self.critic.state_dict())
-    
+        self.reset_ou_noise()
+
     def rebuild_optimizer(self):
         """Recreate optimizers after parameter aggregation."""
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.lr)
         if self.aggregate_critic:
             self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.lr)
+        self.reset_ou_noise()
     
     def to(self, device: str):
         """Move agent to device."""

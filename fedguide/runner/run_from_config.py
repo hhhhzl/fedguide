@@ -117,6 +117,18 @@ def main():
         default=None,
         help="Override seeds from config (comma-separated list, e.g., '0,1,2,3,4')"
     )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Override device: cuda, cpu, or auto (default: from YAML)",
+    )
+    parser.add_argument(
+        "--rounds",
+        type=int,
+        default=None,
+        help="Override number of federated rounds (default: from YAML)",
+    )
     
     args = parser.parse_args()
     
@@ -132,6 +144,10 @@ def main():
     
     print(f"Loading configuration from: {config_path}")
     config = load_config(config_path)
+    if args.device is not None:
+        config["device"] = args.device
+    if args.rounds is not None:
+        config["rounds"] = int(args.rounds)
     
     # Determine algorithm from config path if not specified
     algorithm = args.algorithm
@@ -154,6 +170,8 @@ def main():
             algorithm = 'fedrep'
         elif 'fedmomentum' in config_path_lower:
             algorithm = 'fedmomentum'
+        elif 'mfpo' in config_path_lower:
+            algorithm = 'mfpo'
         elif 'fedrl' in config_path_lower:
             algorithm = 'fedrl'
         else:
@@ -174,6 +192,7 @@ def main():
     print(f"\nConfiguration loaded:")
     print(f"  Environment type: {env_type}")
     print(f"  Algorithm: {algorithm}")
+    print(f"  Device: {config.get('device', 'auto')}")
     print(f"  Seeds to run: {seed_list}")
     print(f"  Total runs: {len(seed_list)}")
     print(f"  Using unified runner")

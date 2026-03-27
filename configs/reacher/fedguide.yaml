@@ -5,14 +5,14 @@ metadata_path: "data/reacher/metadata.json"
 num_clients: 8
 random_select_clients: false
 
-rounds: 200
+rounds: 150
 cpus_per_client: 2
 
 n_steps: 2048
 lambda_local: 0.05
 lambda_guide: 0.1
 lambda_guide_anneal: true
-lambda_guide_decay_rounds: 200
+lambda_guide_decay_rounds: 150
 update_epochs: 10
 minibatch_size: 64
 init_log_std: 0.0

@@ -122,6 +122,9 @@ class FedRLClient(fl.client.NumPyClient):
         cid = getattr(self, "cid", config.get("cid", "unknown"))
         self.metrics.set_step(rnd)
 
+        if hasattr(self.trainer, "set_server_round"):
+            self.trainer.set_server_round(rnd)
+
         # Train one round
         train_result = self.trainer.train_one_round()
         

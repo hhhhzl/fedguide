@@ -288,6 +288,13 @@ class CentralSACTrainer:
             
             # Collect frames only for the first render_episodes episodes
             episode_frames = [] if (should_render and ep_idx < self.render_episodes) else None
+            if episode_frames is not None and self.render_mode in ["rgb_array", "video"]:
+                try:
+                    fr0 = self.env.render()
+                    if fr0 is not None:
+                        episode_frames.append(fr0)
+                except Exception:
+                    pass
             
             while not done and step_count < max_steps:
                 # Get action from agent (deterministic for evaluation)
@@ -314,18 +321,16 @@ class CentralSACTrainer:
                     # Fallback for backward compatibility (Bandit2D range)
                     action_np = np.clip(action_np, -1.5, 1.5)
                 
-                # Render if needed
+                # Render if needed (Gymnasium: render_mode set at env creation)
                 if episode_frames is not None:
                     try:
                         if self.render_mode in ["rgb_array", "video"]:
-                            frame = self.env.render(mode="rgb_array")
+                            frame = self.env.render()
                             if frame is not None:
                                 episode_frames.append(frame)
                         elif self.render_mode == "human":
                             self.env.render()
-                    except Exception as e:
-                        # Some environments may not support rendering
-                        # Silently skip if rendering fails
+                    except Exception:
                         pass
                 
                 # Step environment
@@ -353,9 +358,13 @@ class CentralSACTrainer:
                 imageio.mimsave(video_path, frames, fps=30)
                 print(f"  [Rendering] Saved evaluation video to {video_path}")
             except ImportError:
-                print(f"  [Rendering] Warning: imageio not installed. Cannot save video. Install with: pip install imageio")
+                print(
+                    "  [Rendering] Warning: imageio not installed. "
+                    "Install with: pip install 'imageio[ffmpeg]'"
+                )
             except Exception as e:
                 print(f"  [Rendering] Warning: Failed to save video: {e}")
+                print("  [Rendering] Hint: pip install 'imageio[ffmpeg]' (MP4 needs the ffmpeg plugin)")
         
         avg_return = np.mean(returns)
         self.eval_returns.append(avg_return)

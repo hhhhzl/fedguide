@@ -17,17 +17,10 @@ except Exception:
     import gym
 
 from fedguide.fed.client import FedRLClient
+from fedguide.utils.gym_space_utils import is_box1d as _is_box1d
 
 
 # --------- Helpers ---------
-def _is_box1d(space) -> bool:
-    try:
-        from gymnasium.spaces import Box
-    except Exception:
-        from gym.spaces import Box
-    return isinstance(space, Box) and len(space.shape) == 1
-
-
 def _make_env(
     env_id: str,
     seed: Optional[int] = None,
@@ -35,6 +28,7 @@ def _make_env(
     num_clients: Optional[int] = None,
     sigma: float = 0.2,
     metadata_path: Optional[str] = None,
+    render_mode: Optional[str] = None,
 ):
     if env_id.lower() in ["bandit2d", "bandit_2d", "2dbandit"]:
         from fedguide.envs.bandit2d import Bandit2D
@@ -50,8 +44,18 @@ def _make_env(
 
         if os.path.isfile(metadata_path):
             idx = client_id if client_id is not None else 0
-            return make_hetero_reacher_env_from_metadata(metadata_path, idx, seed=seed)
-    
+            return make_hetero_reacher_env_from_metadata(
+                metadata_path, idx, seed=seed, render_mode=render_mode
+            )
+
+    from fedguide.envs.halfcheetah_hetero import make_halfcheetah_env_if_applicable
+
+    _hc_env = make_halfcheetah_env_if_applicable(
+        metadata_path, client_id, seed, render_mode, render_eval=False
+    )
+    if _hc_env is not None:
+        return _hc_env
+
     env = gym.make(env_id)
     try:
         env.reset(seed=seed)
@@ -191,6 +195,9 @@ class FedRepClient(FedRLClient):
         
         if hasattr(self, "metrics"):
             self.metrics.set_step(rnd)
+
+        if hasattr(self.trainer, "set_server_round"):
+            self.trainer.set_server_round(rnd)
         
         # Train one round
         train_result = self.trainer.train_one_round()
@@ -362,6 +369,14 @@ def client_fn_builder(
     cid_mapping_file: Optional[str] = None,
     sigma: float = 0.2,
     metadata_path: Optional[str] = None,
+    device: Optional[str] = "cpu",
+    render_eval: bool = False,
+    render_mode: str = "video",
+    render_save_dir: Optional[str] = None,
+    render_every_n_rounds: int = 10,
+    render_episodes: int = 5,
+    reacher_render_mode: Optional[str] = None,
+    eval_episodes: int = 1,
 ):
     """
     Build client function for FedRep.
@@ -397,6 +412,7 @@ def client_fn_builder(
             num_clients=num_clients,
             sigma=sigma,
             metadata_path=metadata_path,
+            render_mode=reacher_render_mode,
         )
         obs_space, act_space = env.observation_space, env.action_space
         assert _is_box1d(obs_space) and _is_box1d(act_space), "Only Support 1D Box spaces."
@@ -404,13 +420,17 @@ def client_fn_builder(
         state_dim = int(obs_space.shape[0])
         action_dim = int(act_space.shape[0])
         
+        dev = device or "cpu"
+        if dev == "auto":
+            dev = "cuda" if torch.cuda.is_available() else "cpu"
+
         # 3) agent (FedRep with encoder/head separation)
         agent = FedRepAgent(
             state_dim=state_dim,
             action_dim=action_dim,
             hidden_dim=hidden_dim,
             lr=lr,
-            device="cpu",
+            device=dev,
         )
         
         # 4) trainer
@@ -426,7 +446,14 @@ def client_fn_builder(
             update_epochs=update_epochs,
             minibatch_size=minibatch_size,
             max_grad_norm=max_grad_norm,
-            device="cpu",
+            eval_episodes=eval_episodes,
+            device=dev,
+            render_eval=render_eval,
+            render_mode=render_mode,
+            render_save_dir=render_save_dir,
+            render_every_n_rounds=render_every_n_rounds,
+            render_episodes=render_episodes,
+            render_client_tag=str(mapped_client_id),
         )
         
         # Get collector from global variable if not passed directly
