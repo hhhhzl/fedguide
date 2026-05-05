@@ -154,6 +154,8 @@ class MFPOContinuousWorker(nn.Module):
             self.optimizer_critic, method_conf["decay_rate"]
         )
         self.pi = Variable(torch.FloatTensor([math.pi]).to(self.device))
+        # Default 10 matches MFPO-INFOCOM24; long MuJoCo episodes make eval dominate wall-clock.
+        self._test_episodes = int(method_conf.get("mfpo_test_episodes", 10))
 
     def normal(self, x, mu, sigma_sq):
         a = (-1 * (Variable(x) - mu).pow(2) / (2 * sigma_sq)).exp()
@@ -320,7 +322,7 @@ class MFPOContinuousWorker(nn.Module):
 
     def test(self, i):
         sum_r = 0
-        for _ in range(10):
+        for _ in range(self._test_episodes):
             state = _reset_env(self.env)
             while True:
                 action, _ = self.gen_action(state)
@@ -328,7 +330,7 @@ class MFPOContinuousWorker(nn.Module):
                 sum_r += reward
                 if done:
                     break
-        return sum_r / 10
+        return sum_r / max(1, self._test_episodes)
 
 
 # ---------------------------------------------------------------------------

@@ -830,6 +830,7 @@ def _create_mfpo_client_fn(config: Dict[str, Any], **kwargs):
         decay_rate=float(config.get('decay_rate', 0.99)),
         decay_start_iter_id=int(config.get('decay_start_iter_id', 500)),
         fault_type=config.get('fault_type'),
+        mfpo_test_episodes=int(config.get('mfpo_test_episodes', 10)),
     )
 
 
