@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Callable, Iterable
 import json
+import os
 import random
 import numpy as np
 import torch
@@ -655,6 +656,30 @@ def client_fn_builder(
     render_every_n_rounds: int = 10,
     render_episodes: int = 5,
     reacher_render_mode: Optional[str] = None,
+    # Opt-in policy architecture knobs (defaults preserve legacy behaviour).
+    policy_activation: str = "tanh",
+    action_clamp_low: Optional[float] = None,
+    action_clamp_high: Optional[float] = None,
+    log_std_anneal: bool = False,
+    log_std_anneal_target: float = -2.0,
+    log_std_anneal_rounds: int = 40,
+    # Where to look for pretrained prior/guidance ckpts. Defaults to the
+    # legacy SimpleDiffusionPrior path; set to ``./model/models_prior_gauss``
+    # to load Gaussian priors instead.
+    prior_dir: str = "./model/models_prior",
+    # If set, the agent's policy will be initialized from a per-client BC
+    # checkpoint at <bc_dir>/<env>/client_<cid>/final/policy.pth (the format
+    # produced by `scripts/envs/reacher/_bc_pretrain.py`). This is the warm-
+    # start equivalent of bandit2d's "policy.bias ← prior.head_mu" trick for
+    # state-conditional priors.
+    bc_dir: Optional[str] = None,
+    bc_env_name: Optional[str] = None,  # subdir under bc_dir; defaults to env mapping
+    # Guide-align loss weight (MSE between μ(s) and a + η·∇W). The original
+    # default (1.0) is too aggressive on bandit2d where the SDICE_Critic
+    # is undertrained and the gradient is noisy. Lower values (0.05–0.1)
+    # let the prior dominate and use the guidance only as a fine adjustment.
+    guide_coef: float = 1.0,
+    guidance_eta: float = 0.1,
 ):
 
     def client_fn(context) -> Any:
@@ -713,6 +738,8 @@ def client_fn_builder(
             "bandit2d": "Bandit2D",
             "bandit_2d": "Bandit2D",
             "2dbandit": "Bandit2D",
+            "reacher_hetero": "Reacher",
+            "reacher": "Reacher",
         }
         env_name = env_name_map.get(env_id.lower(), env_id)
         
@@ -722,33 +749,64 @@ def client_fn_builder(
                 raise FileNotFoundError("pretrained model loading disabled by config")
             # Use mapped_client_id instead of raw cid for model path
             client_id = mapped_client_id
-            # Use relative path to match pretrain script: ./model/models_prior
-            base_dir = "./model/models_prior"
+            base_dir = prior_dir
             client_dir = os.path.join(base_dir, env_name, f"client_{client_id}", "final")
-            
+
             prior_path = os.path.join(client_dir, "torch_prior.pth")
             guidance_path = os.path.join(client_dir, "guidance_sdice.pth")
-            
+
             # Load prior if checkpoint exists
             if os.path.isfile(prior_path):
                 # Try to detect model type from checkpoint
                 sd = torch.load(prior_path, map_location="cpu")
+                is_gaussian_prior = False
                 is_simple_prior = False
-                
+
+                is_diffusion_unet = False
                 if isinstance(sd, dict):
-                    # SimpleDiffusionPrior format: has "prior" key or "state_dim" but no "unet"
-                    if "prior" in sd or ("state_dim" in sd and "unet" not in sd):
-                        is_simple_prior = True
-                    # Also check if it's a direct state dict with encoder/decoder keys
-                    elif not ("unet" in sd or "scheduler_config" in sd):
-                        # Check if keys suggest SimpleDiffusionPrior structure
-                        if any("encoder" in k or "decoder" in k for k in sd.keys()):
+                    pt = sd.get("prior_type")
+                    if pt == "gaussian":
+                        is_gaussian_prior = True
+                    elif pt in ("diffusion", "diffusion_unet", "diffusion_guidance"):
+                        is_diffusion_unet = True
+                    else:
+                        inner = sd.get("prior") if "prior" in sd and isinstance(sd["prior"], dict) else sd
+                        if isinstance(inner, dict) and any(k in inner for k in ("head_mu", "head_log_sigma")):
+                            is_gaussian_prior = True
+                        elif isinstance(inner, dict) and any(k.startswith("model.") for k in inner.keys()):
+                            # DiffusionGuidance saves UNet under "model.*"
+                            is_diffusion_unet = True
+                        elif "prior" in sd or ("state_dim" in sd and "unet" not in sd):
                             is_simple_prior = True
-                
-                if is_simple_prior:
+                        elif not ("unet" in sd or "scheduler_config" in sd):
+                            if any("encoder" in k or "decoder" in k for k in sd.keys()):
+                                is_simple_prior = True
+
+                if is_gaussian_prior:
+                    from fedguide.guidance.diffusion_prior import GaussianBehaviorPrior
+
+                    prior = GaussianBehaviorPrior(state_dim=state_dim, action_dim=action_dim)
+                    prior_ckpt = prior_path
+                    print(f"[Client {cid} (mapped to {client_id})] Found pretrained GaussianBehaviorPrior at: {prior_path}")
+                elif is_diffusion_unet:
+                    from fedguide.guidance.diffusion_prior import DiffusionGuidance
+
+                    hidden_dim = sd.get("hidden_dim", 64) if isinstance(sd, dict) else 64
+                    timesteps = sd.get("timesteps", 1000) if isinstance(sd, dict) else 1000
+                    horizon = sd.get("horizon", 64) if isinstance(sd, dict) else 64
+                    prior = DiffusionGuidance(
+                        state_dim=state_dim,
+                        action_dim=action_dim,
+                        hidden_dim=hidden_dim,
+                        timesteps=timesteps,
+                        horizon=horizon,
+                    )
+                    prior_ckpt = prior_path
+                    print(f"[Client {cid} (mapped to {client_id})] Found pretrained DiffusionGuidance(UNet) at: {prior_path}")
+                elif is_simple_prior:
                     # Load SimpleDiffusionPrior
                     from fedguide.guidance.diffusion_prior import SimpleDiffusionPrior
-                    
+
                     # Extract hyperparameters from checkpoint if available
                     if isinstance(sd, dict) and "prior" in sd:
                         hidden_dim = sd.get("hidden_dim", 256)
@@ -760,7 +818,7 @@ def client_fn_builder(
                         # Default hyperparameters (should match pretrain settings)
                         hidden_dim = 256
                         timesteps = 1000
-                    
+
                     prior = SimpleDiffusionPrior(
                         state_dim=state_dim,
                         action_dim=action_dim,
@@ -818,6 +876,28 @@ def client_fn_builder(
             prior, guidance = None, None
             prior_ckpt, guidance_ckpt = None, None
 
+        # Optional: BC warm-start checkpoint per client (reacher's
+        # state-conditional analogue of bandit2d's "policy.bias ← prior.head_mu").
+        actor_ckpt = None
+        if bc_dir:
+            try:
+                env_subdir = bc_env_name or {
+                    "Bandit2D": "Bandit2D",
+                    "bandit2d": "Bandit2D",
+                    "Reacher": "Reacher",
+                    "reacher_hetero": "Reacher",
+                }.get(env_id, env_id)
+                cand = os.path.join(bc_dir, env_subdir,
+                                    f"client_{mapped_client_id}",
+                                    "final", "policy.pth")
+                if os.path.isfile(cand):
+                    actor_ckpt = cand
+                    print(f"[FedGuide cid={mapped_client_id}] BC warm-start ← {cand}")
+                else:
+                    print(f"[FedGuide cid={mapped_client_id}] BC ckpt not found: {cand} (training without warm-start)")
+            except Exception as e:
+                print(f"[FedGuide cid={mapped_client_id}] BC lookup skipped: {e}")
+
         # 4) agent
         agent = FedguideAgent(
             state_dim=state_dim,
@@ -826,8 +906,17 @@ def client_fn_builder(
             guidance=guidance,
             prior_ckpt=prior_ckpt,
             guidance_ckpt=guidance_ckpt,
+            actor_ckpt=actor_ckpt,
             init_log_std=init_log_std,
             prior_adapt_fallback_all=prior_adapt_fallback_all,
+            policy_activation=policy_activation,
+            action_clamp_low=action_clamp_low,
+            action_clamp_high=action_clamp_high,
+            log_std_anneal=log_std_anneal,
+            log_std_anneal_target=log_std_anneal_target,
+            log_std_anneal_rounds=log_std_anneal_rounds,
+            guide_coef=guide_coef,
+            guidance_eta=guidance_eta,
         )
 
         # 5) trainer

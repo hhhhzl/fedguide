@@ -1,0 +1,65 @@
+# FedGuide-pg (Theorem 4) — final main config.
+# Aggregate prior + value guidance via OT-MoE + personalized routing.
+# Policies stay local. guide_coef toned down to 0.1 so the SDICE-driven
+# MSE doesn't drown out the prior bonus on bandit2d (where SDICE has
+# little value-signal to work with given the single-step reward).
+# log_std *does* anneal so each client's converged policy concentrates
+# at its peak.
+
+env_type: "bandit2d"
+data_dir: "data/bandit2d"
+num_clients: 4
+
+K: 4
+sigma: 0.2
+
+rounds: 60
+cpus_per_client: 2
+
+n_steps: 200
+lambda_local: 0.05                # weak trust region — let policy move
+lambda_guide: 0.5                 # IS-weighted CE prior loss
+lambda_guide_anneal: true         # decay so env reward refines after warm-start
+lambda_guide_decay_rounds: 60
+update_epochs: 4                  # reduce off-policy bias under multi-epoch reuse
+minibatch_size: 64
+init_log_std: -1.0
+
+aggregate_mode: "prior+guidance"
+use_pretrained_models: true
+prior_adapt_fallback_all: true
+prior_dir: "./model/models_prior_gauss"
+
+moe_enable: true
+num_experts_prior: 4
+num_experts_guidance: 4
+ot_mode: "sinkhorn"
+ot_reg: 0.05
+personalized_routing: true
+
+# Tone down the SDICE-driven guide-align MSE so the prior bonus leads
+# and the guidance is a fine adjustment.
+guide_coef: 0.1
+guidance_eta: 0.1
+
+# Theorem 4: SDICE_Critic keeps learning during federated rounds (not frozen
+# at the pretrained ckpt). The factory plumbs this through to FedguideAgent.
+online_guidance: true
+
+policy_activation: "relu"
+action_clamp_low: -1.5
+action_clamp_high: 1.5
+log_std_anneal: true
+log_std_anneal_rounds: 40
+log_std_anneal_target: -2.0
+
+use_wandb: false
+wandb_project: null
+run_name: null
+
+output_dir: "./model/policy/bandit2d/fedguide_pg"
+metrics_dir: "./metrics/bandit2d/fedguide_pg"
+collect_metrics_every: 1
+
+device: "auto"
+seed: [0]

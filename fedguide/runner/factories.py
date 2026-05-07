@@ -511,6 +511,19 @@ def _create_fedguide_client_fn(config: Dict[str, Any], **kwargs):
             bool(config.get('render_eval', False)),
             str(config.get('render_mode', 'video')),
         ),
+        policy_activation=str(config.get('policy_activation', 'tanh')),
+        action_clamp_low=config.get('action_clamp_low'),
+        action_clamp_high=config.get('action_clamp_high'),
+        log_std_anneal=bool(config.get('log_std_anneal', False)),
+        log_std_anneal_target=float(config.get('log_std_anneal_target', -2.0)),
+        log_std_anneal_rounds=int(config.get('log_std_anneal_rounds', 40)),
+        prior_dir=str(config.get('prior_dir', './model/models_prior')),
+        bc_dir=config.get('bc_dir'),
+        bc_env_name=config.get('bc_env_name'),
+        online_guidance=bool(config.get('online_guidance', False)),
+        online_prior=bool(config.get('online_prior', False)),
+        guide_coef=float(config.get('guide_coef', 1.0)),
+        guidance_eta=float(config.get('guidance_eta', 0.1)),
     )
 
 
@@ -565,6 +578,8 @@ def _create_fedkl_client_fn(config: Dict[str, Any], **kwargs):
             bool(config.get('render_eval', False)),
             str(config.get('render_mode', 'video')),
         ),
+        prior_dir=config.get('prior_dir'),
+        prior_env_name=config.get('prior_env_name'),
     )
 
 
@@ -868,6 +883,9 @@ def _create_fedguide_server(config: Dict[str, Any], **kwargs):
         moe_enable=config.get('moe_enable', True),
         num_experts_prior=config.get('num_experts_prior', 1),
         num_experts_guidance=config.get('num_experts_guidance', 1),
+        ot_mode=str(config.get('ot_mode', 'sinkhorn')),
+        ot_reg=float(config.get('ot_reg', 0.05)),
+        personalized_routing=bool(config.get('personalized_routing', True)),
         client_specific_expert_routing=config.get('client_specific_expert_routing', False),
         cid_mapping_file=config.get('cid_mapping_file'),
         num_clients=num_clients,

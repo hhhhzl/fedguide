@@ -356,12 +356,33 @@ def _save_federated_results(history: Any, metrics_collector: Any, config: Dict[s
 def run_training(config: Dict[str, Any], args=None, device: Optional[str] = None):
     """
     Unified training function that works for all algorithms and environments.
-    
+
     Args:
         config: Configuration dictionary
         args: Optional argparse args
         device: Optional device override
     """
+    # ----- Phase-1 sweep hook -----
+    # When FG_PHASE1_SWEEP is set, override key paths/seeds/rounds from env vars
+    # so every (algo, seed) writes into its own metrics/<run>/seed_<i>/ folder
+    # without touching individual run scripts or YAMLs.
+    if os.environ.get("FG_PHASE1_SWEEP", "0") == "1":
+        for cfg_key, env_key, cast in [
+            ("metrics_dir", "FG_PHASE1_METRICS_DIR", str),
+            ("output_dir", "FG_PHASE1_OUTPUT_DIR", str),
+            ("seed", "FG_PHASE1_SEED", int),
+            ("rounds", "FG_PHASE1_ROUNDS", int),
+            ("device", "FG_PHASE1_DEVICE", str),
+            ("gpus_per_client", "FG_PHASE1_GPUS_PER_CLIENT", float),
+            ("cpus_per_client", "FG_PHASE1_CPUS_PER_CLIENT", float),
+        ]:
+            val = os.environ.get(env_key)
+            if val is not None and val != "":
+                try:
+                    config[cfg_key] = cast(val)
+                except ValueError:
+                    pass
+
     # Determine environment type and algorithm
     env_type = config.get('env_type', 'bandit2d')
     algorithm = config.get('algorithm', 'ppo')

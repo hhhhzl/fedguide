@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Callable, Iterable
 import json
+import os
 import random
 import numpy as np
 import torch
@@ -489,6 +490,8 @@ def client_fn_builder(
     cid_mapping_file: Optional[str] = None,  # File for deterministic cid->0..N-1 mapping
     sigma: float = 0.2,  # Bandit2D reward width (0.4 for hetero)
     metadata_path: Optional[str] = None,  # Reacher heterogeneity (reacher_hetero)
+    prior_dir: Optional[str] = None,  # If set, warm-start policy from per-client Gaussian prior μ
+    prior_env_name: Optional[str] = None,  # subdir under prior_dir; defaults to env_id
     reward_type: Optional[str] = None,  # D4RL AntMaze dense/sparse
     device: Optional[str] = None,  # cuda / cpu / auto; forwarded from runner config
     render_eval: bool = False,
@@ -563,6 +566,47 @@ def client_fn_builder(
             device=train_device,
             init_log_std=init_log_std,
         )
+
+        # Optional: warm-start the policy from a per-client Gaussian prior μ.
+        # Used to compare apples-to-apples against FedGuide's D-fix: same start,
+        # different aggregation. The expected outcome is that FedAvg/FedKL still
+        # collapse to a single mode after the first round of policy averaging.
+        if prior_dir:
+            try:
+                env_subdir = prior_env_name or {
+                    "Bandit2D": "Bandit2D",
+                    "Reacher": "Reacher",
+                    "reacher_hetero": "Reacher",
+                    "bandit2d": "Bandit2D",
+                }.get(env_id, env_id)
+                ckpt_path = os.path.join(prior_dir, env_subdir,
+                                         f"client_{mapped_client_id}",
+                                         "final", "torch_prior.pth")
+                if os.path.isfile(ckpt_path):
+                    sd = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+                    inner = sd.get("prior") if isinstance(sd, dict) else None
+                    head_mu = None
+                    if isinstance(inner, dict) and "head_mu" in inner:
+                        head_mu = inner["head_mu"]
+                    elif isinstance(sd, dict) and "head_mu" in sd:
+                        head_mu = sd["head_mu"]
+                    if head_mu is not None and head_mu.shape[-1] == action_dim:
+                        last_lin = None
+                        for m in reversed(list(agent.policy.modules())):
+                            if isinstance(m, torch.nn.Linear) and m.out_features == action_dim:
+                                last_lin = m
+                                break
+                        if last_lin is not None:
+                            mu = head_mu.detach().to(last_lin.bias.device, dtype=last_lin.bias.dtype)
+                            with torch.no_grad():
+                                last_lin.weight.zero_()
+                                last_lin.bias.copy_(mu)
+                            print(f"[FedKL cid={mapped_client_id}] warm-started policy μ ← prior μ = "
+                                  f"{mu.cpu().tolist()}")
+                else:
+                    print(f"[FedKL cid={mapped_client_id}] prior ckpt not found: {ckpt_path}")
+            except Exception as e:
+                print(f"[FedKL cid={mapped_client_id}] warm-start skipped: {e}")
         
         # 4) trainer
         trainer = FedKLTrainer(

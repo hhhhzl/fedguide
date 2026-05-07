@@ -55,13 +55,22 @@ class FedguideTrainer:
         self.render_episodes = render_episodes
         self.render_client_tag = render_client_tag
 
-    def set_server_round(self, rnd: int):
-        """Set current server round for lambda_guide annealing."""
-        self.server_round = int(rnd)
-
+        # Initialize current obs once; rollouts continue across rounds for non-bandit envs.
         reset_result = self.env.reset()
         self._obs = reset_result[0] if isinstance(reset_result, tuple) else reset_result
         self.last_actions = None  # Store last rollout actions for metrics collection
+
+    def set_server_round(self, rnd: int):
+        """Set current server round for lambda_guide annealing.
+        Note: do NOT reset env here — that destroys rollout continuity for continuous tasks.
+        """
+        self.server_round = int(rnd)
+        if hasattr(self.agent, "anneal_log_std") and getattr(self.agent, "log_std_anneal", False):
+            self.agent.anneal_log_std(
+                self.server_round,
+                target=getattr(self.agent, "log_std_anneal_target", -2.0),
+                decay_rounds=getattr(self.agent, "log_std_anneal_rounds", 40),
+            )
 
     # ---------------- Rollout + GAE ----------------
     def _rollout(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
@@ -69,14 +78,15 @@ class FedguideTrainer:
         for _ in range(self.n_steps):
             a, logp, v = self.agent.select_action(self._obs, deterministic=False)
             a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
-            next_obs, r, d, _trunc, _info = self.env.step(a)
+            next_obs, r, terminated, truncated, _info = self.env.step(a)
+            d = bool(terminated) or bool(truncated)
 
             obs_buf.append(torch.tensor(self._obs, dtype=torch.float32))
             act_buf.append(torch.tensor(a, dtype=torch.float32))
             logp_buf.append(torch.tensor(logp, dtype=torch.float32).reshape(()))
             rew_buf.append(torch.tensor(r, dtype=torch.float32).reshape(()))
             val_buf.append(torch.tensor(v, dtype=torch.float32).reshape(()))
-            done_buf.append(torch.tensor(d, dtype=torch.float32).reshape(()))
+            done_buf.append(torch.tensor(float(d), dtype=torch.float32).reshape(()))
 
             self._obs = next_obs
             if d:
@@ -208,7 +218,8 @@ class FedguideTrainer:
         while not done:
             a, _, _ = self.agent.select_action(obs, deterministic=True)
             a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
-            obs, r, done, _trunc, _info = self.env.step(a)
+            obs, r, terminated, truncated, _info = self.env.step(a)
+            done = bool(terminated) or bool(truncated)
             ep_ret += r
         return ep_ret
 
@@ -231,7 +242,8 @@ class FedguideTrainer:
         while not done:
             a, _, _ = self.agent.select_action(obs, deterministic=True)
             a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
-            obs, r, done, _trunc, _info = self.env.step(a)
+            obs, r, terminated, truncated, _info = self.env.step(a)
+            done = bool(terminated) or bool(truncated)
             ep_ret += r
             traj.append(obs.copy() if hasattr(obs, 'copy') else np.array(obs))
         

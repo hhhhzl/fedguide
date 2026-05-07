@@ -1,0 +1,59 @@
+# FedGuide-prior (Theorem 3) — final main config.
+# Aggregate only the diffusion prior via OT-MoE + personalized routing.
+# Policies stay local. Bonus-PG (log prior − log π_old) keeps each client's
+# local policy at ITS OWN peak; OT-MoE preserves the multi-modal structure
+# across clients. log_std *does* anneal so the converged policy actually
+# concentrates at the peak (otherwise return is dragged down by σ noise).
+
+env_type: "bandit2d"
+data_dir: "data/bandit2d"
+num_clients: 4
+
+K: 4
+sigma: 0.2
+
+rounds: 60
+cpus_per_client: 2
+
+n_steps: 200
+lambda_local: 0.05                # weak trust region — let policy move
+lambda_guide: 0.5                 # IS-weighted CE prior loss
+lambda_guide_anneal: true         # decay so env reward refines after warm-start
+lambda_guide_decay_rounds: 60
+update_epochs: 4                  # reduce off-policy bias under multi-epoch reuse
+minibatch_size: 64
+init_log_std: -1.0
+
+aggregate_mode: "prior"
+use_pretrained_models: true
+prior_adapt_fallback_all: true
+prior_dir: "./model/models_prior_gauss"
+
+moe_enable: true
+num_experts_prior: 4              # one expert per client
+num_experts_guidance: 1
+ot_mode: "sinkhorn"
+ot_reg: 0.05
+personalized_routing: true
+
+policy_activation: "relu"
+action_clamp_low: -1.5
+action_clamp_high: 1.5
+# Anneal log_std the same way the baselines do — the prior bonus + OT
+# routing already preserve multimodality across clients, so we still want
+# each client's policy to *concentrate* at its peak instead of staying
+# wide (otherwise per-step expected reward is heavily noised).
+log_std_anneal: true
+log_std_anneal_rounds: 40
+log_std_anneal_target: -2.0
+
+use_wandb: false
+wandb_project: null
+run_name: null
+
+output_dir: "./model/policy/bandit2d/fedguide_prior"
+metrics_dir: "./metrics/bandit2d/fedguide_prior"
+collect_metrics_every: 1
+
+device: "auto"
+seed: [0]
