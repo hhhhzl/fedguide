@@ -1,8 +1,8 @@
-"""BC pretrain (warm-start) for HalfCheetah FedGuide policies.
+"""BC pretrain (warm-start) for Walker2D FedGuide policies.
 
-HalfCheetah's prior is a state-conditional UNet1D diffusion model — there's no
+Walker2D's prior is a state-conditional UNet1D diffusion model — there's no
 single μ to copy into the policy bias the way bandit2d's GaussianBehaviorPrior
-allows. The "D-fix" warm-start equivalent for halfcheetah is **behavior cloning**:
+allows. The "D-fix" warm-start equivalent for walker is **behavior cloning**:
 fit a policy network to the same offline data the prior was trained on so
 each client's policy starts at its own behavior policy (per-cluster goal).
 
@@ -22,7 +22,7 @@ so plumbing into the federated runner is just "set `bc_dir` in the config
 and the client wires up `actor_ckpt` per `cluster_id`".
 
 Usage:
-    python scripts/envs/halfcheetah/_bc_pretrain.py --num_clients 8 \\
+    python scripts/envs/walker/_bc_pretrain.py --num_clients 8 \\
         --rollout_steps 5000 --behaviour random \\
         --epochs 100 --hidden_dim 256 \\
         --save_root ./model/bc_policy
@@ -45,12 +45,12 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_PROJECT_ROOT))
 
 # Reuse the rollout-collection helpers from the prior pretrain.
-from scripts.envs.halfcheetah._pretrain import (
+from scripts.envs.walker._pretrain import (
     _collect_random_rollouts,
     _collect_ppo_rollouts,
     _collect_d4rl_dataset,
 )
-from fedguide.envs.halfcheetah_hetero import make_hetero_halfcheetah_env_from_metadata
+from fedguide.envs.mujoco_locomotion_hetero import make_hetero_locomotion_env_from_metadata
 
 
 def _make_policy(state_dim: int, action_dim: int, hidden_dim: int = 256,
@@ -107,14 +107,14 @@ def _bc_one_client(s: np.ndarray, a: np.ndarray, *,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--metadata_path", type=str, default="data/halfcheetah/metadata_mild64.json")
+    ap.add_argument("--metadata_path", type=str, default="data/walker/metadata.json")
     ap.add_argument("--num_clients", type=int, default=8)
     ap.add_argument("--first_client_id", type=int, default=0)
     ap.add_argument("--rollout_steps", type=int, default=5000)
     ap.add_argument("--behaviour", type=str, default="random",
                     choices=["random", "ppo", "d4rl"])
     ap.add_argument("--ppo_steps", type=int, default=20_000)
-    ap.add_argument("--d4rl_variant", type=str, default="halfcheetah-medium-v2")
+    ap.add_argument("--d4rl_variant", type=str, default="walker2d-medium-v2")
     ap.add_argument("--d4rl_max_size", type=int, default=200_000)
     ap.add_argument("--seed", type=int, default=42)
 
@@ -128,7 +128,7 @@ def main():
 
     ap.add_argument("--device", type=str, default="cuda")
     ap.add_argument("--save_root", type=str, default="./model/bc_policy")
-    ap.add_argument("--env_name", type=str, default="HalfCheetah")
+    ap.add_argument("--env_name", type=str, default="Walker2D")
     args = ap.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -152,7 +152,7 @@ def main():
             state_dim = int(s.shape[1])
             action_dim = int(a.shape[1])
         else:
-            env = make_hetero_halfcheetah_env_from_metadata(
+            env = make_hetero_locomotion_env_from_metadata(
                 metadata_path, client_id, seed=args.seed + client_id
             )
             state_dim = int(env.observation_space.shape[0])

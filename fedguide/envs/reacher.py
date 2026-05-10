@@ -206,6 +206,10 @@ def make_hetero_reacher_env_from_metadata(
         "reward_scale": float(cfg["reward_scale"]),
         "angle_noise": float(cfg["angle_noise"]),
         "variant": cfg.get("variant", "medium-v2"),
+        "preference": cfg.get("preference", "default"),
+        "mass_scale": float(cfg.get("mass_scale", 1.0)),
+        "damping_scale": float(cfg.get("damping_scale", 1.0)),
+        "gear_scale": float(cfg.get("gear_scale", 1.0)),
     }
     if render_mode is not None:
         env_kwargs["render_mode"] = render_mode
@@ -222,7 +226,15 @@ def make_hetero_reacher_env_from_metadata(
 
 
 class CustomizedReacherEnv(ReacherEnv):
-    """Customized Reacher Environment with heterogeneity support."""
+    """Customized Reacher Environment with heterogeneity support.
+
+    Heterogeneity dimensions (default off / unit):
+      * ``action_noise``, ``reward_scale``, ``angle_noise``: numeric perturbations.
+      * ``preference`` (B-level categorical): replace mujoco's default reward
+        with one of {default, speed, stability, efficiency}.
+      * ``mass_scale`` / ``damping_scale`` / ``gear_scale`` (C-level structural):
+        per-client scaling of model link mass / joint damping / actuator gain.
+    """
 
     def __init__(self,
                  qpos_high_low=[[-0.2, 0.2], [-0.2, 0.2]],
@@ -231,6 +243,10 @@ class CustomizedReacherEnv(ReacherEnv):
                  reward_scale=1.0,
                  angle_noise=0.0,
                  variant="medium-v2",
+                 preference="default",
+                 mass_scale=1.0,
+                 damping_scale=1.0,
+                 gear_scale=1.0,
                  **kwargs):
         super().__init__(**kwargs)
         self.qpos_high_low = qpos_high_low
@@ -239,6 +255,18 @@ class CustomizedReacherEnv(ReacherEnv):
         self.reward_scale = reward_scale
         self.angle_noise = angle_noise
         self.variant = variant
+        self.preference = str(preference or "default").lower()
+
+        # Apply structural scalings to the loaded mujoco model.
+        try:
+            if mass_scale != 1.0:
+                self.model.body_mass[:] = self.model.body_mass * float(mass_scale)
+            if damping_scale != 1.0:
+                self.model.dof_damping[:] = self.model.dof_damping * float(damping_scale)
+            if gear_scale != 1.0:
+                self.model.actuator_gear[:, 0] = self.model.actuator_gear[:, 0] * float(gear_scale)
+        except Exception as _e:
+            print(f"[CustomizedReacherEnv] failed to apply structural scaling: {_e}")
 
     def reset_model(self):
         """Randomize target goal and joint angles."""
@@ -271,7 +299,30 @@ class CustomizedReacherEnv(ReacherEnv):
         return self._get_obs()
 
     def step(self, action):
-        """Add heterogeneity-induced action noise + reward scaling."""
+        """Add heterogeneity-induced action noise + reward scaling.
+
+        Reward selection by ``self.preference``:
+          * default: mujoco's reacher reward (-dist - 0.1·‖a‖²)
+          * speed:    -dist + 0.3·‖tip_velocity‖
+          * stability:-dist - 0.5·‖a‖² - 0.2·‖joint_velocity‖²
+          * efficiency:-dist - 0.5·‖a‖²  (heavier control penalty)
+        """
         noisy_action = action + self.action_noise
         obs, reward, terminated, truncated, info = super().step(noisy_action)
+
+        if self.preference != "default":
+            tip_pos = self.get_body_com("fingertip")[:2]
+            target = self.get_body_com("target")[:2]
+            dist = float(np.linalg.norm(tip_pos - target))
+            joint_vel = self.data.qvel.flat[:2]
+            ctrl_sq = float(np.sum(np.square(noisy_action)))
+            if self.preference == "speed":
+                tip_vel = float(np.linalg.norm(joint_vel))
+                reward = -dist + 0.3 * tip_vel
+            elif self.preference == "stability":
+                reward = -dist - 0.5 * ctrl_sq - 0.2 * float(np.sum(np.square(joint_vel)))
+            elif self.preference == "efficiency":
+                reward = -dist - 0.5 * ctrl_sq
+            # else: keep mujoco's default reward.
+
         return obs, reward * self.reward_scale, terminated, truncated, info

@@ -12,7 +12,7 @@ num_clients: 8
 random_select_clients: false
 
 # Federated training
-rounds: 100
+rounds: 50
 n_steps: 2048
 update_epochs: 10
 minibatch_size: 64
@@ -33,8 +33,8 @@ lambda_local: 0.0
 
 eval_episodes: 10
 
-output_dir: "./model/policy/antmaze/fedavg"
-metrics_dir: "./metrics/antmaze/fedavg"
+output_dir: "./model/policy/antmaze_phase1/fedavg"
+metrics_dir: "./metrics/antmaze_phase1/fedavg"
 save_every: 10
 
 device: "auto"

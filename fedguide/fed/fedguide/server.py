@@ -88,6 +88,12 @@ class FedGuideStrategy(Strategy):
             cid_mapping_file: Optional[str] = None,
             num_clients: int = 4,
             routing_debug: bool = False,
+            # Policy aggregation cadence: aggregate policy/log_std only every
+            # K rounds. K=1 (default) preserves prior behavior. K>1 lets each
+            # client run local PPO without policy averaging on intermediate
+            # rounds — useful when client dynamics differ enough that
+            # FedAvg(policy) destroys per-client adaptation.
+            policy_agg_every_k: int = 1,
     ):
         # Standard Flower Strategy parameters
         self.fraction_fit = fraction_fit
@@ -117,6 +123,7 @@ class FedGuideStrategy(Strategy):
         self.cid_mapping_file = cid_mapping_file
         self.num_clients = int(num_clients)
         self.routing_debug = bool(routing_debug)
+        self.policy_agg_every_k = max(1, int(policy_agg_every_k))
 
         # experts_map[module_key] = List[List[np.ndarray]]  # M x L
         self.experts_map: Dict[str, List[List[np.ndarray]]] = {}
@@ -405,6 +412,22 @@ class FedGuideStrategy(Strategy):
         
         if modules_list:
             new_global = self._aggregate_by_modules(modules_list, client_cids=client_cids, server_round=server_round)
+            # Policy-aggregation cadence: on non-K rounds, drop policy/log_std
+            # from the broadcast so each client keeps its own local PPO state.
+            # First round (server_round == 1) always broadcasts so clients
+            # share the BC warm-start initialization.
+            if (
+                self.policy_agg_every_k > 1
+                and server_round > 1
+                and (server_round % self.policy_agg_every_k) != 0
+            ):
+                for _k in ("policy", "log_std"):
+                    new_global.pop(_k, None)
+                if self.routing_debug:
+                    print(
+                        f"[policy-skip] round={server_round} K={self.policy_agg_every_k} "
+                        f"— broadcast keys={list(new_global.keys())}"
+                    )
             flat, layout = self._flatten_module_dict(new_global)
             params = ndarrays_to_parameters(flat)
             self._latest_global_modules = new_global

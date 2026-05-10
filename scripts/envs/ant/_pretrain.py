@@ -1,9 +1,9 @@
-"""Pretrain DiffusionGuidance + SDICE_Critic for federated HalfCheetah.
+"""Pretrain DiffusionGuidance + SDICE_Critic for federated Ant.
 
 Reacher has no direct D4RL dataset, so we collect offline (s, a, r, s')
 trajectories per client by running a behaviour policy in that client's
-the federated HalfCheetah env (uses the heterogeneity from
-``data/halfcheetah/metadata_mild64.json``: per-client goal region, action noise,
+the federated Ant env (uses the heterogeneity from
+``data/ant/metadata.json``: per-client goal region, action noise,
 reward scale, angle noise). The behaviour policy can be either:
 
 * ``--behaviour random`` — sample from action_space.uniform (fast, works
@@ -16,18 +16,18 @@ After each client's buffer is collected we pretrain ``DiffusionGuidance``
 on the (s, a) pairs and ``SDICE_Critic`` on (s, a, r, s', d).
 
 Outputs:
-    ./model/models_prior/HalfCheetah/client_{i}/final/torch_prior.pth
-    ./model/models_prior/HalfCheetah/client_{i}/final/guidance_sdice.pth
+    ./model/models_prior/Ant/client_{i}/final/torch_prior.pth
+    ./model/models_prior/Ant/client_{i}/final/guidance_sdice.pth
 
 Usage:
     # Quick smoke test (1 client, random behaviour, 200 epochs, small buffer):
-    python scripts/envs/halfcheetah/_pretrain.py \
+    python scripts/envs/ant/_pretrain.py \
         --num_clients 1 --behaviour random \
         --rollout_steps 5000 --n_behavior_epochs 200 \
         --device cuda --save_root ./model/models_prior
 
     # Full pretrain (8 clients, longer):
-    python scripts/envs/halfcheetah/_pretrain.py \
+    python scripts/envs/ant/_pretrain.py \
         --num_clients 8 --behaviour random \
         --rollout_steps 20000 --n_behavior_epochs 1500 \
         --device cuda
@@ -47,7 +47,7 @@ from torch.utils.data import DataLoader, Dataset
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_PROJECT_ROOT))
 
-from fedguide.envs.halfcheetah_hetero import make_hetero_halfcheetah_env_from_metadata
+from fedguide.envs.mujoco_locomotion_hetero import make_hetero_locomotion_env_from_metadata
 from fedguide.guidance.diffusion_prior import DiffusionGuidance
 from fedguide.guidance.model import SDICE_Critic
 
@@ -197,16 +197,16 @@ def _train_guidance_one_epoch(sdice, loader, device, do_update_v0=True, do_updat
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--metadata_path", type=str, default="data/halfcheetah/metadata_mild64.json")
+    ap.add_argument("--metadata_path", type=str, default="data/ant/metadata.json")
     ap.add_argument("--num_clients", type=int, default=8)
     ap.add_argument("--first_client_id", type=int, default=0)
     ap.add_argument("--rollout_steps", type=int, default=20000)
     ap.add_argument("--behaviour", type=str, default="random",
                     choices=["random", "ppo", "d4rl"])
     ap.add_argument("--ppo_steps", type=int, default=50_000)
-    ap.add_argument("--d4rl_variant", type=str, default="halfcheetah-medium-v2",
+    ap.add_argument("--d4rl_variant", type=str, default="ant-medium-v2",
                     help="D4RL dataset to load when --behaviour=d4rl. "
-                         "Common choices: halfcheetah-medium-v2, halfcheetah-expert-v2, halfcheetah-medium-replay-v2")
+                         "Common choices: ant-medium-v2, ant-expert-v2, ant-medium-replay-v2")
     ap.add_argument("--d4rl_max_size", type=int, default=200_000,
                     help="cap dataset size per client (sub-sampled with seed)")
 
@@ -242,7 +242,7 @@ def main():
     ap.add_argument("--hidden_dim", type=int, default=256)
 
     ap.add_argument("--save_root", type=str, default="./model/models_prior")
-    ap.add_argument("--env_name", type=str, default="HalfCheetah")
+    ap.add_argument("--env_name", type=str, default="Ant")
 
     args = ap.parse_args()
 
@@ -250,12 +250,12 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
     metadata_path = str(_PROJECT_ROOT / args.metadata_path)
-    print(f"[pretrain_halfcheetah] using metadata: {metadata_path}")
-    print(f"[pretrain_halfcheetah] device: {device}")
+    print(f"[pretrain_ant] using metadata: {metadata_path}")
+    print(f"[pretrain_ant] device: {device}")
 
     for offset in range(args.num_clients):
         client_id = args.first_client_id + offset
-        print(f"\n[Pretrain] HalfCheetah client {client_id} | behaviour={args.behaviour}")
+        print(f"\n[Pretrain] Ant client {client_id} | behaviour={args.behaviour}")
 
         env = None
         if args.behaviour == "d4rl":
@@ -266,7 +266,7 @@ def main():
             s_dim = int(s.shape[1])
             a_dim = int(a.shape[1])
         else:
-            env = make_hetero_halfcheetah_env_from_metadata(
+            env = make_hetero_locomotion_env_from_metadata(
                 metadata_path, client_id, seed=args.seed + client_id
             )
             s_dim = int(env.observation_space.shape[0])

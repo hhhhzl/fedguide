@@ -1,9 +1,9 @@
-"""Pretrain DiffusionGuidance + SDICE_Critic for federated HalfCheetah.
+"""Pretrain DiffusionGuidance + SDICE_Critic for federated AntMaze.
 
 Reacher has no direct D4RL dataset, so we collect offline (s, a, r, s')
 trajectories per client by running a behaviour policy in that client's
-the federated HalfCheetah env (uses the heterogeneity from
-``data/halfcheetah/metadata_mild64.json``: per-client goal region, action noise,
+the federated AntMaze env (uses the heterogeneity from
+``data/antmaze/metadata.json``: per-client goal region, action noise,
 reward scale, angle noise). The behaviour policy can be either:
 
 * ``--behaviour random`` — sample from action_space.uniform (fast, works
@@ -16,18 +16,18 @@ After each client's buffer is collected we pretrain ``DiffusionGuidance``
 on the (s, a) pairs and ``SDICE_Critic`` on (s, a, r, s', d).
 
 Outputs:
-    ./model/models_prior/HalfCheetah/client_{i}/final/torch_prior.pth
-    ./model/models_prior/HalfCheetah/client_{i}/final/guidance_sdice.pth
+    ./model/models_prior/AntMaze/client_{i}/final/torch_prior.pth
+    ./model/models_prior/AntMaze/client_{i}/final/guidance_sdice.pth
 
 Usage:
     # Quick smoke test (1 client, random behaviour, 200 epochs, small buffer):
-    python scripts/envs/halfcheetah/_pretrain.py \
+    python scripts/envs/antmaze/_pretrain.py \
         --num_clients 1 --behaviour random \
         --rollout_steps 5000 --n_behavior_epochs 200 \
         --device cuda --save_root ./model/models_prior
 
     # Full pretrain (8 clients, longer):
-    python scripts/envs/halfcheetah/_pretrain.py \
+    python scripts/envs/antmaze/_pretrain.py \
         --num_clients 8 --behaviour random \
         --rollout_steps 20000 --n_behavior_epochs 1500 \
         --device cuda
@@ -47,7 +47,7 @@ from torch.utils.data import DataLoader, Dataset
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_PROJECT_ROOT))
 
-from fedguide.envs.halfcheetah_hetero import make_hetero_halfcheetah_env_from_metadata
+from fedguide.envs.antmaze_hetero import make_hetero_antmaze_env_from_metadata
 from fedguide.guidance.diffusion_prior import DiffusionGuidance
 from fedguide.guidance.model import SDICE_Critic
 
@@ -89,28 +89,37 @@ class _TransitionDataset(Dataset):
 
 
 def _collect_d4rl_dataset(variant: str, max_size: int | None = None, seed: int = 0):
-    """Load a D4RL offline dataset by reading the HDF5 file directly.
+    """Load the D4RL offline dataset for a given antmaze variant.
 
-    Bypasses ``d4rl.qlearning_dataset`` because the wrapped env's
-    observation_space sometimes disagrees with the on-disk shape.
+    Bypasses ``d4rl.qlearning_dataset`` because the env wrapper's
+    ``observation_space.shape`` (29D) and the data file's actual obs shape
+    (29D) match, but the wrapper's underlying obs space (44D) doesn't, so
+    the assertion in d4rl's loader fails. We read the HDF5 directly.
+
+    Returns (s, a, r, s_next, done) numpy arrays.
     """
-    import os as _os
-    _os.environ.setdefault("D4RL_SUPPRESS_IMPORT_ERROR", "1")
-    import gym as old_gym
-    import d4rl  # noqa: F401  — registers envs
+    import os
+    os.environ.setdefault("D4RL_SUPPRESS_IMPORT_ERROR", "1")
+    import gym as old_gym  # noqa
+    import d4rl  # noqa: F401 — registers envs
     import h5py
     e = old_gym.make(variant)
     fp = e.dataset_filepath
-    if not _os.path.exists(fp):
+    if not os.path.exists(fp):
+        # Trigger download (offline_env auto-fetches; assertion at the end will fail).
         try:
             e.get_dataset()
         except Exception:
             pass
     e.close()
+    if not os.path.exists(fp):
+        raise RuntimeError(f"d4rl variant {variant} dataset still missing at {fp}")
     with h5py.File(fp, "r") as f:
         s = f["observations"][:].astype(np.float32)
         a = f["actions"][:].astype(np.float32)
         r = f["rewards"][:].astype(np.float32)
+        # Build s_next via shift; the very last next-obs is the obs itself
+        # (we mark it terminal anyway via timeouts below).
         s2 = np.empty_like(s)
         s2[:-1] = s[1:]
         s2[-1] = s[-1]
@@ -124,10 +133,34 @@ def _collect_d4rl_dataset(variant: str, max_size: int | None = None, seed: int =
     return s, a, r, s2, d
 
 
+def _safe_reset(env, seed=None):
+    """env.reset that tolerates legacy d4rl envs (antmaze) which don't accept
+    ``seed=`` and may also return a bare ``obs`` instead of ``(obs, info)``.
+    Falls back to setting np seed externally."""
+    try:
+        out = env.reset(seed=seed) if seed is not None else env.reset()
+    except TypeError:
+        if seed is not None:
+            try:
+                env.seed(seed)
+            except Exception:
+                pass
+            try:
+                np.random.seed(seed)
+            except Exception:
+                pass
+        out = env.reset()
+    if isinstance(out, tuple) and len(out) == 2:
+        obs, _ = out
+    else:
+        obs = out
+    return obs
+
+
 def _collect_random_rollouts(env, total_steps: int, seed: int = 0):
     """Collect total_steps transitions from a random policy."""
     s_buf, a_buf, r_buf, s2_buf, d_buf = [], [], [], [], []
-    obs, _ = env.reset(seed=seed)
+    obs = _safe_reset(env, seed=seed)
     rng = np.random.RandomState(seed)
     for _ in range(total_steps):
         a = env.action_space.sample()
@@ -144,7 +177,7 @@ def _collect_random_rollouts(env, total_steps: int, seed: int = 0):
         d_buf.append(1.0 if done else 0.0)
         obs = obs2
         if done:
-            obs, _ = env.reset()
+            obs = _safe_reset(env)
     return np.stack(s_buf), np.stack(a_buf), np.array(r_buf), np.stack(s2_buf), np.array(d_buf)
 
 
@@ -197,18 +230,16 @@ def _train_guidance_one_epoch(sdice, loader, device, do_update_v0=True, do_updat
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--metadata_path", type=str, default="data/halfcheetah/metadata_mild64.json")
+    ap.add_argument("--metadata_path", type=str, default="data/antmaze/metadata.json")
     ap.add_argument("--num_clients", type=int, default=8)
     ap.add_argument("--first_client_id", type=int, default=0)
     ap.add_argument("--rollout_steps", type=int, default=20000)
     ap.add_argument("--behaviour", type=str, default="random",
-                    choices=["random", "ppo", "d4rl"])
+                    choices=["random", "ppo", "d4rl"],
+                    help="d4rl: load the per-client variant's offline dataset (expert+random trajectories with goal reach reward).")
     ap.add_argument("--ppo_steps", type=int, default=50_000)
-    ap.add_argument("--d4rl_variant", type=str, default="halfcheetah-medium-v2",
-                    help="D4RL dataset to load when --behaviour=d4rl. "
-                         "Common choices: halfcheetah-medium-v2, halfcheetah-expert-v2, halfcheetah-medium-replay-v2")
     ap.add_argument("--d4rl_max_size", type=int, default=200_000,
-                    help="cap dataset size per client (sub-sampled with seed)")
+                    help="cap per-client D4RL dataset size (None for full 1M)")
 
     ap.add_argument("--device", type=str, default="cuda")
     ap.add_argument("--seed", type=int, default=42)
@@ -242,7 +273,7 @@ def main():
     ap.add_argument("--hidden_dim", type=int, default=256)
 
     ap.add_argument("--save_root", type=str, default="./model/models_prior")
-    ap.add_argument("--env_name", type=str, default="HalfCheetah")
+    ap.add_argument("--env_name", type=str, default="AntMaze")
 
     args = ap.parse_args()
 
@@ -250,36 +281,40 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
     metadata_path = str(_PROJECT_ROOT / args.metadata_path)
-    print(f"[pretrain_halfcheetah] using metadata: {metadata_path}")
-    print(f"[pretrain_halfcheetah] device: {device}")
+    print(f"[pretrain_antmaze] using metadata: {metadata_path}")
+    print(f"[pretrain_antmaze] device: {device}")
 
     for offset in range(args.num_clients):
         client_id = args.first_client_id + offset
-        print(f"\n[Pretrain] HalfCheetah client {client_id} | behaviour={args.behaviour}")
+        print(f"\n[Pretrain] AntMaze client {client_id} | behaviour={args.behaviour}")
 
-        env = None
+        # 1) Build (or skip) env; determine dims; collect buffer.
         if args.behaviour == "d4rl":
-            print(f"  [behaviour=d4rl] loading {args.d4rl_variant} (max_size={args.d4rl_max_size})...")
-            s, a, r, s2, d = _collect_d4rl_dataset(
-                args.d4rl_variant, max_size=args.d4rl_max_size, seed=args.seed + client_id
-            )
+            # Look up the per-client D4RL variant from metadata.
+            import json as _json
+            with open(metadata_path, "r") as _f:
+                _meta = _json.load(_f)
+            variant = _meta["clients"][client_id]["variant"]
+            print(f"  [behaviour=d4rl] loading offline dataset for variant={variant}")
+            s, a, r, s2, d = _collect_d4rl_dataset(variant, max_size=args.d4rl_max_size,
+                                                   seed=args.seed + client_id)
             s_dim = int(s.shape[1])
             a_dim = int(a.shape[1])
+            env = None  # not needed
         else:
-            env = make_hetero_halfcheetah_env_from_metadata(
+            env = make_hetero_antmaze_env_from_metadata(
                 metadata_path, client_id, seed=args.seed + client_id
             )
             s_dim = int(env.observation_space.shape[0])
             a_dim = int(env.action_space.shape[0])
-
-            # 1) Collect offline buffer.
             if args.behaviour == "ppo":
                 print(f"  [behaviour=ppo] training PPO for {args.ppo_steps} steps then collecting {args.rollout_steps}...")
                 s, a, r, s2, d = _collect_ppo_rollouts(env, args.rollout_steps, args.ppo_steps, seed=args.seed + client_id)
             else:
                 print(f"  [behaviour=random] collecting {args.rollout_steps} steps...")
                 s, a, r, s2, d = _collect_random_rollouts(env, args.rollout_steps, seed=args.seed + client_id)
-        print(f"  buffer: s={s.shape}, a={a.shape}, mean_r={r.mean():.3f}")
+        print(f"  buffer: s={s.shape}, a={a.shape}, mean_r={r.mean():.3f}, "
+              f"reward_max={r.max():.3f}, n_terminal={int(d.sum())}")
 
         # 2) Pretrain DiffusionGuidance on (s, a).
         prior = DiffusionGuidance(

@@ -1,0 +1,15 @@
+{
+  "env": "adroit",
+  "n_clients": 8,
+  "seed": 2026,
+  "clients": [
+    {"client_id": 0, "task": "door-human-v1"},
+    {"client_id": 1, "task": "door-expert-v1"},
+    {"client_id": 2, "task": "hammer-human-v1"},
+    {"client_id": 3, "task": "hammer-expert-v1"},
+    {"client_id": 4, "task": "pen-human-v1"},
+    {"client_id": 5, "task": "pen-expert-v1"},
+    {"client_id": 6, "task": "relocate-human-v1"},
+    {"client_id": 7, "task": "relocate-expert-v1"}
+  ]
+}

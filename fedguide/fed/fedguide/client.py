@@ -65,6 +65,33 @@ def _make_env(
     if _hc_env is not None:
         return _hc_env
 
+    # Walker2D / Ant / Hopper share the locomotion-hetero loader
+    from fedguide.envs.mujoco_locomotion_hetero import make_locomotion_env_if_applicable
+
+    _loco_env = make_locomotion_env_if_applicable(
+        metadata_path, client_id, seed, render_mode, render_eval=False
+    )
+    if _loco_env is not None:
+        return _loco_env
+
+    # MetaWorld ML10
+    from fedguide.envs.metaworld_hetero import make_metaworld_env_if_applicable
+
+    _mw_env = make_metaworld_env_if_applicable(
+        metadata_path, client_id, seed, render_mode
+    )
+    if _mw_env is not None:
+        return _mw_env
+
+    # D4RL Adroit
+    from fedguide.envs.adroit_hetero import make_adroit_env_if_applicable
+
+    _ad_env = make_adroit_env_if_applicable(
+        metadata_path, client_id, seed, render_mode
+    )
+    if _ad_env is not None:
+        return _ad_env
+
     # AntMaze + metadata.json (env=antmaze) — per-client D4RL variant + noise/scale
     if _is_d4rl_env(env_id) and env_id.lower().startswith("antmaze-") and metadata_path:
         import os
@@ -680,6 +707,11 @@ def client_fn_builder(
     # let the prior dominate and use the guidance only as a fine adjustment.
     guide_coef: float = 1.0,
     guidance_eta: float = 0.1,
+    prior_reshape: bool = False,
+    reshape_beta: float = 0.1,
+    dice_reward_eta: float = 0.0,
+    dice_v_blend_alpha: float = 1.0,
+    dice_adv_beta: float = 0.0,
 ):
 
     def client_fn(context) -> Any:
@@ -740,6 +772,48 @@ def client_fn_builder(
             "2dbandit": "Bandit2D",
             "reacher_hetero": "Reacher",
             "reacher": "Reacher",
+            # D4RL d4rl env_ids → pretrain subdirectory name.
+            "halfcheetah-v4": "HalfCheetah",
+            "halfcheetah-v3": "HalfCheetah",
+            "halfcheetah-medium-v2": "HalfCheetah",
+            "antmaze-umaze-v0": "AntMaze",
+            "antmaze-umaze-diverse-v0": "AntMaze",
+            "antmaze-medium-play-v0": "AntMaze",
+            "antmaze-medium-diverse-v0": "AntMaze",
+            "antmaze-large-play-v0": "AntMaze",
+            "antmaze-large-diverse-v0": "AntMaze",
+            "walker2d-v4": "Walker2D",
+            "walker2d-medium-v2": "Walker2D",
+            "walker2d-expert-v2": "Walker2D",
+            "ant-v4": "Ant",
+            "ant-medium-v2": "Ant",
+            "ant-expert-v2": "Ant",
+            "hopper-v4": "Hopper",
+            "hopper-medium-v2": "Hopper",
+            "hopper-expert-v2": "Hopper",
+            # MetaWorld ML10 — every task shares the same prior subdir.
+            "metaworld_ml10": "MetaWorld",
+            "metaworld-ml10": "MetaWorld",
+            "reach-v3": "MetaWorld",
+            "push-v3": "MetaWorld",
+            "pick-place-v3": "MetaWorld",
+            "door-open-v3": "MetaWorld",
+            "drawer-close-v3": "MetaWorld",
+            "button-press-topdown-v3": "MetaWorld",
+            "peg-insert-side-v3": "MetaWorld",
+            "window-open-v3": "MetaWorld",
+            "sweep-v3": "MetaWorld",
+            "basketball-v3": "MetaWorld",
+            # D4RL Adroit — every task shares the same prior subdir.
+            "adroit": "Adroit",
+            "door-human-v1": "Adroit",
+            "door-expert-v1": "Adroit",
+            "hammer-human-v1": "Adroit",
+            "hammer-expert-v1": "Adroit",
+            "pen-human-v1": "Adroit",
+            "pen-expert-v1": "Adroit",
+            "relocate-human-v1": "Adroit",
+            "relocate-expert-v1": "Adroit",
         }
         env_name = env_name_map.get(env_id.lower(), env_id)
         
@@ -917,6 +991,8 @@ def client_fn_builder(
             log_std_anneal_rounds=log_std_anneal_rounds,
             guide_coef=guide_coef,
             guidance_eta=guidance_eta,
+            prior_reshape=prior_reshape,
+            reshape_beta=reshape_beta,
         )
 
         # 5) trainer
@@ -940,6 +1016,9 @@ def client_fn_builder(
             render_every_n_rounds=render_every_n_rounds,
             render_episodes=render_episodes,
             render_client_tag=str(mapped_client_id),
+            dice_reward_eta=dice_reward_eta,
+            dice_v_blend_alpha=dice_v_blend_alpha,
+            dice_adv_beta=dice_adv_beta,
         )
 
         # Get collector from global variable if not passed directly

@@ -29,6 +29,15 @@ class FedguideTrainer:
         render_every_n_rounds: int = 10,
         render_episodes: int = 5,
         render_client_tag: str = "0",
+        # DICE integration knobs (all default off; one-of pattern, but they
+        # can be combined at your own risk).
+        # Path 5 — DICE reward shaping: r̃ = r + eta * Q_φ(s,a).
+        dice_reward_eta: float = 0.0,
+        # Path 4 — DICE V baseline blend: V_blend = α·V_PPO + (1-α)·V_φ.
+        # α=1 disables blend (pure PPO V), α=0 fully relies on offline DICE V.
+        dice_v_blend_alpha: float = 1.0,
+        # Path 3 — Advantage reshape: Ã = A · exp(β·Q̂_norm(s,a)) clipped.
+        dice_adv_beta: float = 0.0,
     ):
         self.agent = agent
         self.env = env
@@ -54,6 +63,9 @@ class FedguideTrainer:
         self.render_every_n_rounds = render_every_n_rounds
         self.render_episodes = render_episodes
         self.render_client_tag = render_client_tag
+        self.dice_reward_eta = float(dice_reward_eta)
+        self.dice_v_blend_alpha = float(dice_v_blend_alpha)
+        self.dice_adv_beta = float(dice_adv_beta)
 
         # Initialize current obs once; rollouts continue across rounds for non-bandit envs.
         reset_result = self.env.reset()
@@ -104,7 +116,46 @@ class FedguideTrainer:
             _, _, last_v = self.agent.select_action(self._obs, deterministic=True)
             last_v = torch.tensor(last_v, dtype=torch.float32).reshape(())
 
+        # ---- DICE integrations (paths 3/4/5) ----
+        guidance = getattr(self.agent, "guidance", None)
+        agent_device = getattr(self.agent, "device", torch.device("cpu"))
+
+        # Path 5: reward shaping with DICE Q
+        if self.dice_reward_eta != 0.0 and guidance is not None and hasattr(guidance, "q0"):
+            with torch.no_grad():
+                s_dev = states.to(agent_device)
+                a_dev = actions.to(agent_device)
+                q_shape = guidance.q0(a_dev, s_dev).detach().squeeze(-1).cpu()
+            rewards = rewards + self.dice_reward_eta * q_shape
+
+        # Path 4: V baseline blend
+        if (
+            self.dice_v_blend_alpha < 1.0
+            and guidance is not None
+            and hasattr(guidance, "v0")
+        ):
+            with torch.no_grad():
+                s_dev = states.to(agent_device)
+                v_dice = guidance.v0(s_dev).detach().squeeze(-1).cpu()
+                last_obs_t = torch.tensor(self._obs, dtype=torch.float32, device=agent_device).unsqueeze(0)
+                last_v_dice = guidance.v0(last_obs_t).detach().squeeze().cpu()
+            alpha = self.dice_v_blend_alpha
+            values = alpha * values + (1.0 - alpha) * v_dice
+            last_v = alpha * last_v + (1.0 - alpha) * last_v_dice
+
         adv, ret = self._gae(rewards, values, dones, last_v)
+
+        # Path 3: advantage reshape with DICE Q (after GAE so it scales the
+        # GAE-computed advantage rather than substitutes for it).
+        if self.dice_adv_beta != 0.0 and guidance is not None and hasattr(guidance, "q0"):
+            with torch.no_grad():
+                s_dev = states.to(agent_device)
+                a_dev = actions.to(agent_device)
+                q_raw = guidance.q0(a_dev, s_dev).detach().squeeze(-1).cpu()
+                q_norm = (q_raw - q_raw.mean()) / (q_raw.std() + 1e-6)
+            multiplier = (self.dice_adv_beta * q_norm).exp().clamp(0.5, 2.0)
+            adv = adv * multiplier
+            ret = adv + values  # keep return consistent with reshaped advantage
         extras = {
             "adv": adv,
             "r": rewards,

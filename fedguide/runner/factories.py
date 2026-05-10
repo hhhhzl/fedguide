@@ -524,6 +524,11 @@ def _create_fedguide_client_fn(config: Dict[str, Any], **kwargs):
         online_prior=bool(config.get('online_prior', False)),
         guide_coef=float(config.get('guide_coef', 1.0)),
         guidance_eta=float(config.get('guidance_eta', 0.1)),
+        prior_reshape=bool(config.get('prior_reshape', False)),
+        reshape_beta=float(config.get('reshape_beta', 0.1)),
+        dice_reward_eta=float(config.get('dice_reward_eta', 0.0)),
+        dice_v_blend_alpha=float(config.get('dice_v_blend_alpha', 1.0)),
+        dice_adv_beta=float(config.get('dice_adv_beta', 0.0)),
     )
 
 
@@ -890,6 +895,7 @@ def _create_fedguide_server(config: Dict[str, Any], **kwargs):
         cid_mapping_file=config.get('cid_mapping_file'),
         num_clients=num_clients,
         routing_debug=config.get('routing_debug', False),
+        policy_agg_every_k=int(config.get('policy_agg_every_k', 1)),
     )
 
 

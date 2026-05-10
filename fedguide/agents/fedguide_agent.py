@@ -60,6 +60,14 @@ class FedguideAgent(nn.Module):
         log_std_anneal: bool = False,
         log_std_anneal_target: float = -2.0,
         log_std_anneal_rounds: int = 40,
+        # Route 3: DICE reshapes the diffusion prior instead of pushing
+        # policy μ via Q-gradient. When enabled and a guidance critic with
+        # a Q head is loaded, the prior log-prob used by the IW prior loss
+        # becomes log p̃(a|s) = log p(a|s) + reshape_beta · Q(s,a). The
+        # PPO guide_align MSE term is forced to zero so DICE never touches
+        # the policy gradient directly.
+        prior_reshape: bool = False,
+        reshape_beta: float = 0.1,
     ):
         super().__init__()
 
@@ -81,6 +89,9 @@ class FedguideAgent(nn.Module):
         self.prior_coef = prior_coef
         self.guide_coef = guide_coef
         self.max_grad_norm = max_grad_norm
+
+        self.prior_reshape = bool(prior_reshape)
+        self.reshape_beta = float(reshape_beta)
 
         self.online_guidance = online_guidance
         self.online_guidance_steps = online_guidance_steps
@@ -475,6 +486,19 @@ class FedguideAgent(nn.Module):
                 if (self.prior is not None) and hasattr(self.prior, "log_prob"):
                     try:
                         prior_logp = self.prior.log_prob(mb_a, mb_s)  # [B]
+                        # Route 3: reshape the prior with DICE Q so the IW
+                        # weights reflect log p̃(a|s) = log p(a|s) + β·Q(s,a).
+                        # Q is standardized within the minibatch to keep the
+                        # reshape additive on the same scale as log-prob diffs.
+                        if (
+                            self.prior_reshape
+                            and self.guidance is not None
+                            and hasattr(self.guidance, "q0")
+                        ):
+                            with torch.no_grad():
+                                q_raw = self.guidance.q0(mb_a, mb_s).detach().squeeze(-1)
+                                q_norm = (q_raw - q_raw.mean()) / (q_raw.std() + 1e-6)
+                            prior_logp = prior_logp + self.reshape_beta * q_norm
                         if abs(lambda_guide) > 0.0:
                             with torch.no_grad():
                                 log_iw = (prior_logp - mb_old_logp).detach()
@@ -498,8 +522,15 @@ class FedguideAgent(nn.Module):
 
                 # —— Guidance ——
                 # -------- guidance align (train-time distillation; no change to sampling flow) --------
+                # Route 3: when prior_reshape is on, DICE has already entered
+                # the loss through prior_logp; never touch the policy gradient
+                # directly via Q-gradient MSE.
                 guide_align = torch.tensor(0.0, device=self.device)
-                if (self.guidance is not None) and hasattr(self.guidance, "calculate_guidance"):
+                if (
+                    not self.prior_reshape
+                    and self.guidance is not None
+                    and hasattr(self.guidance, "calculate_guidance")
+                ):
                     with torch.no_grad():
                         t = torch.rand(mb_a.shape[0], device=self.device)
                         gvec = self.guidance.calculate_guidance(mb_a.clone(), t, condition=mb_s)

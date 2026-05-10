@@ -1,0 +1,17 @@
+{
+  "env": "metaworld_ml10",
+  "n_clients": 10,
+  "seed": 2026,
+  "clients": [
+    {"client_id": 0, "task": "reach-v3"},
+    {"client_id": 1, "task": "push-v3"},
+    {"client_id": 2, "task": "pick-place-v3"},
+    {"client_id": 3, "task": "door-open-v3"},
+    {"client_id": 4, "task": "drawer-close-v3"},
+    {"client_id": 5, "task": "button-press-topdown-v3"},
+    {"client_id": 6, "task": "peg-insert-side-v3"},
+    {"client_id": 7, "task": "window-open-v3"},
+    {"client_id": 8, "task": "sweep-v3"},
+    {"client_id": 9, "task": "basketball-v3"}
+  ]
+}
