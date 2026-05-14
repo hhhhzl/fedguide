@@ -11,20 +11,11 @@ try:
     import gymnasium as gym
 except Exception:
     import gym  # fallback to classic gym if needed
-import gym as old_gym  # Old gym package for d4rl environments
 
 from fedguide.agents.fedguide_agent import FedguideAgent
 from fedguide.trainers.fedguide_trainer import FedguideTrainer
 from fedguide.fed.client import FedRLClient
 from fedguide.utils.gym_space_utils import is_box1d as _is_box1d
-
-
-# --------- Helpers ---------
-def _is_d4rl_env(env_id: str) -> bool:
-    """Check if env_id is a d4rl environment that needs old gym."""
-    d4rl_prefixes = ["maze2d-", "antmaze-", "flow-", "kitchen-", "pen-", "door-", "hammer-", "relocate-", "push-", "stick-"]
-    env_id_lower = env_id.lower()
-    return any(env_id_lower.startswith(prefix) for prefix in d4rl_prefixes)
 
 
 def _make_env(
@@ -83,44 +74,7 @@ def _make_env(
     if _mw_env is not None:
         return _mw_env
 
-    # D4RL Adroit
-    from fedguide.envs.adroit_hetero import make_adroit_env_if_applicable
-
-    _ad_env = make_adroit_env_if_applicable(
-        metadata_path, client_id, seed, render_mode
-    )
-    if _ad_env is not None:
-        return _ad_env
-
-    # AntMaze + metadata.json (env=antmaze) — per-client D4RL variant + noise/scale
-    if _is_d4rl_env(env_id) and env_id.lower().startswith("antmaze-") and metadata_path:
-        import os
-
-        if os.path.isfile(metadata_path):
-            with open(metadata_path, "r") as f:
-                _meta = json.load(f)
-            _clients = _meta.get("clients") or []
-            if _meta.get("env") == "antmaze" or (
-                _clients and str(_clients[0].get("variant", "")).startswith("antmaze-")
-            ):
-                from fedguide.envs.antmaze_hetero import make_hetero_antmaze_env_from_metadata
-
-                idx = client_id if client_id is not None else 0
-                return make_hetero_antmaze_env_from_metadata(
-                    metadata_path,
-                    idx,
-                    seed=seed,
-                    reward_type=reward_type,
-                    render_eval=False,
-                )
-
-    # Only import d4rl when needed (avoid mujoco/d4rl dependency for Bandit2D)
-    if _is_d4rl_env(env_id):
-        try:
-            import d4rl  # noqa: F401
-        except ImportError:
-            pass
-    elif env_id.lower() == "pointmazenarrow":
+    if env_id.lower() == "pointmazenarrow":
         from fedguide.envs.pointmaze_narrow import PointMazeNarrow
         env = PointMazeNarrow()
         if seed is not None:
@@ -129,32 +83,12 @@ def _make_env(
             except TypeError:
                 env.reset()
         return env
-    
-    # Use old_gym.make for d4rl environments (they register with old gym, not gymnasium)
-    # Use gym.make (gymnasium) for standard gymnasium environments
-    if _is_d4rl_env(env_id):
-        from fedguide.envs.antmaze_hetero import build_d4rl_make_kwargs
 
-        mkw = build_d4rl_make_kwargs(
-            env_id, {"reward_type": reward_type, "d4rl_env_kwargs": {}}
-        )
-        env = old_gym.make(env_id, **mkw)
-    else:
-        env = gym.make(env_id)
-    
+    env = gym.make(env_id)
     try:
         env.reset(seed=seed)
     except TypeError:
-        # Some environments may not support seed parameter in reset
         pass
-    except Exception as e:
-        # If it's a flow environment and not registered, provide helpful error
-        if "flow" in env_id.lower() or "figureeight" in env_id.lower():
-            raise ValueError(
-                f"Flow environment {env_id} not registered. "
-                "Make sure flow figureeight environments are registered in d4rl.flow"
-            ) from e
-        raise
     return env
 
 
@@ -471,6 +405,36 @@ class FedGuideClient(FedRLClient):
         # Eval/save
         success = self.trainer.save_eval(cid, rnd)
         samples = int(getattr(self.trainer, "n_steps", 0))
+
+        # Persist per-client policy each round (overwrites; last round = final).
+        # FedGuide keeps the policy LOCAL (only the prior is OT-MoE aggregated),
+        # so without this checkpoint we lose the trained per-client policies
+        # when Ray actors are torn down at sim end. Path:
+        #   <output_dir>/client_<cid>/round_<rnd>/policy.pth (and final/)
+        try:
+            import os as _os
+            output_dir = getattr(self.trainer, "output_dir", None)
+            if output_dir is None:
+                output_dir = config.get("output_dir") if isinstance(config, dict) else None
+            if output_dir:
+                client_id_str = str(getattr(self, "mapped_client_id", cid))
+                ckpt_dir = _os.path.join(output_dir, f"client_{client_id_str}", "final")
+                _os.makedirs(ckpt_dir, exist_ok=True)
+                policy_sd = self.agent.policy.state_dict() if hasattr(self.agent, "policy") else None
+                log_std = getattr(self.agent, "log_std", None)
+                if policy_sd is not None:
+                    payload = {
+                        "policy": {k: v.detach().cpu() for k, v in policy_sd.items()},
+                        "round": int(rnd),
+                        "mapped_client_id": int(self.mapped_client_id) if hasattr(self, "mapped_client_id") else -1,
+                    }
+                    if log_std is not None:
+                        payload["log_std"] = log_std.detach().cpu()
+                    if hasattr(self.agent, "value_fn"):
+                        payload["value_fn"] = {k: v.detach().cpu() for k, v in self.agent.value_fn.state_dict().items()}
+                    torch.save(payload, _os.path.join(ckpt_dir, "policy.pth"))
+        except Exception as e:
+            print(f"[FedGuideClient {cid}] policy ckpt save failed: {e}")
         
         # Get parameters in module format for OT-MoE aggregation
         # Get dict format directly from agent (not from get_parameters which returns list)
@@ -772,25 +736,10 @@ def client_fn_builder(
             "2dbandit": "Bandit2D",
             "reacher_hetero": "Reacher",
             "reacher": "Reacher",
-            # D4RL d4rl env_ids → pretrain subdirectory name.
             "halfcheetah-v4": "HalfCheetah",
             "halfcheetah-v3": "HalfCheetah",
-            "halfcheetah-medium-v2": "HalfCheetah",
-            "antmaze-umaze-v0": "AntMaze",
-            "antmaze-umaze-diverse-v0": "AntMaze",
-            "antmaze-medium-play-v0": "AntMaze",
-            "antmaze-medium-diverse-v0": "AntMaze",
-            "antmaze-large-play-v0": "AntMaze",
-            "antmaze-large-diverse-v0": "AntMaze",
             "walker2d-v4": "Walker2D",
-            "walker2d-medium-v2": "Walker2D",
-            "walker2d-expert-v2": "Walker2D",
-            "ant-v4": "Ant",
-            "ant-medium-v2": "Ant",
-            "ant-expert-v2": "Ant",
             "hopper-v4": "Hopper",
-            "hopper-medium-v2": "Hopper",
-            "hopper-expert-v2": "Hopper",
             # MetaWorld ML10 — every task shares the same prior subdir.
             "metaworld_ml10": "MetaWorld",
             "metaworld-ml10": "MetaWorld",
@@ -804,16 +753,6 @@ def client_fn_builder(
             "window-open-v3": "MetaWorld",
             "sweep-v3": "MetaWorld",
             "basketball-v3": "MetaWorld",
-            # D4RL Adroit — every task shares the same prior subdir.
-            "adroit": "Adroit",
-            "door-human-v1": "Adroit",
-            "door-expert-v1": "Adroit",
-            "hammer-human-v1": "Adroit",
-            "hammer-expert-v1": "Adroit",
-            "pen-human-v1": "Adroit",
-            "pen-expert-v1": "Adroit",
-            "relocate-human-v1": "Adroit",
-            "relocate-expert-v1": "Adroit",
         }
         env_name = env_name_map.get(env_id.lower(), env_id)
         

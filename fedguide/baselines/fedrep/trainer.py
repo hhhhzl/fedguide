@@ -27,6 +27,12 @@ class FedRepTrainer:
         update_epochs: int = 10,
         minibatch_size: int = 64,
         max_grad_norm: float = 0.5,
+        # FedRep two-phase epochs (Collins et al. 2021):
+        #   E_h: epochs for the personalized head (encoder frozen)
+        #   E_r: epochs for the shared encoder (head frozen)
+        # If both are 0 we fall back to legacy single-phase PPO.
+        head_epochs: int = 0,
+        rep_epochs: int = 0,
         eval_episodes: int = 1,
         writer: Optional[Any] = None,
         render_eval: bool = False,
@@ -49,6 +55,8 @@ class FedRepTrainer:
         self.update_epochs = update_epochs
         self.minibatch_size = minibatch_size
         self.max_grad_norm = max_grad_norm
+        self.head_epochs = int(head_epochs)
+        self.rep_epochs = int(rep_epochs)
         self.eval_episodes = eval_episodes
         self.writer = writer
         self.server_round = 0
@@ -162,12 +170,52 @@ class FedRepTrainer:
             "done": extras["done"],
         }
         
-        # Update policy with standard PPO (no KL penalties)
-        logs = self.agent.update(
-            batch,
-            epochs=self.update_epochs,
-            minibatch_size=self.minibatch_size,
-        )
+        # FedRep two-phase local update.
+        # Phase 1 (head): freeze encoder, fit personalized head + log_std + value
+        # Phase 2 (rep):  freeze head, fit shared encoder
+        # Critical fix: PPO's importance ratio uses `old_logp` from rollout
+        # time. After head_epochs of head updates the policy has drifted, so
+        # by phase=rep the ratio is already far from 1 and PPO's clip
+        # mechanism truncates the encoder gradient. We re-snapshot `old_logp`
+        # using the current (post-head) policy so phase=rep starts with
+        # ratio=1 and the encoder gets a clean gradient signal.
+        # If both phase epoch counts are zero, fall back to single-phase PPO.
+        if self.head_epochs > 0 or self.rep_epochs > 0:
+            logs_head = self.agent.update(
+                batch,
+                epochs=max(self.head_epochs, 0),
+                minibatch_size=self.minibatch_size,
+                phase="head",
+            ) if self.head_epochs > 0 else {}
+
+            # Re-snapshot old_logp post-head so rep phase starts at ratio=1.
+            if self.head_epochs > 0 and self.rep_epochs > 0:
+                with torch.no_grad():
+                    new_logp, _, _, _ = self.agent.evaluate(batch["s"], batch["a"])
+                # Mutate a copy to keep the original logps_old in `extras` clean.
+                batch_rep = dict(batch)
+                batch_rep["old_logp"] = new_logp.detach()
+            else:
+                batch_rep = batch
+
+            logs_rep = self.agent.update(
+                batch_rep,
+                epochs=max(self.rep_epochs, 0),
+                minibatch_size=self.minibatch_size,
+                phase="rep",
+            ) if self.rep_epochs > 0 else {}
+            # Merge: prefer rep-phase metrics for the encoder gradient signal,
+            # but keep head metrics under a `head/` prefix.
+            logs = dict(logs_rep) if logs_rep else dict(logs_head)
+            for k, v in (logs_head or {}).items():
+                logs[f"head/{k}"] = v
+        else:
+            logs = self.agent.update(
+                batch,
+                epochs=self.update_epochs,
+                minibatch_size=self.minibatch_size,
+                phase="both",
+            )
         
         # Evaluation
         eval_ret = 0.0

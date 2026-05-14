@@ -7,7 +7,7 @@ random_select_clients: false
 
 algorithm: "mfpo"
 
-rounds: 50
+rounds: 100
 cpus_per_client: 2
 
 # MFPO paper / code defaults (conf_temp_*.py)
@@ -28,8 +28,8 @@ use_wandb: false
 wandb_project: null
 run_name: null
 
-output_dir: "./model/policy/reacher_phase1/mfpo"
-metrics_dir: "./metrics/reacher_phase1/mfpo"
+output_dir: "./model/policy/reacher/mfpo"
+metrics_dir: "./metrics/reacher/mfpo"
 collect_metrics_every: 5
 
 device: "auto"
@@ -39,6 +39,9 @@ seed: [0]
 
 render_eval: true
 render_mode: "video"
-render_save_dir: "./plots/reacher_phase1/mfpo"
-render_every_n_rounds: 50
-render_episodes: 1
+render_save_dir: "./plots/reacher/mfpo"
+render_every_n_rounds: 20
+render_episodes: 10
+
+bc_root: ./model/bc_policy
+bc_env_name: Reacher

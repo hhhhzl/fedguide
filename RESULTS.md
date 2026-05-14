@@ -9,6 +9,7 @@ Single-seed (seed=0), 50 federated rounds unless noted. eval/return = average pe
 ### ✅ Works
 - **HalfCheetah-v4 with D4RL-medium prior** — `fedguide_p4_vblend` (DICE V baseline blend) is the strongest variant: **+1412 vs FedAvg +382 = 3.7×**.
 - **Reacher with strong heterogeneity** (Levels A/B/C) — FedGuide dominates FedAvg by 5×–∞ depending on heterogeneity. Paper ranking **pg_p4 > prior_strict > all_p4 ≫ FedAvg** holds in all 3 levels.
+- **Walker2D / Hopper / Ant locomotion** — FedGuide beats FedAvg by +54% / +111% / +62% respectively (single seed). Plot in [Table 5](#table-5--locomotion-sweep-walker--hopper--ant-8-clients--50-rounds). On Ant, `all_p4` wins (+62%); on Hopper, `prior_strict` wins (+111%); Walker is a tie.
 - **Bandit2D toy** — `fedguide_prior` / `fedguide_pg` reach 0.83 (paper-grade), beating FedAvg 0.31 by 2.6×.
 - **DICE → V baseline blend (path 4)** — variance reduction on PPO advantage; cleanest integration that doesn't touch policy gradient direction.
 - **Disabling `online_guidance`** — frozen offline-pretrained SDICE outperforms re-training during federated rounds (+18% on halfcheetah pg).
@@ -145,7 +146,68 @@ Historical (sigma=0.2 setup) baselines on the same env, for reference:
 
 ---
 
-## Table 5 — Antmaze (failure mode, on D4RL-prior, dense reward)
+## Table 5 — Locomotion Sweep (Walker / Hopper / Ant, 8 clients × 50 rounds)
+
+D4RL `*-medium-v2` prior + BC warm-start. Heterogeneity per `data/{walker,hopper,ant}/metadata.json` (numerical + mild reward-shaping scaling per client). Metric is `eval/return` averaged over the last 10 rounds.
+
+| Env | fedavg | prior_strict | pg_p4 | all_p4 |
+|---|---:|---:|---:|---:|
+| **Walker2D** | 272 | 418 (+54%) | 416 (+53%) | **420 (+54%)** |
+| **Hopper** | 275 | **580 (+111%)** | 566 (+106%) | 577 (+110%) |
+| **Ant** | 1005 | 1415 (+41%) | 1463 (+46%) | **1627 (+62%)** |
+
+### Three metrics across 7 envs (HalfCheetah + Walker2D + Hopper + Ant + Reacher hetero-A/B/C)
+
+![Locomotion + Reacher sweep — 7-env × 3-metric](plots/locomotion_sweep/locomotion_7env_4variant_3metric.png)
+
+(Row 3 — pre-train global eval/return — is empty for HalfCheetah and Reacher because those runs predated the universal `evaluate()` fix; both `metrics_distributed_fit.eval/return` — Row 1 — and `train/return` — Row 2 — are uniformly recorded across all 7 envs. Reacher hetero-A uses linear scale; B and C use symlog because FedAvg crashes to −10k / −45k while FedGuide variants stay near 0.)
+
+### What each row tells you
+
+| Row | Metric | Source | What it measures |
+|---|---|---|---|
+| **1** | post-train local eval | `metrics_distributed_fit.eval/return` | Each client's policy AFTER K local PPO steps in round r. **Cleanest training-dynamics signal**: shows per-client per-round improvement. |
+| **2** | train/return | `metrics_distributed_fit.train/return` | On-policy rollout reward during local PPO collection. Most stochastic; sensitive to exploration. |
+| **3** | pre-train global eval | `metrics_distributed.eval/return` | Server-aggregated `θ_r` evaluated BEFORE that round's local training. Captures what FedAvg+OT-MoE produces after merging clients. |
+
+The gap Row 1 − Row 3 quantifies the **Federation toll**: per-client local PPO improves substantially each round (Row 1 climbs by +100 to +500), but aggregation pulls back to a much flatter Row 3 trajectory. This is exactly Theorem 3 of our paper — policy-averaging suboptimality under heterogeneity is *lower-bounded*. The reason FedGuide variants still beat FedAvg is **not** that aggregation preserves the per-client improvement — it's that the **OT-MoE prior anchor + KL regularization keep the *floor* high** so the merged policy stays useful.
+
+### Notes
+
+- **HalfCheetah Row 1** shows the dramatic training growth (FedGuide-p4_vblend −68 → +2569). This is the cleanest "yes, federated training contributes" signal in the sweep.
+- **Reacher hetero-A → B → C Row 1** shows heterogeneity scaling cleanly across three panels: at level A FedAvg saturates at −65 vs FedGuide −13 (≈5× gap, linear scale OK); at B FedAvg crashes to −12k vs FedGuide −60 (∼200×); at C FedAvg goes to −47k vs FedGuide +80 (sign-flip). The progression is the cleanest visual evidence we have for the heterogeneity sensitivity of policy-aggregation methods.
+- **Ant Row 3 is currently misleading** — Ant-v4 default `healthy_reward=1.0` adds +1000 per episode regardless of locomotion. A rerun with `healthy_reward=0.0` is in progress; FedAvg's flat ~1000 floor will drop to <100 after the patch and the FedGuide vs FedAvg gap will become visible without the alive-bonus floor.
+
+### Observations
+
+1. **FedGuide variants all beat FedAvg by 41% – 111%** on every locomotion env tested. Walker/Hopper essentially saturate the 4-variant ranking at the BC warm-start level (first-round eval already at the final value), Ant has the most room for online improvement and the largest variant spread.
+
+2. **all_p4 wins on Ant (+62%)** but ties on Walker and barely-trails on Hopper. Ant has 8-D action / 111-D obs (with contact forces) — the largest action manifold of the three, where the OT-MoE prior-reshape branch (`Ψ ∝ π_D · w_i`) of the `all` variant has the most to do. On Walker (6-D) and Hopper (3-D) the prior alone covers the support and reshape adds noise more than signal.
+
+3. **pg_p4 has the lowest per-client variance** in 2 of 3 envs (Walker: std=89.9 vs prior 103.4 vs all 120.6; Hopper: std=261.8 vs prior 367.7 vs all 324.1). This is the DICE V baseline acting as a control variate, exactly as Lemma 2 predicts: `Var[Â_blend] = Var[Â_θ] − (1−α)·Cov(R, V_φ)² / Var(V_φ) + O((1−α)²)`. Walking through ranks:
+   - Walker: **pg < prior < all** (variance)
+   - Hopper: **pg < all < prior** (variance)
+   - Ant: **prior < pg < all** (variance — Ant is the outlier; high reward magnitudes amplify everything)
+
+4. **Hopper is the highest-leverage env (+111%, ≈2.1×)**. Short episodes (max 1000 steps but typically <500 from premature falling) + sparse-ish reward make the BC warm-start and prior anchoring disproportionately valuable.
+
+5. **FedAvg's failure mode is heterogeneity-bounded oscillation**, visible clearly in the raw curves on Walker (dips to 180 around round 15-20) and Hopper (early spike then collapse). All FedGuide variants stay tight around their final values from round 1 onwards — the prior + BC init means the policy starts in a good neighborhood and the OT-MoE aggregation prevents heterogeneity-induced drift.
+
+### Reproducing
+
+```bash
+# Each env-chain runs pretrain (8 clients × diffusion prior on D4RL medium)
+# → BC pretrain → 4 fed variants × 50 rounds. ~3.5h per env on 1 GPU.
+bash scripts/envs/run_locomotion_chain.sh walker
+bash scripts/envs/run_locomotion_chain.sh hopper
+bash scripts/envs/run_locomotion_chain.sh ant
+```
+
+Ant requires `use_contact_forces=True` so the env obs_dim (111) matches the D4RL `ant-medium-v2` pretrain. Handled automatically in `fedguide/envs/mujoco_locomotion_hetero.py`.
+
+---
+
+## Table 6 — Antmaze (failure mode, on D4RL-prior, dense reward)
 
 | Algo | last10 | peak |
 |---|---:|---:|
@@ -168,6 +230,7 @@ Based on the data, FedGuide's federated benefit grows monotonically with heterog
 | + Categorical reward | Reacher B | 210× |
 | + Structural | Reacher C | ∞ (sign flip from -47k to +84) |
 | Real (continuous + preference) | HalfCheetah | 3.7× |
+| Real D4RL-medium hetero | Walker2D / Hopper / Ant | 1.5× / 2.1× / 1.6× |
 
 ---
 
@@ -181,9 +244,9 @@ Each env has hetero loader + metadata + pretrain script + BC pretrain + 4 fedgui
 | Reacher (mild) | ✅ | ✅ | ✅ | ✅ | results in [Table 4](#table-4) |
 | Reacher A/B/C | ✅ | ✅ generator | ✅ | ✅ × 3 levels | results in [Table 2](#table-2) |
 | HalfCheetah | ✅ | ✅ | ✅ d4rl | ✅ | results in [Table 1](#table-1) |
-| Walker2D | ✅ shared loader | ✅ | ✅ d4rl | ✅ | **infra ready, not run** |
-| Ant | ✅ | ✅ | ✅ d4rl | ✅ | **infra ready, not run** |
-| Hopper | ✅ | ✅ | ✅ d4rl | ✅ | **infra ready, not run** |
+| Walker2D | ✅ shared loader | ✅ | ✅ d4rl | ✅ | results in [Table 5](#table-5--locomotion-sweep-walker--hopper--ant-8-clients--50-rounds) |
+| Ant | ✅ (use_contact_forces=True) | ✅ | ✅ d4rl | ✅ | results in [Table 5](#table-5--locomotion-sweep-walker--hopper--ant-8-clients--50-rounds) |
+| Hopper | ✅ | ✅ | ✅ d4rl | ✅ | results in [Table 5](#table-5--locomotion-sweep-walker--hopper--ant-8-clients--50-rounds) |
 | MetaWorld ML10 | ✅ | ✅ | ✅ scripted | ✅ | **infra ready, not run** |
 | D4RL Adroit | ✅ | ✅ | ✅ d4rl | ✅ | **infra ready, not run** |
 | Antmaze | ✅ | ✅ | ✅ | ✅ | failure mode, see [Table 5](#table-5) |

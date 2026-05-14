@@ -8,6 +8,7 @@ Supports both DQN (discrete actions) and DDPG (continuous actions).
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Callable, Iterable
+import os
 import random
 import numpy as np
 import torch
@@ -452,6 +453,9 @@ def client_fn_builder(
     render_every_n_rounds: int = 10,
     render_episodes: int = 5,
     reacher_render_mode: Optional[str] = None,
+    # BC warm-start (DDPG only; actor architecture switches to 256→256 Tanh)
+    bc_root: Optional[str] = None,
+    bc_env_name: Optional[str] = None,
 ):
     """
     Build client function for FedRL (supports both DQN and DDPG).
@@ -535,6 +539,17 @@ def client_fn_builder(
                 device=device,
             )
         else:  # ddpg
+            # Optional BC warm-start (DDPG actor switches to 256→256 Tanh).
+            bc_ckpt_path: Optional[str] = None
+            if bc_root:
+                env_subdir_bc = bc_env_name or env_id
+                cand = os.path.join(bc_root, env_subdir_bc, f"client_{mapped_client_id}",
+                                    "final", "policy.pth")
+                if os.path.isfile(cand):
+                    bc_ckpt_path = cand
+                    print(f"[FedRL cid={mapped_client_id}] BC warm-start ← {cand}")
+                else:
+                    print(f"[FedRL cid={mapped_client_id}] BC ckpt not found: {cand}")
             agent = DDPGAgent(
                 state_dim=state_dim,
                 action_dim=action_dim,
@@ -549,6 +564,9 @@ def client_fn_builder(
                 ou_theta=ou_theta,
                 ou_sigma=ou_sigma,
                 ou_epsilon=ou_epsilon,
+                bc_compatible=bool(bc_root),
+                bc_ckpt_path=bc_ckpt_path,
+                hidden_dim=256,
             )
         
         # 4) trainer

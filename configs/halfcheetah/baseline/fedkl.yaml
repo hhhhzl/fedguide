@@ -8,7 +8,7 @@ num_clients: 8  # Number of clients to use (selects first N clients from metadat
 random_select_clients: false  # If true, randomly select num_clients from metadata.json; if false, select first num_clients
 
 # Training configuration
-rounds: 50  # Number of federated rounds
+rounds: 100  # Number of federated rounds
 n_steps: 4096  # Number of rollout steps per round (on-policy)
 update_epochs: 10  # Number of PPO update epochs per round
 minibatch_size: 64  # Minibatch size for PPO updates
@@ -31,8 +31,8 @@ lambda_local: 0.05  # Weight for KL(π || π_local_snapshot) penalty (local trus
 eval_episodes: 10
 
 # Output configuration
-output_dir: "./model/policy/halfcheetah_phase1/fedkl"
-metrics_dir: "./metrics/halfcheetah_phase1/fedkl"
+output_dir: "./model/policy/halfcheetah/fedkl"
+metrics_dir: "./metrics/halfcheetah/fedkl"
 save_every: 10
 
 # Device configuration
@@ -46,6 +46,8 @@ seed: [0]  # Run 5 different seeds
 # Rendering configuration (for MuJoCo/Maze environments)
 render_eval: true  # Enable rendering during evaluation
 render_mode: "video"  # "human" (display), "rgb_array" (collect frames), "video" (save video)
-render_save_dir: "./plots/halfcheetah_phase1/fedkl"  # Directory to save videos
-render_every_n_rounds: 50  # Render every N rounds (0 = only last round, -1 = all rounds)
+render_save_dir: "./plots/halfcheetah/fedkl"  # Directory to save videos
+render_every_n_rounds: 20  # Render every N rounds (0 = only last round, -1 = all rounds)
 render_episodes: 1  # Number of episodes to render per round
+bc_root: ./model/bc_policy
+bc_env_name: HalfCheetah

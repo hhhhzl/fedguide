@@ -357,6 +357,8 @@ def client_fn_builder(
     entropy_coef: float = 0.01,
     value_coef: float = 0.5,
     update_epochs: int = 10,
+    head_epochs: int = 5,
+    rep_epochs: int = 5,
     minibatch_size: int = 64,
     max_grad_norm: float = 0.5,
     hidden_dim: int = 256,
@@ -424,16 +426,23 @@ def client_fn_builder(
         if dev == "auto":
             dev = "cuda" if torch.cuda.is_available() else "cpu"
 
-        # 3) agent (FedRep with encoder/head separation)
+        # 3) agent (FedRep with encoder/head separation, env-correct action bounds)
+        try:
+            act_low = float(np.min(act_space.low))
+            act_high = float(np.max(act_space.high))
+        except Exception:
+            act_low, act_high = -1.0, 1.0
         agent = FedRepAgent(
             state_dim=state_dim,
             action_dim=action_dim,
             hidden_dim=hidden_dim,
             lr=lr,
             device=dev,
+            action_low=act_low,
+            action_high=act_high,
         )
-        
-        # 4) trainer
+
+        # 4) trainer (FedRep two-phase: head_epochs then rep_epochs)
         trainer = FedRepTrainer(
             agent=agent,
             env=env,
@@ -444,6 +453,8 @@ def client_fn_builder(
             entropy_coef=entropy_coef,
             value_coef=value_coef,
             update_epochs=update_epochs,
+            head_epochs=head_epochs,
+            rep_epochs=rep_epochs,
             minibatch_size=minibatch_size,
             max_grad_norm=max_grad_norm,
             eval_episodes=eval_episodes,

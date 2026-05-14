@@ -8,7 +8,7 @@ num_clients: 8  # Number of clients to use (selects first N clients from metadat
 random_select_clients: false  # If true, randomly select num_clients from metadata.json; if false, select first num_clients
 
 # Training configuration (200 rounds for fair comparison with FedKL)
-rounds: 50  # Set to 200 for fair comparison with FedKL
+rounds: 100  # Set to 200 for fair comparison with FedKL
 update_steps: 1500  # Increased from 1000 for better convergence
 batch_size: 256
 
@@ -24,8 +24,8 @@ action_std: 0.1  # Action distribution standard deviation
 eval_episodes: 10
 
 # Output configuration
-output_dir: "./model/policy/halfcheetah_phase1/sac"
-metrics_dir: "./metrics/halfcheetah_phase1/sac"
+output_dir: "./model/policy/halfcheetah/sac"
+metrics_dir: "./metrics/halfcheetah/sac"
 save_every: 10
 
 # Device configuration
@@ -39,7 +39,10 @@ seed: [0]  # Run 5 different seeds
 # Rendering configuration (for MuJoCo/Maze environments)
 render_eval: true  # Enable rendering during evaluation
 render_mode: "video"  # "human" (display), "rgb_array" (collect frames), "video" (save video)
-render_save_dir: "./plots/halfcheetah_phase1/sac"  # Directory to save videos
-render_every_n_rounds: 50  # Render every N rounds (0 = only last round, -1 = all rounds)
+render_save_dir: "./plots/halfcheetah/sac"  # Directory to save videos
+render_every_n_rounds: 20  # Render every N rounds (0 = only last round, -1 = all rounds)
 render_episodes: 1  # Number of episodes to render per round
 
+
+bc_root: ./model/bc_policy
+bc_env_name: HalfCheetah

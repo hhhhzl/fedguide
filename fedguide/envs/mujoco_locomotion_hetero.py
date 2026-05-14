@@ -128,12 +128,30 @@ def make_hetero_locomotion_env_from_metadata(
         "ctrl_cost_weight": float(cfg["ctrl_cost_weight"]),
         "reset_noise_scale": float(cfg["reset_noise_scale"]),
     }
+    is_ant = env_name.lower().startswith("ant")
     # Ant-v4 does not accept forward_reward_weight via gym.make; we still
     # capture it for the wrapper's post-hoc reward scaling.
-    if not env_name.lower().startswith("ant"):
+    if not is_ant:
         mkw["forward_reward_weight"] = float(cfg["forward_reward_weight"])
     if "contact_cost_weight" in cfg:
         mkw["contact_cost_weight"] = float(cfg["contact_cost_weight"])
+    if is_ant:
+        # D4RL `ant-medium-v2` (which we use for the prior + BC pretrain)
+        # carries the full 111-dim observation INCLUDING contact forces.
+        # Ant-v4 default is 27-dim (contact forces excluded), which makes the
+        # diffusion-prior checkpoint un-loadable at federation time (shape
+        # mismatch on the first conv: checkpoint expects 111+8=119 channels,
+        # current env emits 27+8=35). Force contact forces on so runtime
+        # obs_dim matches pretrain obs_dim.
+        mkw["use_contact_forces"] = True
+        # Ant-v4 default healthy_reward=1.0 adds +1 per step (max +1000 per
+        # episode for the full 1000-step rollout). That alive bonus is a
+        # floor: even a policy that stands still and never walks earns ~+1000.
+        # For locomotion benchmarking the bonus masks training progress
+        # (FedAvg looks "at +1000" while not actually walking). We zero it so
+        # the reported eval/return == forward_reward - ctrl_cost - contact_cost,
+        # i.e. genuine locomotion quality.
+        mkw["healthy_reward"] = 0.0
 
     if render_eval and render_mode:
         rm = str(render_mode).lower()

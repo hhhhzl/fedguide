@@ -6,7 +6,7 @@ metadata_path: "data/halfcheetah/metadata_mild64.json"
 num_clients: 8
 random_select_clients: false
 
-rounds: 50
+rounds: 100
 cpus_per_client: 2
 
 n_steps: 4096
@@ -28,8 +28,8 @@ use_wandb: false
 wandb_project: null
 run_name: null
 
-output_dir: "./model/policy/halfcheetah_phase1/fedrep"
-metrics_dir: "./metrics/halfcheetah_phase1/fedrep"
+output_dir: "./model/policy/halfcheetah/fedrep"
+metrics_dir: "./metrics/halfcheetah/fedrep"
 collect_metrics_every: 1
 
 # Device configuration
@@ -40,6 +40,9 @@ seed: [0]
 
 render_eval: true
 render_mode: "video"
-render_save_dir: "./plots/halfcheetah_phase1/fedrep"
-render_every_n_rounds: 50
-render_episodes: 1
+render_save_dir: "./plots/halfcheetah/fedrep"
+render_every_n_rounds: 20
+render_episodes: 3
+
+bc_root: ./model/bc_policy
+bc_env_name: HalfCheetah

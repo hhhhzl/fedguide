@@ -56,3 +56,6 @@ device: "auto"  # "auto", "cpu", or "cuda"
 # If list, will run training for each seed
 seed: [0, 1, 2, 3, 4]  # Run 5 different seeds
 
+
+bc_root: ./model/bc_policy
+bc_env_name: Bandit2D

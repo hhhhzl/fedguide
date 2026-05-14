@@ -65,4 +65,14 @@ class MFPTrainer:
         }
 
     def save_eval(self, cid: str, rnd: int, outdir: str = "./results/mfpo") -> bool:
-        return True
+        # Run the upstream test() routine and stash the return so the
+        # baseline client / universal evaluate() hook can pick it up.
+        # Returning True/False is preserved for API back-compat.
+        try:
+            ret = float(self.agent.worker.test(rnd))
+            self.last_eval_return = ret
+            return bool(ret == ret and ret not in (float("inf"), float("-inf")))
+        except Exception as e:
+            print(f"[MFPTrainer save_eval] worker.test failed: {e}")
+            self.last_eval_return = float("nan")
+            return False

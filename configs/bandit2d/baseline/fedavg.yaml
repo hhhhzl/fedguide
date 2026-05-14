@@ -56,3 +56,6 @@ device: "auto"
 
 # Random seed configuration
 seed: [0, 1, 2, 3, 4]
+
+bc_root: ./model/bc_policy
+bc_env_name: Bandit2D

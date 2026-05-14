@@ -1,0 +1,57 @@
+# PPO Training Configuration for Reacher with Client Heterogeneity
+
+# Environment configuration
+env_type: "d4rl"  # Environment type: "d4rl"
+env_name: "Hopper-v4"
+metadata_path: "data/hopper/metadata_mild64.json"  # Path to reacher metadata.json file
+num_clients: 8  # Number of clients to use (selects first N clients from metadata.json, or random if random_select_clients=true)
+random_select_clients: false  # If true, randomly select num_clients from metadata.json; if false, select first num_clients
+
+# Training configuration
+rounds: 100  # Number of federated rounds
+steps_per_round: 2000  # Number of environment steps to collect per round (on-policy)
+update_epochs: 4  # Number of epochs per update (PPO-specific)
+minibatch_size: null  # If null, use full batch
+
+# Agent configuration
+hidden_dim: 256
+lr: 3e-4
+gamma: 0.99
+clip_eps: 0.2  # PPO clipping epsilon
+gae_lambda: 0.95  # GAE lambda parameter
+entropy_coef: 0.01  # Entropy coefficient
+value_coef: 0.5  # Value loss coefficient
+max_grad_norm: 0.5  # Maximum gradient norm for clipping
+action_std: 0.1  # Initial standard deviation for action distribution (if learnable_std=False)
+learnable_std: true  # Use learnable action std (strongly recommended)
+
+# Evaluation configuration
+eval_episodes: 10
+eval_stochastic_samples: 64  # Number of action samples per state for stochastic evaluation
+
+# Output configuration
+output_dir: "./model/policy/hopper/ppo"
+metrics_dir: "./metrics/hopper/ppo"
+save_every: 10
+
+# Device configuration
+device: "auto"  # "auto", "cpu", or "cuda"
+
+# Seed configuration
+seed: [0]  # Run 5 different seeds
+
+# Rendering configuration (for MuJoCo/Maze environments)
+render_eval: true  # Enable rendering during evaluation
+render_mode: "video"  # "human" (display), "rgb_array" (collect frames), "video" (save video)
+render_save_dir: "./plots/hopper/ppo"  # Directory to save videos
+render_every_n_rounds: 20  # Render every N rounds (0 = only last round, -1 = all rounds)
+render_episodes: 1  # Number of episodes to render per round
+
+# Policy logprob collection (for visualization)
+collect_logprob: false  # Collect policy logprob distribution on grid
+logprob_grid_size: 200  # Grid size for logprob collection
+logprob_bounds: [-1.5, 1.5]  # Bounds for logprob grid
+
+
+bc_root: ./model/bc_policy
+bc_env_name: Hopper

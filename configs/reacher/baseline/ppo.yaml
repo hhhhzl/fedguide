@@ -7,7 +7,7 @@ num_clients: 8  # Number of clients to use (selects first N clients from metadat
 random_select_clients: false  # If true, randomly select num_clients from metadata.json; if false, select first num_clients
 
 # Training configuration
-rounds: 50  # Number of federated rounds
+rounds: 100  # Number of federated rounds
 steps_per_round: 2000  # Number of environment steps to collect per round (on-policy)
 update_epochs: 4  # Number of epochs per update (PPO-specific)
 minibatch_size: null  # If null, use full batch
@@ -29,8 +29,8 @@ eval_episodes: 10
 eval_stochastic_samples: 64  # Number of action samples per state for stochastic evaluation
 
 # Output configuration
-output_dir: "./model/policy/reacher_phase1/ppo"
-metrics_dir: "./metrics/reacher_phase1/ppo"
+output_dir: "./model/policy/reacher/ppo"
+metrics_dir: "./metrics/reacher/ppo"
 save_every: 10
 
 # Device configuration
@@ -42,8 +42,8 @@ seed: [0]  # Run 5 different seeds
 # Rendering configuration (for MuJoCo/Maze environments)
 render_eval: true  # Enable rendering during evaluation
 render_mode: "video"  # "human" (display), "rgb_array" (collect frames), "video" (save video)
-render_save_dir: "./plots/reacher_phase1/ppo"  # Directory to save videos
-render_every_n_rounds: 50  # Render every N rounds (0 = only last round, -1 = all rounds)
+render_save_dir: "./plots/reacher/ppo"  # Directory to save videos
+render_every_n_rounds: 20  # Render every N rounds (0 = only last round, -1 = all rounds)
 render_episodes: 1  # Number of episodes to render per round
 
 # Policy logprob collection (for visualization)
@@ -51,3 +51,6 @@ collect_logprob: false  # Collect policy logprob distribution on grid
 logprob_grid_size: 200  # Grid size for logprob collection
 logprob_bounds: [-1.5, 1.5]  # Bounds for logprob grid
 
+
+bc_root: ./model/bc_policy
+bc_env_name: Reacher

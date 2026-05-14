@@ -1,20 +1,13 @@
-# FedAvg Training Configuration for Walker2D with Client Heterogeneity (metadata-driven)
-
-# Environment configuration
-env_type: "d4rl"
-env_name: "Walker2d-v4"
-metadata_path: "data/walker/metadata.json"
+env_type: d4rl
+env_name: Walker2d-v4
+metadata_path: data/walker/metadata.json
 num_clients: 8
 random_select_clients: false
-
-# Training configuration
-rounds: 50
+rounds: 100
 cpus_per_client: 2
 n_steps: 4096
 update_epochs: 10
 minibatch_size: 64
-
-# Agent configuration (PPO)
 hidden_dim: 256
 lr: 1e-4
 gamma: 0.99
@@ -23,29 +16,20 @@ clip_eps: 0.2
 entropy_coef: 0.0
 value_coef: 0.5
 max_grad_norm: 0.5
-
-# FedAvg = FedKL with zero KL penalties (pure policy averaging)
 lambda_global: 0
 lambda_local: 0
-
-# Evaluation configuration
 eval_episodes: 10
-
-# Output configuration
-output_dir: "./model/policy/walker_phase1/fedavg"
-metrics_dir: "./metrics/walker_phase1/fedavg"
+output_dir: ./model/policy/walker/fedavg
+metrics_dir: ./metrics/walker/fedavg
 save_every: 10
-
-# Device configuration
-device: "auto"
+device: auto
 gpus_per_client: 0.25
-
-# Seed configuration
-seed: [0]
-
-# Rendering configuration (for MuJoCo environments)
+seed:
+- 0
 render_eval: true
-render_mode: "video"
-render_save_dir: "./plots/walker_phase1/fedavg"
-render_every_n_rounds: 50
-render_episodes: 1
+render_mode: video
+render_save_dir: ./plots/walker/fedavg
+render_every_n_rounds: 20
+render_episodes: 3
+bc_root: ./model/bc_policy
+bc_env_name: Walker2D

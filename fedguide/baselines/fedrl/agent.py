@@ -307,30 +307,78 @@ class OrnsteinUhlenbeckNoise:
 class DDPGActor(nn.Module):
     """
     DDPG Actor Network for continuous action spaces.
-    
-    Architecture: MLP(obs_size -> 400 -> 300 -> action_dim) -> Tanh
-    Based on FedRL/deep/DeepRLAlgo.py DDPGActor
+
+    Default architecture (faithful to upstream FedRL/deep/DeepRLAlgo.py):
+      MLP(obs_size -> 400 -> 300 -> action_dim) -> Tanh, ReLU activations.
+
+    When `bc_compatible=True` (used for BC warm-start experiments), switch to
+      MLP(obs_size -> 256 -> 256 -> action_dim) -> Tanh, Tanh activations
+    matching the BC pretrain script's MLP so weights load directly. This
+    deviates from upstream DDPG-Avg but is necessary for the same-init
+    fairness comparison against FedGuide-BC.
     """
-    
-    def __init__(self, obs_size: int, action_size: int, threshold: float = 2.0):
+
+    def __init__(self, obs_size: int, action_size: int, threshold: float = 2.0,
+                 bc_compatible: bool = False, hidden_dim: int = 256):
         super().__init__()
         self.obs_size = obs_size
         self.action_size = action_size
         self.network_type = 'DP'  # For compatibility with FedRL
         self.rescale = threshold
-        
-        self.net = nn.Sequential(
-            nn.Linear(obs_size, 400),
-            nn.ReLU(),
-            nn.Linear(400, 300),
-            nn.ReLU(),
-            nn.Linear(300, action_size),
-            nn.Tanh()
-        )
-    
+        self.bc_compatible = bool(bc_compatible)
+
+        if self.bc_compatible:
+            # Tanh hidden activations to match BC pretrain (`_bc_pretrain.py`
+            # default policy_activation="tanh").
+            self.net = nn.Sequential(
+                nn.Linear(obs_size, hidden_dim),
+                nn.Tanh(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.Tanh(),
+                nn.Linear(hidden_dim, action_size),
+                nn.Tanh(),
+            )
+        else:
+            self.net = nn.Sequential(
+                nn.Linear(obs_size, 400),
+                nn.ReLU(),
+                nn.Linear(400, 300),
+                nn.ReLU(),
+                nn.Linear(300, action_size),
+                nn.Tanh(),
+            )
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass: return action in [-threshold, threshold]."""
         return self.rescale * self.net(x.float())
+
+    def load_bc_weights(self, bc_ckpt_path: str) -> bool:
+        """Load BC pretrain weights into the BC-compatible 256→256→Tanh net.
+
+        BC's `policy` is `Sequential(Linear(s,256), Tanh, Linear(256,256),
+        Tanh, Linear(256,a))` (no final Tanh). Our DDPG actor adds a final
+        Tanh on top so the action lands in [-1,1] before `rescale`. The
+        first 3 Linear layers (indices 0/2/4) load cleanly from BC; the
+        final Tanh is just an extra squash.
+        """
+        if not self.bc_compatible:
+            print("[DDPGActor] BC load skipped — bc_compatible=False")
+            return False
+        try:
+            bc = torch.load(bc_ckpt_path, map_location="cpu", weights_only=False)
+            ps = bc["policy"]
+            # Sequential indices for our BC-compat net: 0 (Linear), 2 (Linear), 4 (Linear)
+            self.net[0].weight.data.copy_(ps["0.weight"])
+            self.net[0].bias.data.copy_(ps["0.bias"])
+            self.net[2].weight.data.copy_(ps["2.weight"])
+            self.net[2].bias.data.copy_(ps["2.bias"])
+            self.net[4].weight.data.copy_(ps["4.weight"])
+            self.net[4].bias.data.copy_(ps["4.bias"])
+            print(f"[DDPGActor] BC warm-start ← {bc_ckpt_path}")
+            return True
+        except Exception as e:
+            print(f"[DDPGActor] BC load FAILED ({bc_ckpt_path}): {e}")
+            return False
 
 
 class DDPGCritic(nn.Module):
@@ -397,6 +445,9 @@ class DDPGAgent(nn.Module):
         ou_theta: float = 0.15,
         ou_sigma: float = 0.2,
         ou_epsilon: float = 1.0,
+        bc_compatible: bool = False,
+        bc_ckpt_path: Optional[str] = None,
+        hidden_dim: int = 256,
     ):
         super().__init__()
         self.state_dim = state_dim
@@ -417,10 +468,21 @@ class DDPGAgent(nn.Module):
         if device == "auto":
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device or "cpu")
-        
-        # Actor networks: main and target
-        self.actor = DDPGActor(state_dim, action_dim, threshold).to(self.device)
-        self.target_actor = DDPGActor(state_dim, action_dim, threshold).to(self.device)
+
+        # Actor networks: main and target.
+        # bc_compatible=True switches architecture to 256→256 Tanh so the
+        # BC pretrain checkpoint can be loaded directly (same checkpoint
+        # FedGuide uses) for a fair same-init comparison.
+        self.actor = DDPGActor(
+            state_dim, action_dim, threshold,
+            bc_compatible=bc_compatible, hidden_dim=hidden_dim,
+        ).to(self.device)
+        if bc_compatible and bc_ckpt_path:
+            self.actor.load_bc_weights(bc_ckpt_path)
+        self.target_actor = DDPGActor(
+            state_dim, action_dim, threshold,
+            bc_compatible=bc_compatible, hidden_dim=hidden_dim,
+        ).to(self.device)
         self.target_actor.load_state_dict(self.actor.state_dict())
         self.target_actor.eval()
         

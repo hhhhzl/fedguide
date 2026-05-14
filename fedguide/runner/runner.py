@@ -307,8 +307,17 @@ def _run_federated_training(env_type: str, algorithm: str, config: Dict[str, Any
         # Ray only exposes GPUs to VCE actors when num_gpus > 0; omitting it forces CPU PyTorch.
         client_resources["num_gpus"] = float(config.get("gpus_per_client", 1.0))
     print(f"Ray client_resources: {client_resources}")
+    # Override Ray's container-CPU autodetect when the host has more cores than
+    # Docker reports. Setting num_cpus high enough lets all clients run in
+    # parallel actors instead of batching through a small pool.
+    ray_init_num_cpus = int(config.get("ray_init_num_cpus", 0))
+    ray_init_args = None
+    if ray_init_num_cpus > 0:
+        ray_init_args = {"num_cpus": ray_init_num_cpus,
+                         "include_dashboard": False}
+        print(f"Ray ray_init_args: {ray_init_args}")
     print(f"{'='*60}\n")
-    
+
     # Run federated simulation
     history = fl.simulation.start_simulation(
         client_fn=client_fn,
@@ -316,6 +325,7 @@ def _run_federated_training(env_type: str, algorithm: str, config: Dict[str, Any
         strategy=server,
         config=server_config,
         client_resources=client_resources,
+        **({"ray_init_args": ray_init_args} if ray_init_args else {}),
     )
     
     # Finalize hooks
