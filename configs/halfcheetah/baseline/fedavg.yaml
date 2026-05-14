@@ -1,0 +1,55 @@
+# FedAvg + BC warm-start. Same config as fedavg.yaml but loads each client's
+# BC policy ./model/bc_policy/HalfCheetah/client_{i}/final/policy.pth at init.
+# This makes FedAvg start from the SAME competent walking policy as FedGuide,
+# isolating the contribution of federation algorithm (FedAvg vs OT-MoE) from
+# the contribution of offline pretrain.
+
+env_type: "d4rl"
+env_name: "HalfCheetah-v4"
+metadata_path: "data/halfcheetah/metadata_mild64.json"
+num_clients: 8
+random_select_clients: false
+
+rounds: 100
+cpus_per_client: 2
+n_steps: 4096
+update_epochs: 10
+minibatch_size: 64
+
+hidden_dim: 256
+lr: 1e-4
+gamma: 0.99
+gae_lambda: 0.95
+clip_eps: 0.2
+entropy_coef: 0.0
+value_coef: 0.5
+max_grad_norm: 0.5
+
+# FedAvg = FedKL with zero KL penalties
+lambda_global: 0
+lambda_local: 0
+
+# BC warm-start (same checkpoint FedGuide uses)
+bc_root: "./model/bc_policy"
+bc_env_name: "HalfCheetah"
+
+eval_episodes: 10
+
+output_dir: "./model/policy/halfcheetah/fedavg"
+metrics_dir: "./metrics/halfcheetah/fedavg"
+save_every: 10
+
+device: "auto"
+gpus_per_client: 0.25
+seed: [0]
+
+render_eval: true
+render_mode: "video"
+render_save_dir: "./plots/halfcheetah/fedavg"
+render_every_n_rounds: 20                  # 5 videos per client: rounds 20/40/60/80/100
+render_episodes: 3
+render_all_clients: true                   # render every client, not just client 0
+
+# Per-client policy checkpoints: 5 snapshots per client at the same cadence.
+# Default destination is `${metrics_dir}/policies/client_<id>/round_XXXX.pth`.
+policy_save_every: 20

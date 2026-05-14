@@ -267,36 +267,118 @@ class DQNAgent(nn.Module):
 
 
 # ============================================================================
+# Ornstein–Uhlenbeck noise (FedRL/deep/DeepRLAlgo.py AgentDDPG)
+# ============================================================================
+
+
+class OrnsteinUhlenbeckNoise:
+    """Stateful OU process for DDPG exploration (matches ptan AgentDDPG defaults)."""
+
+    __slots__ = ("mu", "theta", "sigma", "epsilon_scale", "_state")
+
+    def __init__(
+        self,
+        mu: float = 0.0,
+        theta: float = 0.15,
+        sigma: float = 0.2,
+        epsilon_scale: float = 1.0,
+    ):
+        self.mu = float(mu)
+        self.theta = float(theta)
+        self.sigma = float(sigma)
+        self.epsilon_scale = float(epsilon_scale)
+        self._state: Optional[np.ndarray] = None
+
+    def reset(self) -> None:
+        self._state = None
+
+    def sample(self, action_shape: Tuple[int, ...]) -> np.ndarray:
+        if self._state is None or self._state.shape != action_shape:
+            self._state = np.zeros(action_shape, dtype=np.float32)
+        self._state += self.theta * (self.mu - self._state)
+        self._state += self.sigma * np.random.normal(size=action_shape).astype(np.float32)
+        return self.epsilon_scale * self._state
+
+
+# ============================================================================
 # DDPG Networks and Agent
 # ============================================================================
 
 class DDPGActor(nn.Module):
     """
     DDPG Actor Network for continuous action spaces.
-    
-    Architecture: MLP(obs_size -> 400 -> 300 -> action_dim) -> Tanh
-    Based on FedRL/deep/DeepRLAlgo.py DDPGActor
+
+    Default architecture (faithful to upstream FedRL/deep/DeepRLAlgo.py):
+      MLP(obs_size -> 400 -> 300 -> action_dim) -> Tanh, ReLU activations.
+
+    When `bc_compatible=True` (used for BC warm-start experiments), switch to
+      MLP(obs_size -> 256 -> 256 -> action_dim) -> Tanh, Tanh activations
+    matching the BC pretrain script's MLP so weights load directly. This
+    deviates from upstream DDPG-Avg but is necessary for the same-init
+    fairness comparison against FedGuide-BC.
     """
-    
-    def __init__(self, obs_size: int, action_size: int, threshold: float = 2.0):
+
+    def __init__(self, obs_size: int, action_size: int, threshold: float = 2.0,
+                 bc_compatible: bool = False, hidden_dim: int = 256):
         super().__init__()
         self.obs_size = obs_size
         self.action_size = action_size
         self.network_type = 'DP'  # For compatibility with FedRL
         self.rescale = threshold
-        
-        self.net = nn.Sequential(
-            nn.Linear(obs_size, 400),
-            nn.ReLU(),
-            nn.Linear(400, 300),
-            nn.ReLU(),
-            nn.Linear(300, action_size),
-            nn.Tanh()
-        )
-    
+        self.bc_compatible = bool(bc_compatible)
+
+        if self.bc_compatible:
+            # Tanh hidden activations to match BC pretrain (`_bc_pretrain.py`
+            # default policy_activation="tanh").
+            self.net = nn.Sequential(
+                nn.Linear(obs_size, hidden_dim),
+                nn.Tanh(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.Tanh(),
+                nn.Linear(hidden_dim, action_size),
+                nn.Tanh(),
+            )
+        else:
+            self.net = nn.Sequential(
+                nn.Linear(obs_size, 400),
+                nn.ReLU(),
+                nn.Linear(400, 300),
+                nn.ReLU(),
+                nn.Linear(300, action_size),
+                nn.Tanh(),
+            )
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass: return action in [-threshold, threshold]."""
         return self.rescale * self.net(x.float())
+
+    def load_bc_weights(self, bc_ckpt_path: str) -> bool:
+        """Load BC pretrain weights into the BC-compatible 256→256→Tanh net.
+
+        BC's `policy` is `Sequential(Linear(s,256), Tanh, Linear(256,256),
+        Tanh, Linear(256,a))` (no final Tanh). Our DDPG actor adds a final
+        Tanh on top so the action lands in [-1,1] before `rescale`. The
+        first 3 Linear layers (indices 0/2/4) load cleanly from BC; the
+        final Tanh is just an extra squash.
+        """
+        if not self.bc_compatible:
+            print("[DDPGActor] BC load skipped — bc_compatible=False")
+            return False
+        try:
+            bc = torch.load(bc_ckpt_path, map_location="cpu", weights_only=False)
+            ps = bc["policy"]
+            # Sequential indices for our BC-compat net: 0 (Linear), 2 (Linear), 4 (Linear)
+            self.net[0].weight.data.copy_(ps["0.weight"])
+            self.net[0].bias.data.copy_(ps["0.bias"])
+            self.net[2].weight.data.copy_(ps["2.weight"])
+            self.net[2].bias.data.copy_(ps["2.bias"])
+            self.net[4].weight.data.copy_(ps["4.weight"])
+            self.net[4].bias.data.copy_(ps["4.bias"])
+            print(f"[DDPGActor] BC warm-start ← {bc_ckpt_path}")
+            return True
+        except Exception as e:
+            print(f"[DDPGActor] BC load FAILED ({bc_ckpt_path}): {e}")
+            return False
 
 
 class DDPGCritic(nn.Module):
@@ -358,6 +440,14 @@ class DDPGAgent(nn.Module):
         threshold: float = 2.0,  # Action clipping threshold
         device: Optional[str] = None,
         aggregate_critic: bool = False,  # Whether to aggregate critic parameters
+        ou_enabled: bool = True,
+        ou_mu: float = 0.0,
+        ou_theta: float = 0.15,
+        ou_sigma: float = 0.2,
+        ou_epsilon: float = 1.0,
+        bc_compatible: bool = False,
+        bc_ckpt_path: Optional[str] = None,
+        hidden_dim: int = 256,
     ):
         super().__init__()
         self.state_dim = state_dim
@@ -366,14 +456,33 @@ class DDPGAgent(nn.Module):
         self.tau = tau
         self.threshold = threshold
         self.aggregate_critic = aggregate_critic
-        
+        self.ou_enabled = ou_enabled
+        self.ou_mu = ou_mu
+        self.ou_theta = ou_theta
+        self.ou_sigma = ou_sigma
+        self.ou_epsilon = ou_epsilon
+        self._ou_noise = OrnsteinUhlenbeckNoise(
+            mu=ou_mu, theta=ou_theta, sigma=ou_sigma, epsilon_scale=ou_epsilon
+        )
+
         if device == "auto":
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device or "cpu")
-        
-        # Actor networks: main and target
-        self.actor = DDPGActor(state_dim, action_dim, threshold).to(self.device)
-        self.target_actor = DDPGActor(state_dim, action_dim, threshold).to(self.device)
+
+        # Actor networks: main and target.
+        # bc_compatible=True switches architecture to 256→256 Tanh so the
+        # BC pretrain checkpoint can be loaded directly (same checkpoint
+        # FedGuide uses) for a fair same-init comparison.
+        self.actor = DDPGActor(
+            state_dim, action_dim, threshold,
+            bc_compatible=bc_compatible, hidden_dim=hidden_dim,
+        ).to(self.device)
+        if bc_compatible and bc_ckpt_path:
+            self.actor.load_bc_weights(bc_ckpt_path)
+        self.target_actor = DDPGActor(
+            state_dim, action_dim, threshold,
+            bc_compatible=bc_compatible, hidden_dim=hidden_dim,
+        ).to(self.device)
         self.target_actor.load_state_dict(self.actor.state_dict())
         self.target_actor.eval()
         
@@ -387,7 +496,11 @@ class DDPGAgent(nn.Module):
         self.lr = lr
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=lr)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=lr)
-    
+
+    def reset_ou_noise(self) -> None:
+        """Reset OU process (call on episode boundary or after federated weight sync)."""
+        self._ou_noise.reset()
+
     @torch.no_grad()
     def select_action(self, state: np.ndarray, deterministic: bool = True, add_noise: bool = False) -> np.ndarray:
         """
@@ -396,21 +509,20 @@ class DDPGAgent(nn.Module):
         Args:
             state: Current state (numpy array)
             deterministic: If True, use deterministic policy (for evaluation)
-            add_noise: If True, add exploration noise (for training)
+            add_noise: If True, add OU exploration noise (for training)
         
         Returns:
             Selected action (numpy array)
         """
         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-        action = self.actor(state_tensor)
-        
-        if add_noise and not deterministic:
-            # Add OU noise for exploration (simplified version)
-            noise = torch.randn_like(action) * 0.1
-            action = action + noise
-        
-        action = action.clamp(-self.threshold, self.threshold)
-        return action.squeeze(0).cpu().numpy()
+        mu = self.actor(state_tensor).squeeze(0).cpu().numpy()
+
+        if add_noise and not deterministic and self.ou_enabled:
+            noise = self._ou_noise.sample(mu.shape)
+            mu = mu + noise
+
+        mu = np.clip(mu, -self.threshold, self.threshold)
+        return mu.astype(np.float32)
     
     def update(self, batch: List[Tuple]) -> Dict[str, float]:
         """
@@ -515,12 +627,14 @@ class DDPGAgent(nn.Module):
             )
             # Also update target critic
             self.target_critic.load_state_dict(self.critic.state_dict())
-    
+        self.reset_ou_noise()
+
     def rebuild_optimizer(self):
         """Recreate optimizers after parameter aggregation."""
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.lr)
         if self.aggregate_critic:
             self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.lr)
+        self.reset_ou_noise()
     
     def to(self, device: str):
         """Move agent to device."""

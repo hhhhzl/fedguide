@@ -23,6 +23,16 @@ from fedguide.utils.seeds import set_all_seeds
 from fedguide.runner.factories import get_registry
 
 
+def _resolve_training_seed(config: Dict[str, Any], args, default: int = 42) -> int:
+    """Avoid eager eval of args in dict.get default (args may be None when seed is 0)."""
+    fallback = default
+    if args is not None and getattr(args, "seed", None) is not None:
+        fallback = args.seed
+    if "seed" in config and config["seed"] is not None:
+        return config["seed"]
+    return fallback
+
+
 def load_config(config_path: str) -> Dict[str, Any]:
     """Load YAML configuration file."""
     if not os.path.exists(config_path):
@@ -99,7 +109,7 @@ def _run_centralized_training(env_type: str, algorithm: str, config: Dict[str, A
     registry = get_registry()
     
     # Set seeds
-    seed = config.get('seed', args.seed or 42)
+    seed = _resolve_training_seed(config, args)
     set_all_seeds(seed)
     
     # Create environment
@@ -116,13 +126,14 @@ def _run_centralized_training(env_type: str, algorithm: str, config: Dict[str, A
     
     # Create agent
     print(f"\nCreating {algorithm.upper()} agent...")
+    # YAML **config last would overwrite resolved `device` (e.g. device: auto) — put overrides after.
     agent_config = {
+        **config,
         'state_dim': obs_dim,
         'action_dim': action_dim,
         'device': device,
         'action_low': action_low,
         'action_high': action_high,
-        **config
     }
     agent = registry.create_agent(algorithm, env, agent_config)
     
@@ -132,8 +143,8 @@ def _run_centralized_training(env_type: str, algorithm: str, config: Dict[str, A
     # Create trainer
     print(f"\nCreating {algorithm.upper()} trainer...")
     trainer_config = {
+        **config,
         'device': device,
-        **config
     }
     trainer = registry.create_trainer(algorithm, agent, env, datasets, trainer_config)
     
@@ -233,7 +244,7 @@ def _run_federated_training(env_type: str, algorithm: str, config: Dict[str, Any
     registry = get_registry()
     
     # Set seeds
-    seed = config.get('seed', args.seed or 42)
+    seed = _resolve_training_seed(config, args)
     set_all_seeds(seed)
     
     # Setup hooks for environment-specific logic (e.g., bandit2d metrics)
@@ -290,15 +301,31 @@ def _run_federated_training(env_type: str, algorithm: str, config: Dict[str, Any
     print(f"Clients: {num_clients}")
     print(f"Rounds: {rounds}")
     print(f"Device: {device}")
+    client_resources = {"num_cpus": float(config.get("cpus_per_client", 2))}
+    dev_str = str(device).lower()
+    if dev_str == "cuda" or dev_str.startswith("cuda"):
+        # Ray only exposes GPUs to VCE actors when num_gpus > 0; omitting it forces CPU PyTorch.
+        client_resources["num_gpus"] = float(config.get("gpus_per_client", 1.0))
+    print(f"Ray client_resources: {client_resources}")
+    # Override Ray's container-CPU autodetect when the host has more cores than
+    # Docker reports. Setting num_cpus high enough lets all clients run in
+    # parallel actors instead of batching through a small pool.
+    ray_init_num_cpus = int(config.get("ray_init_num_cpus", 0))
+    ray_init_args = None
+    if ray_init_num_cpus > 0:
+        ray_init_args = {"num_cpus": ray_init_num_cpus,
+                         "include_dashboard": False}
+        print(f"Ray ray_init_args: {ray_init_args}")
     print(f"{'='*60}\n")
-    
+
     # Run federated simulation
     history = fl.simulation.start_simulation(
         client_fn=client_fn,
         num_clients=num_clients,
         strategy=server,
         config=server_config,
-        client_resources={"num_cpus": config.get('cpus_per_client', 2)},
+        client_resources=client_resources,
+        **({"ray_init_args": ray_init_args} if ray_init_args else {}),
     )
     
     # Finalize hooks
@@ -339,12 +366,33 @@ def _save_federated_results(history: Any, metrics_collector: Any, config: Dict[s
 def run_training(config: Dict[str, Any], args=None, device: Optional[str] = None):
     """
     Unified training function that works for all algorithms and environments.
-    
+
     Args:
         config: Configuration dictionary
         args: Optional argparse args
         device: Optional device override
     """
+    # ----- Phase-1 sweep hook -----
+    # When FG_PHASE1_SWEEP is set, override key paths/seeds/rounds from env vars
+    # so every (algo, seed) writes into its own metrics/<run>/seed_<i>/ folder
+    # without touching individual run scripts or YAMLs.
+    if os.environ.get("FG_PHASE1_SWEEP", "0") == "1":
+        for cfg_key, env_key, cast in [
+            ("metrics_dir", "FG_PHASE1_METRICS_DIR", str),
+            ("output_dir", "FG_PHASE1_OUTPUT_DIR", str),
+            ("seed", "FG_PHASE1_SEED", int),
+            ("rounds", "FG_PHASE1_ROUNDS", int),
+            ("device", "FG_PHASE1_DEVICE", str),
+            ("gpus_per_client", "FG_PHASE1_GPUS_PER_CLIENT", float),
+            ("cpus_per_client", "FG_PHASE1_CPUS_PER_CLIENT", float),
+        ]:
+            val = os.environ.get(env_key)
+            if val is not None and val != "":
+                try:
+                    config[cfg_key] = cast(val)
+                except ValueError:
+                    pass
+
     # Determine environment type and algorithm
     env_type = config.get('env_type', 'bandit2d')
     algorithm = config.get('algorithm', 'ppo')
@@ -360,7 +408,7 @@ def run_training(config: Dict[str, Any], args=None, device: Optional[str] = None
     print(f"{'='*80}")
     
     # Check if it's a federated algorithm
-    federated_algorithms = {'fedguide', 'fedkl', 'fmarl', 'fedrl', 'fedrep', 'fedmomentum'}
+    federated_algorithms = {'fedguide', 'fedkl', 'fmarl', 'fedrl', 'fedrep', 'fedmomentum', 'mfpo'}
     is_federated = algorithm.lower() in federated_algorithms
     
     if is_federated:

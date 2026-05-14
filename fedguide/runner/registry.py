@@ -97,7 +97,7 @@ class RunnerRegistry:
             # Default: pass common environment config keys
             default_keys = {
                 'bandit2d': ['num_clients', 'data_dir', 'K', 'sigma'],
-                'd4rl': ['env_name', 'num_clients'],
+                'd4rl': ['env_name', 'num_clients', 'metadata_path', 'reward_type', 'random_select_clients'],
                 'minari': ['dataset_id', 'env_name', 'download'],
                 'reacher_hetero': ['metadata_path', 'num_clients', 'random_select_clients'],
             }

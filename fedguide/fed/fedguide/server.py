@@ -74,11 +74,26 @@ class FedGuideStrategy(Strategy):
             cost_fn_prior: Callable[[List[np.ndarray], List[np.ndarray]], float] = _l2_cost_fn,
             cost_fn_guidance: Callable[[List[np.ndarray], List[np.ndarray]], float] = _l2_cost_fn,
             moe_keys: Tuple[str, ...] = ("prior_adapt", "guidance"),
-            # Experimental: client-specific expert routing for Bandit2D
+            ot_mode: str = "sinkhorn",  # "sinkhorn" (default) | "hungarian" (legacy)
+            ot_reg: float = 0.05,
+            # Personalized routing: each client receives its OT-row-weighted expert
+            # mixture for moe_keys (default ON). Without this the server falls back
+            # to broadcasting the FedAvg of all experts to every client, which
+            # collapses the multi-modal structure across heterogeneous clients.
+            personalized_routing: bool = True,
+            # Experimental: client-specific expert routing for Bandit2D (legacy
+            # mapped-id-based routing; superseded by personalized_routing for
+            # general use).
             client_specific_expert_routing: bool = False,
             cid_mapping_file: Optional[str] = None,
             num_clients: int = 4,
             routing_debug: bool = False,
+            # Policy aggregation cadence: aggregate policy/log_std only every
+            # K rounds. K=1 (default) preserves prior behavior. K>1 lets each
+            # client run local PPO without policy averaging on intermediate
+            # rounds — useful when client dynamics differ enough that
+            # FedAvg(policy) destroys per-client adaptation.
+            policy_agg_every_k: int = 1,
     ):
         # Standard Flower Strategy parameters
         self.fraction_fit = fraction_fit
@@ -101,15 +116,22 @@ class FedGuideStrategy(Strategy):
         self.num_experts_guidance = int(num_experts_guidance)
         self.cost_fn_prior = cost_fn_prior
         self.cost_fn_guidance = cost_fn_guidance
+        self.ot_mode = str(ot_mode).lower()
+        self.ot_reg = float(ot_reg)
+        self.personalized_routing = bool(personalized_routing)
         self.client_specific_expert_routing = bool(client_specific_expert_routing)
         self.cid_mapping_file = cid_mapping_file
         self.num_clients = int(num_clients)
         self.routing_debug = bool(routing_debug)
+        self.policy_agg_every_k = max(1, int(policy_agg_every_k))
 
         # experts_map[module_key] = List[List[np.ndarray]]  # M x L
         self.experts_map: Dict[str, List[List[np.ndarray]]] = {}
         self._latest_global_modules: Dict[str, List[np.ndarray]] = {}
         self._latest_layout_json: Optional[str] = None
+        # cid -> {moe_key: List[np.ndarray]} computed from the previous round's
+        # OT plan; configure_fit looks this up to send personalized priors.
+        self._latest_routed_per_cid: Dict[str, Dict[str, List[np.ndarray]]] = {}
 
     # ---- Strategy ----
     def __repr__(self) -> str:
@@ -161,11 +183,38 @@ class FedGuideStrategy(Strategy):
                 fit_config = {"server_round": server_round}
 
             fit_parameters = parameters
+            cid_str = str(getattr(client, "cid", ""))
 
+            # New default path (Bug 5 fix): personalized broadcast for moe_keys.
+            # Each client receives an OT-row-weighted mixture of the M experts
+            # so heterogeneous client priors are not collapsed into a single
+            # FedAvg of experts before broadcast.
+            personalized_modules = (
+                self._latest_routed_per_cid.get(cid_str)
+                if self.personalized_routing else None
+            )
+            if personalized_modules and self._latest_global_modules:
+                routed_modules: Dict[str, List[np.ndarray]] = {}
+                for k, arrs in self._latest_global_modules.items():
+                    if k not in self.moe_keys:
+                        routed_modules[k] = arrs
+                for moe_key in self.moe_keys:
+                    if moe_key in personalized_modules:
+                        routed_modules[moe_key] = personalized_modules[moe_key]
+                    elif moe_key in self._latest_global_modules:
+                        routed_modules[moe_key] = self._latest_global_modules[moe_key]
+                flat, layout = self._flatten_module_dict(routed_modules)
+                fit_parameters = ndarrays_to_parameters(flat)
+                fit_config["layout"] = json.dumps(layout)
+                if self.routing_debug:
+                    print(
+                        f"[FedGuidePersonalized] round={server_round} cid={cid_str} "
+                        f"modules={list(routed_modules.keys())}"
+                    )
             # Experimental mode: route prior/guidance experts by mapped client id.
             # This keeps federated learning but uses client-specific shared experts.
-            if self.client_specific_expert_routing:
-                mapped_id = self._resolve_mapped_client_id(getattr(client, "cid", "0"))
+            elif self.client_specific_expert_routing:
+                mapped_id = self._resolve_mapped_client_id(cid_str or "0")
                 fit_config["client_id_mapped"] = int(mapped_id)
                 routed_modules = self._build_routed_modules(mapped_id)
                 if routed_modules:
@@ -181,7 +230,7 @@ class FedGuideStrategy(Strategy):
                     fit_config["layout"] = json.dumps(layout)
                     if self.routing_debug:
                         print(
-                            f"[FedGuideRouting] round={server_round} cid={getattr(client, 'cid', 'unknown')} "
+                            f"[FedGuideRouting] round={server_round} cid={cid_str} "
                             f"mapped={mapped_id} expert={expert_id} modules={list(routed_modules.keys())}"
                         )
                 elif self._latest_layout_json is not None:
@@ -211,7 +260,8 @@ class FedGuideStrategy(Strategy):
             return None, {}
 
         modules_list: List[Tuple[Dict[str, List[np.ndarray]], int]] = []
-        for _, fitres in results:
+        client_cids: List[str] = []
+        for client_proxy, fitres in results:
             # Handle both FitRes object and dict (in case of serialization issues)
             if isinstance(fitres, dict):
                 metrics = fitres.get("metrics", {})
@@ -221,12 +271,14 @@ class FedGuideStrategy(Strategy):
                 metrics = fitres.metrics
                 num_examples = fitres.num_examples
                 parameters = fitres.parameters
-            
+
             mods = _modules_from_metrics(metrics)
             if mods is None:
                 modules_list = []
+                client_cids = []
                 break
             modules_list.append((mods, num_examples))
+            client_cids.append(str(getattr(client_proxy, "cid", "")))
 
         # Aggregate loss and other metrics from all clients
         # Also collect client actions and grid metrics from metrics for server-side metrics collection
@@ -359,7 +411,23 @@ class FedGuideStrategy(Strategy):
         self._collected_client_metrics[server_round] = collected_client_metrics
         
         if modules_list:
-            new_global = self._aggregate_by_modules(modules_list)
+            new_global = self._aggregate_by_modules(modules_list, client_cids=client_cids, server_round=server_round)
+            # Policy-aggregation cadence: on non-K rounds, drop policy/log_std
+            # from the broadcast so each client keeps its own local PPO state.
+            # First round (server_round == 1) always broadcasts so clients
+            # share the BC warm-start initialization.
+            if (
+                self.policy_agg_every_k > 1
+                and server_round > 1
+                and (server_round % self.policy_agg_every_k) != 0
+            ):
+                for _k in ("policy", "log_std"):
+                    new_global.pop(_k, None)
+                if self.routing_debug:
+                    print(
+                        f"[policy-skip] round={server_round} K={self.policy_agg_every_k} "
+                        f"— broadcast keys={list(new_global.keys())}"
+                    )
             flat, layout = self._flatten_module_dict(new_global)
             params = ndarrays_to_parameters(flat)
             self._latest_global_modules = new_global
@@ -507,19 +575,34 @@ class FedGuideStrategy(Strategy):
     def _aggregate_by_modules(
             self,
             modules_list: List[Tuple[Dict[str, List[np.ndarray]], int]],
+            client_cids: Optional[List[str]] = None,
+            server_round: int = -1,
     ) -> Dict[str, List[np.ndarray]]:
         """
         input：
           modules_list: [({module: [arr_l]}, num_examples), ...]
+          client_cids: optional list of cid strings, one per modules_list entry,
+            used to populate ``self._latest_routed_per_cid`` for personalized
+            broadcast of OT-MoE keys.
         out：
-          new_global_modules: {module: [arr_l]}
+          new_global_modules: {module: [arr_l]}  (FedAvg for non-MoE keys; for
+          MoE keys this is the FedAvg-of-experts fallback used when
+          personalized routing has no entry for a client.)
         """
         buckets: Dict[str, List[Tuple[List[np.ndarray], int]]] = {}
         for mods, n in modules_list:
             for k, v in mods.items():
                 buckets.setdefault(k, []).append((v, n))
 
+        if client_cids is None:
+            client_cids = [str(i) for i in range(len(modules_list))]
+
         new_global: Dict[str, List[np.ndarray]] = {}
+
+        # Reset per-client routing for this round; we'll repopulate per moe_key.
+        routed_per_cid: Dict[str, Dict[str, List[np.ndarray]]] = {
+            cid: {} for cid in client_cids
+        }
 
         # --- OT-MoE or Avg：prior_adapt / guidance ---
         if self.moe_enable:
@@ -536,12 +619,81 @@ class FedGuideStrategy(Strategy):
                     self.experts_map[moe_key] = experts
 
                 cost_fn = self.cost_fn_prior if moe_key == "prior_adapt" else self.cost_fn_guidance
-                new_experts = ot_moe_aggregate(
-                    client_params=client_params,  # N x L
-                    expert_params=experts,  # M x L
-                    cost_fn=cost_fn,
-                )
+
+                # Recompute the OT plan once so we can both update experts and
+                # route each client to its row-weighted expert mixture.
+                from fedguide.fed.fedguide.aggregator import compute_ot_matrix
+
+                N = len(client_params)
+                M = len(experts)
+                cost_matrix = np.zeros((N, M), dtype=float)
+                for i in range(N):
+                    for m in range(M):
+                        cost_matrix[i, m] = float(cost_fn(client_params[i], experts[m]))
+                T = compute_ot_matrix(cost_matrix, mode=self.ot_mode, reg=self.ot_reg)
+
+                # OT routing diagnostic: log cost / transport / per-client argmax
+                # along with the client cid per row, since Flower returns clients
+                # in completion order (not cid order). We compare argmax to the
+                # "index of the expert originally seeded from this cid" rather
+                # than to the row index.
+                if server_round in (1, 5, 10, 20, 30, 40, 50, 60) and N == M:
+                    np.set_printoptions(precision=3, suppress=True, linewidth=200)
+                    row_norm = T / (T.sum(axis=1, keepdims=True) + 1e-12)
+                    argmax_per_client = row_norm.argmax(axis=1).tolist()
+                    cids_per_row = list(client_cids) if client_cids else [str(i) for i in range(N)]
+                    print(
+                        f"[OT-diag] round={server_round} key={moe_key} "
+                        f"mode={self.ot_mode} reg={self.ot_reg} N={N} M={M}"
+                    )
+                    print(f"[OT-diag]  cids_per_row={cids_per_row}")
+                    print(f"[OT-diag]  cost_matrix=\n{cost_matrix}")
+                    print(f"[OT-diag]  row_norm=\n{row_norm}")
+                    print(f"[OT-diag]  cid→expert: " + ", ".join(
+                        f"{cids_per_row[i]}→e{argmax_per_client[i]}" for i in range(N)
+                    ))
+
+                # Update experts as before (column-normalized convex combo).
+                new_experts: List[List[np.ndarray]] = []
+                for m in range(M):
+                    col = T[:, m]
+                    csum = float(col.sum())
+                    if csum <= 1e-12:
+                        new_experts.append([w.copy() for w in experts[m]])
+                        continue
+                    w = col / csum
+                    L = len(experts[m])
+                    layers = [
+                        sum(w[i] * client_params[i][l] for i in range(N))
+                        for l in range(L)
+                    ]
+                    new_experts.append(layers)
                 self.experts_map[moe_key] = new_experts
+
+                # Per-client personalized prior: row-normalized OT plan tells us
+                # how much of each expert to mix for client i. With M=1 this
+                # reduces to expert_0 for everyone (= FedAvg). With M=N and
+                # near-permutation T, each client receives the expert that best
+                # matched its own update (preserves multi-modal structure).
+                if self.personalized_routing and client_cids:
+                    L = len(new_experts[0])
+                    for i, cid in enumerate(client_cids):
+                        row = T[i, :]
+                        rsum = float(row.sum())
+                        if rsum <= 1e-12:
+                            chosen = new_experts[i % len(new_experts)]
+                            routed_per_cid[cid][moe_key] = [w.copy() for w in chosen]
+                            continue
+                        rw = row / rsum
+                        layers = [
+                            sum(rw[m] * new_experts[m][l] for m in range(M))
+                            for l in range(L)
+                        ]
+                        routed_per_cid[cid][moe_key] = layers
+
+                # Fallback "global" merged expert for clients we cannot route
+                # (e.g. configure_fit sees a cid that wasn't in the last
+                # aggregate_fit call — first round, or client churn).
                 merged = self._fedavg_arrays([(e, 1) for e in new_experts])
                 new_global[moe_key] = merged
 
@@ -551,6 +703,10 @@ class FedGuideStrategy(Strategy):
                 if k in self.moe_keys:
                     continue
             new_global[k] = self._fedavg_arrays(wl)
+
+        # Publish per-client routing for the next configure_fit call.
+        if self.personalized_routing:
+            self._latest_routed_per_cid = routed_per_cid
 
         return new_global
 

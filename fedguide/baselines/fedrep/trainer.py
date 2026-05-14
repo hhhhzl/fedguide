@@ -27,8 +27,20 @@ class FedRepTrainer:
         update_epochs: int = 10,
         minibatch_size: int = 64,
         max_grad_norm: float = 0.5,
+        # FedRep two-phase epochs (Collins et al. 2021):
+        #   E_h: epochs for the personalized head (encoder frozen)
+        #   E_r: epochs for the shared encoder (head frozen)
+        # If both are 0 we fall back to legacy single-phase PPO.
+        head_epochs: int = 0,
+        rep_epochs: int = 0,
         eval_episodes: int = 1,
         writer: Optional[Any] = None,
+        render_eval: bool = False,
+        render_mode: str = "video",
+        render_save_dir: Optional[str] = None,
+        render_every_n_rounds: int = 10,
+        render_episodes: int = 5,
+        render_client_tag: str = "0",
     ):
         self.agent = agent
         self.env = env
@@ -43,15 +55,27 @@ class FedRepTrainer:
         self.update_epochs = update_epochs
         self.minibatch_size = minibatch_size
         self.max_grad_norm = max_grad_norm
+        self.head_epochs = int(head_epochs)
+        self.rep_epochs = int(rep_epochs)
         self.eval_episodes = eval_episodes
         self.writer = writer
-        
+        self.server_round = 0
+        self.render_eval = render_eval
+        self.render_mode = render_mode
+        self.render_save_dir = render_save_dir
+        self.render_every_n_rounds = render_every_n_rounds
+        self.render_episodes = render_episodes
+        self.render_client_tag = render_client_tag
+
         # Current observation
         reset_result = self.env.reset()
         self._obs = reset_result[0] if isinstance(reset_result, tuple) else reset_result
         
         # Store last rollout actions for metrics collection
         self.last_actions = None
+
+    def set_server_round(self, rnd: int):
+        self.server_round = int(rnd)
     
     def _rollout(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         """Collect rollout data."""
@@ -62,8 +86,9 @@ class FedRepTrainer:
             a, logp, v = self.agent.select_action(self._obs, deterministic=False)
             a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
             
-            # Step environment
-            next_obs, r, d, _trunc, _info = self.env.step(a)
+            # Step environment (Gymnasium: use terminated | truncated)
+            next_obs, r, terminated, truncated, _info = self.env.step(a)
+            d = bool(terminated) or bool(truncated)
             
             # Store transition
             obs_buf.append(torch.tensor(self._obs, dtype=torch.float32))
@@ -71,7 +96,7 @@ class FedRepTrainer:
             logp_buf.append(torch.tensor(logp, dtype=torch.float32).reshape(()))
             rew_buf.append(torch.tensor(r, dtype=torch.float32).reshape(()))
             val_buf.append(torch.tensor(v, dtype=torch.float32).reshape(()))
-            done_buf.append(torch.tensor(d, dtype=torch.float32).reshape(()))
+            done_buf.append(torch.tensor(float(d), dtype=torch.float32).reshape(()))
             
             # Update observation
             self._obs = next_obs
@@ -145,12 +170,52 @@ class FedRepTrainer:
             "done": extras["done"],
         }
         
-        # Update policy with standard PPO (no KL penalties)
-        logs = self.agent.update(
-            batch,
-            epochs=self.update_epochs,
-            minibatch_size=self.minibatch_size,
-        )
+        # FedRep two-phase local update.
+        # Phase 1 (head): freeze encoder, fit personalized head + log_std + value
+        # Phase 2 (rep):  freeze head, fit shared encoder
+        # Critical fix: PPO's importance ratio uses `old_logp` from rollout
+        # time. After head_epochs of head updates the policy has drifted, so
+        # by phase=rep the ratio is already far from 1 and PPO's clip
+        # mechanism truncates the encoder gradient. We re-snapshot `old_logp`
+        # using the current (post-head) policy so phase=rep starts with
+        # ratio=1 and the encoder gets a clean gradient signal.
+        # If both phase epoch counts are zero, fall back to single-phase PPO.
+        if self.head_epochs > 0 or self.rep_epochs > 0:
+            logs_head = self.agent.update(
+                batch,
+                epochs=max(self.head_epochs, 0),
+                minibatch_size=self.minibatch_size,
+                phase="head",
+            ) if self.head_epochs > 0 else {}
+
+            # Re-snapshot old_logp post-head so rep phase starts at ratio=1.
+            if self.head_epochs > 0 and self.rep_epochs > 0:
+                with torch.no_grad():
+                    new_logp, _, _, _ = self.agent.evaluate(batch["s"], batch["a"])
+                # Mutate a copy to keep the original logps_old in `extras` clean.
+                batch_rep = dict(batch)
+                batch_rep["old_logp"] = new_logp.detach()
+            else:
+                batch_rep = batch
+
+            logs_rep = self.agent.update(
+                batch_rep,
+                epochs=max(self.rep_epochs, 0),
+                minibatch_size=self.minibatch_size,
+                phase="rep",
+            ) if self.rep_epochs > 0 else {}
+            # Merge: prefer rep-phase metrics for the encoder gradient signal,
+            # but keep head metrics under a `head/` prefix.
+            logs = dict(logs_rep) if logs_rep else dict(logs_head)
+            for k, v in (logs_head or {}).items():
+                logs[f"head/{k}"] = v
+        else:
+            logs = self.agent.update(
+                batch,
+                epochs=self.update_epochs,
+                minibatch_size=self.minibatch_size,
+                phase="both",
+            )
         
         # Evaluation
         eval_ret = 0.0
@@ -174,8 +239,28 @@ class FedRepTrainer:
                     self.writer.log({k: v})
             except Exception:
                 pass
-        
+
+        from fedguide.utils.federated_render import maybe_save_federated_eval_video
+
+        maybe_save_federated_eval_video(
+            self.env,
+            server_round=self.server_round,
+            render_eval=self.render_eval,
+            render_mode=self.render_mode,
+            render_save_dir=self.render_save_dir,
+            render_every_n_rounds=self.render_every_n_rounds,
+            render_episodes=self.render_episodes,
+            eval_episodes=self.eval_episodes,
+            client_tag=self.render_client_tag,
+            act_fn=self._policy_action_for_render,
+        )
+
         return out
+
+    def _policy_action_for_render(self, obs: Any) -> Any:
+        a, _, _ = self.agent.select_action(obs, deterministic=True)
+        a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
+        return a
     
     def _eval_episode(self) -> float:
         """Evaluate policy for one episode."""
@@ -186,7 +271,8 @@ class FedRepTrainer:
         while not done:
             a, _, _ = self.agent.select_action(obs, deterministic=True)
             a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
-            obs, r, done, _trunc, _info = self.env.step(a)
+            obs, r, terminated, truncated, _info = self.env.step(a)
+            done = bool(terminated) or bool(truncated)
             ep_ret += r
         return ep_ret
     
@@ -205,7 +291,8 @@ class FedRepTrainer:
         while not done:
             a, _, _ = self.agent.select_action(obs, deterministic=True)
             a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
-            obs, r, done, _trunc, _info = self.env.step(a)
+            obs, r, terminated, truncated, _info = self.env.step(a)
+            done = bool(terminated) or bool(truncated)
             ep_ret += r
             traj.append(obs.copy() if hasattr(obs, 'copy') else np.array(obs))
         

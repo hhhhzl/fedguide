@@ -1,0 +1,47 @@
+# MFPO (INFOCOM 2024)
+
+env_type: "reacher_hetero"
+metadata_path: "data/reacher/metadata.json"
+num_clients: 8
+random_select_clients: false
+
+algorithm: "mfpo"
+
+rounds: 100
+cpus_per_client: 2
+
+# MFPO paper / code defaults (conf_temp_*.py)
+batch_size: 20
+local_update: 10
+gamma: 0.99
+c: 3.0
+average_type: "target"
+learning_rate_a: 1e-4
+learning_rate_c: 1e-4
+lr_a: 1e-4
+lr_c: 1e-4
+eps: 1e-5
+decay_rate: 0.99
+decay_start_iter_id: 500
+
+use_wandb: false
+wandb_project: null
+run_name: null
+
+output_dir: "./model/policy/reacher/mfpo"
+metrics_dir: "./metrics/reacher/mfpo"
+collect_metrics_every: 5
+
+device: "auto"
+gpus_per_client: 0.25
+
+seed: [0]
+
+render_eval: true
+render_mode: "video"
+render_save_dir: "./plots/reacher/mfpo"
+render_every_n_rounds: 20
+render_episodes: 10
+
+bc_root: ./model/bc_policy
+bc_env_name: Reacher

@@ -20,6 +20,10 @@ def _to_device(module_or_tensor, device):
     return module_or_tensor
 
 
+_DEFAULT_ACTION_LOW: float = -1.0
+_DEFAULT_ACTION_HIGH: float = 1.0
+
+
 class PolicyNetwork(nn.Module):
     """Policy network for continuous action spaces."""
     
@@ -36,9 +40,12 @@ class PolicyNetwork(nn.Module):
         
         x = F.relu(self.fc1(state))
         x = F.relu(self.fc2(x))
+        # Output the raw mean. Bounding the mean before sampling clips
+        # gradients on saturated outputs (the previous Bandit2D-only
+        # `clamp(-1.5, 1.5)` here broke training on Reacher / HalfCheetah).
+        # Action clipping is applied at sampling time using the env's actual
+        # action_space bounds, not here.
         mean = self.mean(x)
-        # Clamp to valid range for Bandit2D
-        mean = torch.clamp(mean, -1.5, 1.5)
         return mean
 
 
@@ -81,11 +88,18 @@ class FedMomentumAgent(nn.Module):
         vf_coef: float = 0.5,
         max_grad_norm: float = 0.5,
         device: Optional[str] = None,
+        action_low: Optional[float] = None,
+        action_high: Optional[float] = None,
     ):
         super().__init__()
-        
+
         self.state_dim = state_dim
         self.action_dim = action_dim
+        # Bounds used to clip *sampled actions* (NOT the policy mean) at
+        # sampling time. Defaults to [-1, 1] which matches MuJoCo MuJoCo
+        # cont-control envs (Reacher / HalfCheetah / Hopper / Walker / Ant).
+        self.action_low = float(action_low) if action_low is not None else _DEFAULT_ACTION_LOW
+        self.action_high = float(action_high) if action_high is not None else _DEFAULT_ACTION_HIGH
         self.gamma = gamma
         self.clip_eps = clip_eps
         self.gae_lambda = gae_lambda
@@ -142,8 +156,10 @@ class FedMomentumAgent(nn.Module):
         
         dist, mu = self._dist(state)
         action = mu if deterministic else dist.sample()
-        action = torch.clamp(action, -1.5, 1.5)  # Clamp for Bandit2D
+        # Clamp sampled action to env action bounds. log_prob is computed on
+        # the unclamped sample so gradients still flow.
         logp = dist.log_prob(action).sum(dim=-1)
+        action = torch.clamp(action, self.action_low, self.action_high)
         value = self.value_fn(state).squeeze(-1)
         
         # Return numpy arrays
@@ -201,17 +217,16 @@ class FedMomentumAgent(nn.Module):
         self.optimizer.zero_grad()
         policy_loss.backward()
         
-        # Extract gradients
+        # Extract gradients in the same key order as get_parameters() / Flower flat list
+        # (sorted policy state_dict keys, then log_std) — required for server aggregation.
         policy_grad = {}
-        
-        # Policy network gradients
-        for name, param in self.policy.named_parameters():
-            if param.grad is not None:
-                policy_grad[f"policy.{name}"] = param.grad.clone()
-        
-        # Log std gradient
-        if self.log_std.grad is not None:
-            policy_grad["log_std"] = self.log_std.grad.clone()
+        params_by_name = {n: p for n, p in self.policy.named_parameters()}
+        for key in sorted(params_by_name.keys()):
+            param = params_by_name[key]
+            g = param.grad if param.grad is not None else torch.zeros_like(param.data)
+            policy_grad[f"policy.{key}"] = g.clone()
+        g_ls = self.log_std.grad if self.log_std.grad is not None else torch.zeros_like(self.log_std.data)
+        policy_grad["log_std"] = g_ls.clone()
         
         # Clear gradients (we'll compute them again during actual update)
         self.optimizer.zero_grad()
@@ -273,8 +288,8 @@ class FedMomentumAgent(nn.Module):
                 mb_advantages = advantages[batch_indices]
                 mb_old_logps = old_logps[batch_indices] if old_logps is not None else None
                 
-                # Evaluate current policy
-                logps, entropy, values = self.evaluate(mb_states, mb_actions)
+                # Evaluate current policy (evaluate returns log_prob, entropy, value, mu)
+                logps, entropy, values, _mu = self.evaluate(mb_states, mb_actions)
                 
                 # Compute policy loss (PPO clipped objective)
                 if mb_old_logps is not None:

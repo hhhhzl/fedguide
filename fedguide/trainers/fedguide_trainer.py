@@ -23,6 +23,21 @@ class FedguideTrainer:
         online_prior: bool = False,
         eval_episodes: int = 1,
         writer: Optional[Any] = None,
+        render_eval: bool = False,
+        render_mode: str = "video",
+        render_save_dir: Optional[str] = None,
+        render_every_n_rounds: int = 10,
+        render_episodes: int = 5,
+        render_client_tag: str = "0",
+        # DICE integration knobs (all default off; one-of pattern, but they
+        # can be combined at your own risk).
+        # Path 5 — DICE reward shaping: r̃ = r + eta * Q_φ(s,a).
+        dice_reward_eta: float = 0.0,
+        # Path 4 — DICE V baseline blend: V_blend = α·V_PPO + (1-α)·V_φ.
+        # α=1 disables blend (pure PPO V), α=0 fully relies on offline DICE V.
+        dice_v_blend_alpha: float = 1.0,
+        # Path 3 — Advantage reshape: Ã = A · exp(β·Q̂_norm(s,a)) clipped.
+        dice_adv_beta: float = 0.0,
     ):
         self.agent = agent
         self.env = env
@@ -42,14 +57,32 @@ class FedguideTrainer:
         self.online_prior = online_prior
         self.eval_episodes = eval_episodes
         self.writer = writer
+        self.render_eval = render_eval
+        self.render_mode = render_mode
+        self.render_save_dir = render_save_dir
+        self.render_every_n_rounds = render_every_n_rounds
+        self.render_episodes = render_episodes
+        self.render_client_tag = render_client_tag
+        self.dice_reward_eta = float(dice_reward_eta)
+        self.dice_v_blend_alpha = float(dice_v_blend_alpha)
+        self.dice_adv_beta = float(dice_adv_beta)
 
-    def set_server_round(self, rnd: int):
-        """Set current server round for lambda_guide annealing."""
-        self.server_round = int(rnd)
-
+        # Initialize current obs once; rollouts continue across rounds for non-bandit envs.
         reset_result = self.env.reset()
         self._obs = reset_result[0] if isinstance(reset_result, tuple) else reset_result
         self.last_actions = None  # Store last rollout actions for metrics collection
+
+    def set_server_round(self, rnd: int):
+        """Set current server round for lambda_guide annealing.
+        Note: do NOT reset env here — that destroys rollout continuity for continuous tasks.
+        """
+        self.server_round = int(rnd)
+        if hasattr(self.agent, "anneal_log_std") and getattr(self.agent, "log_std_anneal", False):
+            self.agent.anneal_log_std(
+                self.server_round,
+                target=getattr(self.agent, "log_std_anneal_target", -2.0),
+                decay_rounds=getattr(self.agent, "log_std_anneal_rounds", 40),
+            )
 
     # ---------------- Rollout + GAE ----------------
     def _rollout(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
@@ -57,14 +90,15 @@ class FedguideTrainer:
         for _ in range(self.n_steps):
             a, logp, v = self.agent.select_action(self._obs, deterministic=False)
             a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
-            next_obs, r, d, _trunc, _info = self.env.step(a)
+            next_obs, r, terminated, truncated, _info = self.env.step(a)
+            d = bool(terminated) or bool(truncated)
 
             obs_buf.append(torch.tensor(self._obs, dtype=torch.float32))
             act_buf.append(torch.tensor(a, dtype=torch.float32))
             logp_buf.append(torch.tensor(logp, dtype=torch.float32).reshape(()))
             rew_buf.append(torch.tensor(r, dtype=torch.float32).reshape(()))
             val_buf.append(torch.tensor(v, dtype=torch.float32).reshape(()))
-            done_buf.append(torch.tensor(d, dtype=torch.float32).reshape(()))
+            done_buf.append(torch.tensor(float(d), dtype=torch.float32).reshape(()))
 
             self._obs = next_obs
             if d:
@@ -82,7 +116,46 @@ class FedguideTrainer:
             _, _, last_v = self.agent.select_action(self._obs, deterministic=True)
             last_v = torch.tensor(last_v, dtype=torch.float32).reshape(())
 
+        # ---- DICE integrations (paths 3/4/5) ----
+        guidance = getattr(self.agent, "guidance", None)
+        agent_device = getattr(self.agent, "device", torch.device("cpu"))
+
+        # Path 5: reward shaping with DICE Q
+        if self.dice_reward_eta != 0.0 and guidance is not None and hasattr(guidance, "q0"):
+            with torch.no_grad():
+                s_dev = states.to(agent_device)
+                a_dev = actions.to(agent_device)
+                q_shape = guidance.q0(a_dev, s_dev).detach().squeeze(-1).cpu()
+            rewards = rewards + self.dice_reward_eta * q_shape
+
+        # Path 4: V baseline blend
+        if (
+            self.dice_v_blend_alpha < 1.0
+            and guidance is not None
+            and hasattr(guidance, "v0")
+        ):
+            with torch.no_grad():
+                s_dev = states.to(agent_device)
+                v_dice = guidance.v0(s_dev).detach().squeeze(-1).cpu()
+                last_obs_t = torch.tensor(self._obs, dtype=torch.float32, device=agent_device).unsqueeze(0)
+                last_v_dice = guidance.v0(last_obs_t).detach().squeeze().cpu()
+            alpha = self.dice_v_blend_alpha
+            values = alpha * values + (1.0 - alpha) * v_dice
+            last_v = alpha * last_v + (1.0 - alpha) * last_v_dice
+
         adv, ret = self._gae(rewards, values, dones, last_v)
+
+        # Path 3: advantage reshape with DICE Q (after GAE so it scales the
+        # GAE-computed advantage rather than substitutes for it).
+        if self.dice_adv_beta != 0.0 and guidance is not None and hasattr(guidance, "q0"):
+            with torch.no_grad():
+                s_dev = states.to(agent_device)
+                a_dev = actions.to(agent_device)
+                q_raw = guidance.q0(a_dev, s_dev).detach().squeeze(-1).cpu()
+                q_norm = (q_raw - q_raw.mean()) / (q_raw.std() + 1e-6)
+            multiplier = (self.dice_adv_beta * q_norm).exp().clamp(0.5, 2.0)
+            adv = adv * multiplier
+            ret = adv + values  # keep return consistent with reshaped advantage
         extras = {
             "adv": adv,
             "r": rewards,
@@ -166,7 +239,27 @@ class FedguideTrainer:
             except Exception:
                 pass
 
+        from fedguide.utils.federated_render import maybe_save_federated_eval_video
+
+        maybe_save_federated_eval_video(
+            self.env,
+            server_round=self.server_round,
+            render_eval=self.render_eval,
+            render_mode=self.render_mode,
+            render_save_dir=self.render_save_dir,
+            render_every_n_rounds=self.render_every_n_rounds,
+            render_episodes=self.render_episodes,
+            eval_episodes=self.eval_episodes,
+            client_tag=self.render_client_tag,
+            act_fn=self._policy_action_for_render,
+        )
+
         return out
+
+    def _policy_action_for_render(self, obs: Any) -> Any:
+        a, _, _ = self.agent.select_action(obs, deterministic=True)
+        a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
+        return a
 
     def _eval_episode(self) -> float:
         reset_result = self.env.reset()
@@ -176,7 +269,8 @@ class FedguideTrainer:
         while not done:
             a, _, _ = self.agent.select_action(obs, deterministic=True)
             a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
-            obs, r, done, _trunc, _info = self.env.step(a)
+            obs, r, terminated, truncated, _info = self.env.step(a)
+            done = bool(terminated) or bool(truncated)
             ep_ret += r
         return ep_ret
 
@@ -199,7 +293,8 @@ class FedguideTrainer:
         while not done:
             a, _, _ = self.agent.select_action(obs, deterministic=True)
             a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
-            obs, r, done, _trunc, _info = self.env.step(a)
+            obs, r, terminated, truncated, _info = self.env.step(a)
+            done = bool(terminated) or bool(truncated)
             ep_ret += r
             traj.append(obs.copy() if hasattr(obs, 'copy') else np.array(obs))
         

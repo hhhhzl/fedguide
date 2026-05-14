@@ -122,6 +122,9 @@ class FedRLClient(fl.client.NumPyClient):
         cid = getattr(self, "cid", config.get("cid", "unknown"))
         self.metrics.set_step(rnd)
 
+        if hasattr(self.trainer, "set_server_round"):
+            self.trainer.set_server_round(rnd)
+
         # Train one round
         train_result = self.trainer.train_one_round()
         
@@ -333,54 +336,77 @@ class FedRLClient(fl.client.NumPyClient):
         return new_params, samples, fit_metrics
 
     def evaluate(self, parameters, config):
-        """Evaluate the model on the local dataset.
-        
-        Returns:
-            loss: Loss value (float)
-            num_examples: Number of examples evaluated (int)
-            metrics: Dictionary of metrics (dict)
+        """Distributed evaluation of the global model θ_r broadcast by the server.
+
+        Emits ``eval/return`` into ``History.metrics_distributed`` (NOT
+        ``metrics_distributed_fit``). Subclasses may still override this for
+        finer-grained behavior; the default tries the standard trainer eval
+        hooks in priority order:
+
+          1. ``trainer._eval_episode()``  (FedRL/FedRep/FedMomentum-style)
+          2. ``trainer.agent.worker.test(rnd)``  (MFPO-style)
+          3. ``trainer.last_eval_return``  (cached from the most recent fit)
+
+        If none works, returns NaN loss with ``num_examples=1`` so Flower's
+        FedAvg aggregator does not silently drop the round.
         """
-        # Convert parameters from Flower Parameters object to list of numpy arrays if needed
         from flwr.common import parameters_to_ndarrays
-        if hasattr(parameters, 'tensors'):  # It's a Parameters object
+        if hasattr(parameters, 'tensors'):
             parameters = parameters_to_ndarrays(parameters)
-        
-        # Set parameters first
-        self.set_parameters(parameters)
-        
-        # Get round number
+
+        try:
+            self.set_parameters(parameters)
+        except Exception as e:
+            print(f"[BaseFedRLClient evaluate] set_parameters failed: {e}")
+
         rnd = int(config.get("server_round", 0))
         cid = getattr(self, "cid", config.get("cid", "unknown"))
-        
-        # Run evaluation if trainer supports it
-        loss = float("nan")
-        num_examples = 0
-        metrics = {}
-        
-        try:
-            # Try to get evaluation metrics from trainer
-            if hasattr(self.trainer, "save_eval"):
-                # save_eval typically returns success flag, but we can use it for evaluation
-                success = self.trainer.save_eval(cid, rnd)
-                metrics["success"] = int(bool(success))
-                num_examples = int(getattr(self.trainer, "n_steps", 0))
-            
-            # Try to get loss from trainer if available
-            if hasattr(self.trainer, "last_loss"):
-                loss = float(self.trainer.last_loss)
-            elif hasattr(self.trainer, "loss"):
-                loss_val = self.trainer.loss
-                if callable(loss_val):
-                    try:
-                        loss = float(loss_val())
-                    except (TypeError, ValueError):
-                        pass
-                else:
-                    loss = float(loss_val)
-        except Exception:
-            pass
-        
-        # Return tuple: (loss, num_examples, metrics)
+
+        eval_return = float("nan")
+        n_episodes = 0
+
+        # Path 1: episode-by-episode eval (PPO/DDPG/SVRPG trainers)
+        if hasattr(self.trainer, "_eval_episode"):
+            n_ep = max(1, int(getattr(self.trainer, "eval_episodes", 1)))
+            try:
+                total = 0.0
+                for _ in range(n_ep):
+                    total += float(self.trainer._eval_episode())
+                eval_return = total / float(n_ep)
+                n_episodes = n_ep
+            except Exception as e:
+                print(f"[BaseFedRLClient {cid}] _eval_episode failed: {e}")
+
+        # Path 2: MFPO worker.test()
+        elif (hasattr(self.trainer, "agent")
+              and hasattr(self.trainer.agent, "worker")
+              and hasattr(self.trainer.agent.worker, "test")):
+            try:
+                eval_return = float(self.trainer.agent.worker.test(rnd))
+                n_episodes = 1
+            except Exception as e:
+                print(f"[BaseFedRLClient {cid}] worker.test failed: {e}")
+
+        # Path 3: cached eval return from the most recent fit
+        elif hasattr(self.trainer, "last_eval_return"):
+            try:
+                eval_return = float(self.trainer.last_eval_return)
+                n_episodes = 1
+            except Exception:
+                pass
+
+        metrics: Dict[str, Any] = {}
+        is_finite = (eval_return == eval_return) and (eval_return not in (float("inf"), float("-inf")))
+        if is_finite:
+            metrics["eval/return"] = float(eval_return)
+            loss = float(-eval_return)  # higher return = lower loss
+            print(f"[BaseFedRLClient {cid}] evaluate round {rnd}: eval/return = {eval_return:.4f}")
+        else:
+            loss = float("nan")
+            print(f"[BaseFedRLClient {cid}] evaluate round {rnd}: no eval path produced a finite return")
+
+        # Always return num_examples >= 1 so Flower does not drop the round
+        num_examples = max(1, n_episodes)
         return loss, num_examples, metrics
 
     def __del__(self):

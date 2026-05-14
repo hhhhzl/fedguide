@@ -1,14 +1,9 @@
 """
-FedMomentum Trainer Implementation - SVRPG (Stochastic Variance Reduced Policy Gradient)
+FedMomentum trainer (PPO rollout + SVRPG-style gradient for uplink).
 
-This module implements the SVRPG trainer for federated reinforcement learning.
-Based on the paper: "Momentum for the Win: Collaborative Federated Reinforcement Learning across Heterogeneous Environments"
-
-SVRPG uses a reference policy to reduce variance in policy gradient estimation.
-Algorithm:
-1. Periodically update reference policy (snapshot)
-2. Compute gradient with variance reduction term
-3. g_svrpg = g_current - g_reference + g_smooth_reference
+arxiv:2405.19499 (FedSVRPG-M) uses local VR momentum (Eq. 4) and importance weights;
+this codebase uses a practical PPO rollout + reference-policy VR for the
+policy_gradient sent to the server. The server applies θ ← θ + λ·ḡ (see server.py).
 """
 
 import torch
@@ -51,6 +46,12 @@ class SVRPGTrainer:
         reference_update_freq: int = 5,  # Update reference policy every K rounds (paper: 5-10)
         use_svrpg: bool = True,  # If False, use vanilla policy gradient
         writer: Optional[Any] = None,
+        render_eval: bool = False,
+        render_mode: str = "video",
+        render_save_dir: Optional[str] = None,
+        render_every_n_rounds: int = 10,
+        render_episodes: int = 5,
+        render_client_tag: str = "0",
     ):
         self.agent = agent
         self.env = env
@@ -66,7 +67,14 @@ class SVRPGTrainer:
         self.minibatch_size = minibatch_size
         self.max_grad_norm = max_grad_norm
         self.eval_episodes = eval_episodes
-        
+        self.server_round = 0
+        self.render_eval = render_eval
+        self.render_mode = render_mode
+        self.render_save_dir = render_save_dir
+        self.render_every_n_rounds = render_every_n_rounds
+        self.render_episodes = render_episodes
+        self.render_client_tag = render_client_tag
+
         # SVRPG-specific
         self.reference_update_freq = reference_update_freq
         self.use_svrpg = use_svrpg
@@ -93,6 +101,9 @@ class SVRPGTrainer:
         
         # Store last computed policy gradient (for client to return)
         self.last_policy_gradient = None
+
+    def set_server_round(self, rnd: int):
+        self.server_round = int(rnd)
     
     # ---------------- Rollout + GAE ----------------
     def _rollout(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
@@ -104,8 +115,9 @@ class SVRPGTrainer:
             a, logp, v = self.agent.select_action(self._obs, deterministic=False)
             a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
             
-            # Step environment
-            next_obs, r, d, _trunc, _info = self.env.step(a)
+            # Step environment (Gymnasium: terminated, truncated — both end the episode)
+            next_obs, r, terminated, truncated, _info = self.env.step(a)
+            d = bool(terminated) or bool(truncated)
             
             # Store transition
             obs_buf.append(torch.tensor(self._obs, dtype=torch.float32))
@@ -113,7 +125,7 @@ class SVRPGTrainer:
             logp_buf.append(torch.tensor(logp, dtype=torch.float32).reshape(()))
             rew_buf.append(torch.tensor(r, dtype=torch.float32).reshape(()))
             val_buf.append(torch.tensor(v, dtype=torch.float32).reshape(()))
-            done_buf.append(torch.tensor(d, dtype=torch.float32).reshape(()))
+            done_buf.append(torch.tensor(float(d), dtype=torch.float32).reshape(()))
             
             # Update observation
             self._obs = next_obs
@@ -421,8 +433,28 @@ class SVRPGTrainer:
                     self.writer.log({k: v})
             except Exception:
                 pass
-        
+
+        from fedguide.utils.federated_render import maybe_save_federated_eval_video
+
+        maybe_save_federated_eval_video(
+            self.env,
+            server_round=self.server_round,
+            render_eval=self.render_eval,
+            render_mode=self.render_mode,
+            render_save_dir=self.render_save_dir,
+            render_every_n_rounds=self.render_every_n_rounds,
+            render_episodes=self.render_episodes,
+            eval_episodes=self.eval_episodes,
+            client_tag=self.render_client_tag,
+            act_fn=self._policy_action_for_render,
+        )
+
         return out
+
+    def _policy_action_for_render(self, obs: Any) -> Any:
+        a, _, _ = self.agent.select_action(obs, deterministic=True)
+        a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
+        return a
     
     def get_policy_gradient(self) -> Dict[str, torch.Tensor]:
         """
@@ -451,7 +483,8 @@ class SVRPGTrainer:
         while not done:
             a, _, _ = self.agent.select_action(obs, deterministic=True)
             a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
-            obs, r, done, _trunc, _info = self.env.step(a)
+            obs, r, terminated, truncated, _info = self.env.step(a)
+            done = bool(terminated) or bool(truncated)
             ep_ret += r
         return ep_ret
     
@@ -468,7 +501,8 @@ class SVRPGTrainer:
         while not done:
             a, _, _ = self.agent.select_action(obs, deterministic=True)
             a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
-            obs, r, done, _trunc, _info = self.env.step(a)
+            obs, r, terminated, truncated, _info = self.env.step(a)
+            done = bool(terminated) or bool(truncated)
             ep_ret += r
             traj.append(obs.copy() if hasattr(obs, 'copy') else np.array(obs))
         
@@ -539,6 +573,12 @@ class HAPGTrainer(SVRPGTrainer):
         reference_update_freq: int = 5,
         use_svrpg: bool = False,  # Can combine with SVRPG
         writer: Optional[Any] = None,
+        render_eval: bool = False,
+        render_mode: str = "video",
+        render_save_dir: Optional[str] = None,
+        render_every_n_rounds: int = 10,
+        render_episodes: int = 5,
+        render_client_tag: str = "0",
     ):
         # Initialize parent SVRPG trainer
         super().__init__(
@@ -558,6 +598,12 @@ class HAPGTrainer(SVRPGTrainer):
             reference_update_freq=reference_update_freq,
             use_svrpg=use_svrpg,
             writer=writer,
+            render_eval=render_eval,
+            render_mode=render_mode,
+            render_save_dir=render_save_dir,
+            render_every_n_rounds=render_every_n_rounds,
+            render_episodes=render_episodes,
+            render_client_tag=render_client_tag,
         )
         
         # HAPG-specific parameters
@@ -894,6 +940,21 @@ class HAPGTrainer(SVRPGTrainer):
                     self.writer.log({k: v})
             except Exception:
                 pass
-        
+
+        from fedguide.utils.federated_render import maybe_save_federated_eval_video
+
+        maybe_save_federated_eval_video(
+            self.env,
+            server_round=self.server_round,
+            render_eval=self.render_eval,
+            render_mode=self.render_mode,
+            render_save_dir=self.render_save_dir,
+            render_every_n_rounds=self.render_every_n_rounds,
+            render_episodes=self.render_episodes,
+            eval_episodes=self.eval_episodes,
+            client_tag=self.render_client_tag,
+            act_fn=self._policy_action_for_render,
+        )
+
         return out
 

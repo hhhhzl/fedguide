@@ -26,5 +26,7 @@ mujoco==3.3.6
 cython==0.29.22
 minari==0.5.3
 pyglet==2.1.11
-opencv-python==4.12.0.88
+# 4.12+ requires numpy>=2 on py3.9+; stack pins numpy 1.26.x (accelerate, SB3).
+opencv-python==4.11.0.86
 imutils==0.5.4
+imageio[ffmpeg]>=2.31.0  # PPO/SAC MP4 eval videos (bundled ffmpeg via imageio-ffmpeg)

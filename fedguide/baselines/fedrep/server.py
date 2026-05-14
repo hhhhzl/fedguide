@@ -64,6 +64,34 @@ class FedRepStrategy(StrategyClass):
         initial_parameters: Optional[Parameters] = None,
         init_parameters: Optional[Parameters] = None,
     ):
+        # Aggregator for client-reported scalars (train/return etc.) — without
+        # this Flower's FedAvg drops fit_metrics on the floor and the History
+        # ends up empty.
+        def _agg_fit_metrics(metrics_list):
+            if not metrics_list:
+                return {}
+            total_n = sum(n for n, _ in metrics_list) or 1
+            out: Dict[str, float] = {}
+            for n, m in metrics_list:
+                for k, v in (m or {}).items():
+                    if isinstance(v, (int, float)):
+                        out[k] = out.get(k, 0.0) + float(v) * (n / total_n)
+            return out
+
+        # Same aggregator for distributed evaluate metrics. Without this,
+        # FedAvg discards per-client `eval/return` and `metrics_distributed`
+        # is empty in the saved history.
+        def _agg_eval_metrics(metrics_list):
+            if not metrics_list:
+                return {}
+            total_n = sum(n for n, _ in metrics_list) or 1
+            out: Dict[str, float] = {}
+            for n, m in metrics_list:
+                for k, v in (m or {}).items():
+                    if isinstance(v, (int, float)):
+                        out[k] = out.get(k, 0.0) + float(v) * (n / total_n)
+            return out
+
         # If using FedAvg, initialize it with our parameters
         if StrategyClass.__name__ == "FedAvg":
             super().__init__(
@@ -77,6 +105,8 @@ class FedRepStrategy(StrategyClass):
                 on_evaluate_config_fn=on_evaluate_config_fn,
                 accept_failures=accept_failures,
                 initial_parameters=initial_parameters or init_parameters,
+                fit_metrics_aggregation_fn=_agg_fit_metrics,
+                evaluate_metrics_aggregation_fn=_agg_eval_metrics,
             )
         else:
             # If using actual FedRep strategy, use its initialization

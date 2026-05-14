@@ -51,7 +51,8 @@ except ImportError as e:
 try:
     import d4rl.gym_bullet
     import d4rl.pointmaze_bullet
-except ImportError as e:
+except (ImportError, AttributeError) as e:
+    # AttributeError: pybullet_envs vs newer gym registry (env_specs); skip bullet envs
     if not SUPPRESS_MESSAGES:
         print(_ERROR_MESSAGE % 'GymBullet', file=sys.stderr)
         print(e, file=sys.stderr)

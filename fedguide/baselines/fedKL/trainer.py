@@ -39,6 +39,12 @@ class FedKLTrainer:
         max_grad_norm: float = 0.5,
         eval_episodes: int = 1,
         writer: Optional[Any] = None,
+        render_eval: bool = False,
+        render_mode: str = "video",
+        render_save_dir: Optional[str] = None,
+        render_every_n_rounds: int = 10,
+        render_episodes: int = 5,
+        render_client_tag: str = "0",
     ):
         self.agent = agent
         self.env = env
@@ -58,6 +64,12 @@ class FedKLTrainer:
         self.eval_episodes = eval_episodes
         self.writer = writer
         self.server_round = 0
+        self.render_eval = render_eval
+        self.render_mode = render_mode
+        self.render_save_dir = render_save_dir
+        self.render_every_n_rounds = render_every_n_rounds
+        self.render_episodes = render_episodes
+        self.render_client_tag = render_client_tag
         self.log_std_anneal = False
         self.log_std_anneal_rounds = 40
         self.log_std_anneal_target = -2.0
@@ -88,7 +100,8 @@ class FedKLTrainer:
             a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
             
             # Step environment
-            next_obs, r, d, _trunc, _info = self.env.step(a)
+            next_obs, r, d, trunc, _info = self.env.step(a)
+            done = bool(d) or bool(trunc)
             
             # Store transition
             obs_buf.append(torch.tensor(self._obs, dtype=torch.float32))
@@ -96,11 +109,11 @@ class FedKLTrainer:
             logp_buf.append(torch.tensor(logp, dtype=torch.float32).reshape(()))
             rew_buf.append(torch.tensor(r, dtype=torch.float32).reshape(()))
             val_buf.append(torch.tensor(v, dtype=torch.float32).reshape(()))
-            done_buf.append(torch.tensor(d, dtype=torch.float32).reshape(()))
+            done_buf.append(torch.tensor(done, dtype=torch.float32).reshape(()))
             
             # Update observation
             self._obs = next_obs
-            if d:
+            if done:
                 reset_result = self.env.reset()
                 self._obs = reset_result[0] if isinstance(reset_result, tuple) else reset_result
         
@@ -224,8 +237,28 @@ class FedKLTrainer:
                     self.writer.log({k: v})
             except Exception:
                 pass
-        
+
+        from fedguide.utils.federated_render import maybe_save_federated_eval_video
+
+        maybe_save_federated_eval_video(
+            self.env,
+            server_round=self.server_round,
+            render_eval=self.render_eval,
+            render_mode=self.render_mode,
+            render_save_dir=self.render_save_dir,
+            render_every_n_rounds=self.render_every_n_rounds,
+            render_episodes=self.render_episodes,
+            eval_episodes=self.eval_episodes,
+            client_tag=self.render_client_tag,
+            act_fn=self._policy_action_for_render,
+        )
+
         return out
+
+    def _policy_action_for_render(self, obs: Any):
+        a, _, _ = self.agent.select_action(obs, deterministic=True)
+        a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
+        return a
     
     def _eval_episode(self) -> float:
         """Evaluate policy for one episode."""
@@ -236,7 +269,8 @@ class FedKLTrainer:
         while not done:
             a, _, _ = self.agent.select_action(obs, deterministic=True)
             a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
-            obs, r, done, _trunc, _info = self.env.step(a)
+            obs, r, terminated, truncated, _info = self.env.step(a)
+            done = bool(terminated) or bool(truncated)
             ep_ret += r
         return ep_ret
     
@@ -260,7 +294,8 @@ class FedKLTrainer:
         while not done:
             a, _, _ = self.agent.select_action(obs, deterministic=True)
             a = np.asarray(a)[0] if isinstance(a, (list, np.ndarray)) and np.asarray(a).ndim > 1 else a
-            obs, r, done, _trunc, _info = self.env.step(a)
+            obs, r, terminated, truncated, _info = self.env.step(a)
+            done = bool(terminated) or bool(truncated)
             ep_ret += r
             traj.append(obs.copy() if hasattr(obs, 'copy') else np.array(obs))
         

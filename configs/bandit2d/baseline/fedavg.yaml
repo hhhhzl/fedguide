@@ -1,0 +1,61 @@
+# FedAvg Training Configuration for Bandit2D Environment
+# FedAvg = FedKL with lambda_global=0, lambda_local=0 (no KL penalty, just parameter averaging)
+
+# Environment configuration
+env_type: "bandit2d"
+data_dir: "data/bandit2d"
+num_clients: 4
+
+# Environment-specific parameters (for bandit2d)
+K: 4
+sigma: 0.2
+
+# Federated learning configuration
+rounds: 60
+cpus_per_client: 2
+
+# Training configuration
+n_steps: 200
+lambda_global: 0.0   # FedAvg: no global KL penalty
+lambda_local: 0.0    # FedAvg: no local KL penalty
+update_epochs: 10
+minibatch_size: 64
+clip_eps: 0.2
+entropy_coef: 0.01
+value_coef: 0.5
+max_grad_norm: 0.5
+
+# Same as FedKL for fair comparison
+init_log_std: -1.0
+log_std_anneal: true
+log_std_anneal_rounds: 40
+log_std_anneal_target: -2.0
+
+# Network configuration
+hidden_dim: 256
+lr: 3e-4
+
+# Logging configuration
+use_wandb: false
+wandb_project: null
+run_name: null
+
+# Warm-start ablation: same per-client policy init as FedGuide-prior/pg.
+# Tests whether equal start + standard FedAvg aggregation also preserves
+# multimodality (expected NO — first round of policy averaging collapses modes).
+prior_dir: "./model/models_prior_gauss"
+prior_env_name: "Bandit2D"
+
+# Output configuration
+output_dir: "./model/policy/bandit2d/fedavg"
+metrics_dir: "./metrics/bandit2d/fedavg"
+collect_metrics_every: 1
+
+# Device configuration
+device: "auto"
+
+# Random seed configuration
+seed: [0, 1, 2, 3, 4]
+
+bc_root: ./model/bc_policy
+bc_env_name: Bandit2D

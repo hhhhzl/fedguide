@@ -8,6 +8,7 @@ Supports both DQN (discrete actions) and DDPG (continuous actions).
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Callable, Iterable
+import os
 import random
 import numpy as np
 import torch
@@ -18,18 +19,10 @@ except Exception:
     import gym
 
 from fedguide.fed.client import FedRLClient as BaseFedRLClient
+from fedguide.utils.gym_space_utils import is_box1d as _is_box1d
 
 
 # --------- Helpers ---------
-def _is_box1d(space) -> bool:
-    """Check if space is 1D Box (continuous action space)."""
-    try:
-        from gymnasium.spaces import Box
-    except Exception:
-        from gym.spaces import Box
-    return isinstance(space, Box) and len(space.shape) == 1
-
-
 def _is_discrete(space) -> bool:
     """Check if space is discrete."""
     try:
@@ -45,6 +38,7 @@ def _make_env(
     client_id: Optional[int] = None,
     num_clients: Optional[int] = None,
     metadata_path: Optional[str] = None,
+    render_mode: Optional[str] = None,
 ):
     """Create environment."""
     if env_id.lower() in ["bandit2d", "bandit_2d", "2dbandit"]:
@@ -61,7 +55,17 @@ def _make_env(
 
         if os.path.isfile(metadata_path):
             idx = client_id if client_id is not None else 0
-            return make_hetero_reacher_env_from_metadata(metadata_path, idx, seed=seed)
+            return make_hetero_reacher_env_from_metadata(
+                metadata_path, idx, seed=seed, render_mode=render_mode
+            )
+
+    from fedguide.envs.halfcheetah_hetero import make_halfcheetah_env_if_applicable
+
+    _hc_env = make_halfcheetah_env_if_applicable(
+        metadata_path, client_id, seed, render_mode, render_eval=False
+    )
+    if _hc_env is not None:
+        return _hc_env
 
     if env_id.lower() == "reacher":
         env = gym.make("Reacher-v4")
@@ -231,6 +235,9 @@ class FedRLClient(BaseFedRLClient):  # Inherit from fedguide.fed.client.FedRLCli
         
         if hasattr(self, "metrics"):
             self.metrics.set_step(rnd)
+
+        if hasattr(self.trainer, "set_server_round"):
+            self.trainer.set_server_round(rnd)
         
         # Train one round
         train_result = self.trainer.train_one_round()
@@ -425,6 +432,12 @@ def client_fn_builder(
     merge_interval: int = 16,  # Number of steps per round (E in FedRL)
     eval_episodes: int = 1,
     add_noise: bool = True,  # For DDPG exploration
+    replay_persist_across_rounds: bool = False,
+    ou_enabled: bool = True,
+    ou_mu: float = 0.0,
+    ou_theta: float = 0.15,
+    ou_sigma: float = 0.2,
+    ou_epsilon: float = 1.0,
     # logging
     use_wandb: bool = False,
     wandb_project: Optional[str] = None,
@@ -434,6 +447,15 @@ def client_fn_builder(
     device: str = "cpu",
     cid_mapping_file: Optional[str] = None,
     metadata_path: Optional[str] = None,
+    render_eval: bool = False,
+    render_mode: str = "video",
+    render_save_dir: Optional[str] = None,
+    render_every_n_rounds: int = 10,
+    render_episodes: int = 5,
+    reacher_render_mode: Optional[str] = None,
+    # BC warm-start (DDPG only; actor architecture switches to 256→256 Tanh)
+    bc_root: Optional[str] = None,
+    bc_env_name: Optional[str] = None,
 ):
     """
     Build client function for FedRL (supports both DQN and DDPG).
@@ -477,6 +499,7 @@ def client_fn_builder(
             client_id=mapped_client_id,
             num_clients=num_clients,
             metadata_path=metadata_path,
+            render_mode=reacher_render_mode,
         )
         obs_space, act_space = env.observation_space, env.action_space
         
@@ -516,6 +539,17 @@ def client_fn_builder(
                 device=device,
             )
         else:  # ddpg
+            # Optional BC warm-start (DDPG actor switches to 256→256 Tanh).
+            bc_ckpt_path: Optional[str] = None
+            if bc_root:
+                env_subdir_bc = bc_env_name or env_id
+                cand = os.path.join(bc_root, env_subdir_bc, f"client_{mapped_client_id}",
+                                    "final", "policy.pth")
+                if os.path.isfile(cand):
+                    bc_ckpt_path = cand
+                    print(f"[FedRL cid={mapped_client_id}] BC warm-start ← {cand}")
+                else:
+                    print(f"[FedRL cid={mapped_client_id}] BC ckpt not found: {cand}")
             agent = DDPGAgent(
                 state_dim=state_dim,
                 action_dim=action_dim,
@@ -525,6 +559,14 @@ def client_fn_builder(
                 threshold=threshold,
                 device=device,
                 aggregate_critic=aggregate_critic,
+                ou_enabled=ou_enabled,
+                ou_mu=ou_mu,
+                ou_theta=ou_theta,
+                ou_sigma=ou_sigma,
+                ou_epsilon=ou_epsilon,
+                bc_compatible=bool(bc_root),
+                bc_ckpt_path=bc_ckpt_path,
+                hidden_dim=256,
             )
         
         # 4) trainer
@@ -544,6 +586,12 @@ def client_fn_builder(
                 merge_interval=merge_interval,
                 eval_episodes=eval_episodes,
                 replay_initial=trainer_replay_initial,
+                render_eval=render_eval,
+                render_mode=render_mode,
+                render_save_dir=render_save_dir,
+                render_every_n_rounds=render_every_n_rounds,
+                render_episodes=render_episodes,
+                render_client_tag=str(mapped_client_id),
             )
         else:  # ddpg
             trainer_replay_initial = replay_initial if replay_initial is not None else 1000
@@ -559,6 +607,13 @@ def client_fn_builder(
                 tau=tau,
                 eval_episodes=eval_episodes,
                 add_noise=add_noise,
+                replay_persist_across_rounds=replay_persist_across_rounds,
+                render_eval=render_eval,
+                render_mode=render_mode,
+                render_save_dir=render_save_dir,
+                render_every_n_rounds=render_every_n_rounds,
+                render_episodes=render_episodes,
+                render_client_tag=str(mapped_client_id),
             )
         
         # Get collector from global variable if not passed directly

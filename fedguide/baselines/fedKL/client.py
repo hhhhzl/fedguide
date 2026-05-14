@@ -8,6 +8,8 @@ Only the policy parameters are aggregated; value networks remain local.
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Callable, Iterable
+import json
+import os
 import random
 import numpy as np
 import torch
@@ -18,15 +20,7 @@ except Exception:
     import gym
 
 from fedguide.fed.client import FedRLClient
-
-
-# --------- Helpers ---------
-def _is_box1d(space) -> bool:
-    try:
-        from gymnasium.spaces import Box
-    except Exception:
-        from gym.spaces import Box
-    return isinstance(space, Box) and len(space.shape) == 1
+from fedguide.utils.gym_space_utils import is_box1d as _is_box1d
 
 
 def _make_env(
@@ -36,6 +30,8 @@ def _make_env(
     num_clients: Optional[int] = None,
     sigma: float = 0.2,
     metadata_path: Optional[str] = None,
+    render_mode: Optional[str] = None,
+    reward_type: Optional[str] = None,
 ):
     if env_id.lower() in ["bandit2d", "bandit_2d", "2dbandit"]:
         from fedguide.envs.bandit2d import Bandit2D
@@ -52,8 +48,42 @@ def _make_env(
 
         if os.path.isfile(metadata_path):
             idx = client_id if client_id is not None else 0
-            return make_hetero_reacher_env_from_metadata(metadata_path, idx, seed=seed)
-    
+            return make_hetero_reacher_env_from_metadata(
+                metadata_path, idx, seed=seed, render_mode=render_mode
+            )
+
+    from fedguide.envs.halfcheetah_hetero import make_halfcheetah_env_if_applicable
+
+    _hc_env = make_halfcheetah_env_if_applicable(
+        metadata_path, client_id, seed, render_mode, render_eval=False
+    )
+    if _hc_env is not None:
+        return _hc_env
+
+    # Walker2D / Hopper / Ant (shared locomotion-hetero loader)
+    try:
+        from fedguide.envs.mujoco_locomotion_hetero import make_locomotion_env_if_applicable
+
+        _loc_env = make_locomotion_env_if_applicable(
+            metadata_path, client_id, seed, render_mode, render_eval=False,
+        )
+        if _loc_env is not None:
+            return _loc_env
+    except Exception:
+        pass
+
+    # MetaWorld ML10
+    try:
+        from fedguide.envs.metaworld_hetero import make_metaworld_env_if_applicable
+
+        _mw_env = make_metaworld_env_if_applicable(
+            metadata_path, client_id, seed, render_mode,
+        )
+        if _mw_env is not None:
+            return _mw_env
+    except Exception:
+        pass
+
     env = gym.make(env_id)
     try:
         env.reset(seed=seed)
@@ -88,6 +118,8 @@ class FedKLClient(FedRLClient):
         metrics_collector: Optional[Any] = None,  # Bandit2DMetricsCollector instance
         mapped_client_id: Optional[int] = None,  # Deterministic ID for env/metrics (0..N-1)
         num_clients: Optional[int] = None,
+        policy_save_dir: Optional[str] = None,
+        policy_save_every: int = 0,
     ):
         super().__init__(
             agent=agent,
@@ -105,6 +137,9 @@ class FedKLClient(FedRLClient):
         self.metrics_collector = metrics_collector
         self._mapped_client_id = mapped_client_id
         self._num_clients = num_clients or 4
+        self._device_reported = False
+        self._policy_save_dir = policy_save_dir
+        self._policy_save_every = int(policy_save_every or 0)
     
     def get_parameters(self, config: Dict[str, Any]):
         """Get parameters as a list for Flower compatibility (same as FedGuide)."""
@@ -188,6 +223,17 @@ class FedKLClient(FedRLClient):
         """Override fit to handle parameters and collect actions for metrics (matches FedGuide)."""
         cid = getattr(self, "cid", config.get("cid", "unknown"))
         rnd = int(config.get("server_round", 0))
+        if not self._device_reported:
+            try:
+                pdev = next(self.agent.policy.parameters()).device
+                print(
+                    f"[FedKLClient] cid={cid} round={rnd} policy_device={pdev} "
+                    f"cuda_available={torch.cuda.is_available()}",
+                    flush=True,
+                )
+            except Exception:
+                pass
+            self._device_reported = True
         
         # Handle parameters - Flower may pass Parameters object or list (same as FedGuide)
         if parameters is not None:
@@ -282,6 +328,35 @@ class FedKLClient(FedRLClient):
         # Eval/save (same as FedGuide)
         success = self.trainer.save_eval(cid, rnd)
         samples = int(getattr(self.trainer, "n_steps", 0))
+
+        # Per-client policy checkpoint at fixed cadence (e.g. every 20 rounds).
+        # Saved AFTER local training so the snapshot reflects this client's
+        # locally updated policy, not the broadcast global one.
+        if (
+            self._policy_save_dir
+            and self._policy_save_every > 0
+            and rnd > 0
+            and (rnd % self._policy_save_every == 0)
+        ):
+            try:
+                mid = self._mapped_client_id if self._mapped_client_id is not None else cid
+                client_dir = os.path.join(self._policy_save_dir, f"client_{mid}")
+                os.makedirs(client_dir, exist_ok=True)
+                ckpt_path = os.path.join(client_dir, f"round_{int(rnd):04d}.pth")
+                policy_state = {k: v.detach().cpu() for k, v in self.agent.policy.state_dict().items()}
+                payload = {
+                    "round": int(rnd),
+                    "mapped_client_id": mid,
+                    "cid": str(cid),
+                    "policy_state_dict": policy_state,
+                }
+                log_std = getattr(self.agent, "log_std", None)
+                if log_std is not None and hasattr(log_std, "detach"):
+                    payload["log_std"] = log_std.detach().cpu()
+                torch.save(payload, ckpt_path)
+                print(f"  [FedKLClient {mid}] Saved policy snapshot to {ckpt_path}", flush=True)
+            except Exception as e:
+                print(f"  [FedKLClient] Warning: failed to save policy snapshot: {e}", flush=True)
         
         # Ensure loss is a valid float (same as FedGuide)
         if loss is None:
@@ -400,6 +475,7 @@ def client_fn_builder(
     max_grad_norm: float = 0.5,
     hidden_dim: int = 256,
     lr: float = 3e-4,
+    eval_episodes: int = 1,
     init_log_std: float = 0.0,
     log_std_anneal: bool = False,
     log_std_anneal_rounds: int = 40,
@@ -413,11 +489,34 @@ def client_fn_builder(
     cid_mapping_file: Optional[str] = None,  # File for deterministic cid->0..N-1 mapping
     sigma: float = 0.2,  # Bandit2D reward width (0.4 for hetero)
     metadata_path: Optional[str] = None,  # Reacher heterogeneity (reacher_hetero)
+    prior_dir: Optional[str] = None,  # If set, warm-start policy from per-client Gaussian prior μ
+    prior_env_name: Optional[str] = None,  # subdir under prior_dir; defaults to env_id
+    # BC warm-start: when set, load `./{bc_root}/{env_title}/client_{cid}/final/policy.pth`
+    # into the policy network. Same checkpoint FedGuide uses, so the comparison
+    # of "FedKL/FedAvg + BC" vs "FedGuide + BC" isolates the federation algorithm.
+    bc_root: Optional[str] = None,
+    bc_env_name: Optional[str] = None,  # env subdir under bc_root; defaults to env_id
+    reward_type: Optional[str] = None,  # D4RL AntMaze dense/sparse
+    device: Optional[str] = None,  # cuda / cpu / auto; forwarded from runner config
+    render_eval: bool = False,
+    render_mode: str = "video",
+    render_save_dir: Optional[str] = None,
+    render_every_n_rounds: int = 10,
+    render_episodes: int = 5,
+    render_all_clients: bool = False,
+    reacher_render_mode: Optional[str] = None,
+    policy_save_dir: Optional[str] = None,
+    policy_save_every: int = 0,
 ):
     """
     Build client function for FedKL (matches FedGuide structure exactly).
     """
     
+    # Honour render_all_clients via the same env var used by federated_render.py.
+    # This is process-global so it must be set before client_fn is dispatched.
+    if render_all_clients:
+        os.environ["FEDGUIDE_FEDERATED_RENDER_ALL_CLIENTS"] = "1"
+
     def client_fn(context) -> Any:
         # Import here to avoid circular imports
         from fedguide.baselines.fedKL.agent import FedKLAgent
@@ -447,6 +546,12 @@ def client_fn_builder(
         np.random.seed(base)
         torch.manual_seed(base)
         
+        train_device = device
+        if train_device is None or train_device == "auto":
+            train_device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            train_device = str(train_device)
+        
         # 2) env (client-specific heterogeneity for Bandit2D / Reacher)
         env = _make_env(
             env_id,
@@ -455,6 +560,8 @@ def client_fn_builder(
             num_clients=num_clients,
             sigma=sigma,
             metadata_path=metadata_path,
+            render_mode=reacher_render_mode,
+            reward_type=reward_type,
         )
         obs_space, act_space = env.observation_space, env.action_space
         assert _is_box1d(obs_space) and _is_box1d(act_space), "Only Support 1D Box spaces."
@@ -462,15 +569,71 @@ def client_fn_builder(
         state_dim = int(obs_space.shape[0])
         action_dim = int(act_space.shape[0])
         
-        # 3) agent (FedKL doesn't use pretrained prior/guidance)
+        # 3) agent (FedKL doesn't use pretrained prior/guidance; optionally BC warm-start)
+        bc_ckpt_path: Optional[str] = None
+        if bc_root:
+            env_subdir_bc = bc_env_name or {
+                "Bandit2D": "Bandit2D",
+                "Reacher": "Reacher",
+                "reacher_hetero": "Reacher",
+                "bandit2d": "Bandit2D",
+            }.get(env_id, env_id)
+            cand = os.path.join(bc_root, env_subdir_bc, f"client_{mapped_client_id}", "final", "policy.pth")
+            if os.path.isfile(cand):
+                bc_ckpt_path = cand
+                print(f"[FedKL cid={mapped_client_id}] BC warm-start ← {cand}")
+            else:
+                print(f"[FedKL cid={mapped_client_id}] BC ckpt not found: {cand} (training without warm-start)")
         agent = FedKLAgent(
             state_dim=state_dim,
             action_dim=action_dim,
             hidden_dim=hidden_dim,
             lr=lr,
-            device="cpu",
+            device=train_device,
             init_log_std=init_log_std,
+            bc_ckpt_path=bc_ckpt_path,
         )
+
+        # Optional: warm-start the policy from a per-client Gaussian prior μ.
+        # Used to compare apples-to-apples against FedGuide's D-fix: same start,
+        # different aggregation. The expected outcome is that FedAvg/FedKL still
+        # collapse to a single mode after the first round of policy averaging.
+        if prior_dir:
+            try:
+                env_subdir = prior_env_name or {
+                    "Bandit2D": "Bandit2D",
+                    "Reacher": "Reacher",
+                    "reacher_hetero": "Reacher",
+                    "bandit2d": "Bandit2D",
+                }.get(env_id, env_id)
+                ckpt_path = os.path.join(prior_dir, env_subdir,
+                                         f"client_{mapped_client_id}",
+                                         "final", "torch_prior.pth")
+                if os.path.isfile(ckpt_path):
+                    sd = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+                    inner = sd.get("prior") if isinstance(sd, dict) else None
+                    head_mu = None
+                    if isinstance(inner, dict) and "head_mu" in inner:
+                        head_mu = inner["head_mu"]
+                    elif isinstance(sd, dict) and "head_mu" in sd:
+                        head_mu = sd["head_mu"]
+                    if head_mu is not None and head_mu.shape[-1] == action_dim:
+                        last_lin = None
+                        for m in reversed(list(agent.policy.modules())):
+                            if isinstance(m, torch.nn.Linear) and m.out_features == action_dim:
+                                last_lin = m
+                                break
+                        if last_lin is not None:
+                            mu = head_mu.detach().to(last_lin.bias.device, dtype=last_lin.bias.dtype)
+                            with torch.no_grad():
+                                last_lin.weight.zero_()
+                                last_lin.bias.copy_(mu)
+                            print(f"[FedKL cid={mapped_client_id}] warm-started policy μ ← prior μ = "
+                                  f"{mu.cpu().tolist()}")
+                else:
+                    print(f"[FedKL cid={mapped_client_id}] prior ckpt not found: {ckpt_path}")
+            except Exception as e:
+                print(f"[FedKL cid={mapped_client_id}] warm-start skipped: {e}")
         
         # 4) trainer
         trainer = FedKLTrainer(
@@ -487,7 +650,14 @@ def client_fn_builder(
             lambda_global=lambda_global,
             lambda_local=lambda_local,
             max_grad_norm=max_grad_norm,
-            device="cpu",
+            eval_episodes=eval_episodes,
+            device=train_device,
+            render_eval=render_eval,
+            render_mode=render_mode,
+            render_save_dir=render_save_dir,
+            render_every_n_rounds=render_every_n_rounds,
+            render_episodes=render_episodes,
+            render_client_tag=str(mapped_client_id),
         )
         trainer.log_std_anneal = log_std_anneal
         trainer.log_std_anneal_rounds = log_std_anneal_rounds
@@ -515,9 +685,12 @@ def client_fn_builder(
             mapped_client_id=mapped_client_id,
             num_clients=num_clients,
             seed=base,
+            device=train_device,
             use_wandb=use_wandb,
             wandb_project=wandb_project,
             metrics_collector=metrics_collector,
+            policy_save_dir=policy_save_dir,
+            policy_save_every=policy_save_every,
         )
         # Store client_id for metrics collection (same as FedGuide)
         client.cid = cid
