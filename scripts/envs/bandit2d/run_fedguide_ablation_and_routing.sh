@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# FedGuide Bandit2D diagnostics:
-# 1) baseline (shared prior/guidance)
-# 2) ablation (disable shared pull)
-# 3) routed experts (client-specific expert routing)
+# FedGuide Bandit2D: baseline run + heterogeneity check.
+# (Former ablation/routed configs were removed; use fedguide.yaml toggles if needed.)
 
 set -e
 cd "$(dirname "$0")/../../.."
@@ -33,19 +31,9 @@ run_case() {
 }
 
 run_case \
-  "baseline(shared prior/guidance)" \
+  "fedguide(baseline)" \
   "configs/bandit2d/fedguide.yaml" \
   "metrics/bandit2d/fedguide/bandit2d_metrics.pkl"
 
-run_case \
-  "ablation(no shared prior/guidance pull)" \
-  "configs/bandit2d/fedguide_ablation_noshared.yaml" \
-  "metrics/bandit2d/fedguide_ablation_noshared/bandit2d_metrics.pkl"
-
-run_case \
-  "routed experts(bandit2d experimental switch)" \
-  "configs/bandit2d/fedguide_bandit2d_routed.yaml" \
-  "metrics/bandit2d/fedguide_routed/bandit2d_metrics.pkl"
-
 echo ""
-echo "Done. Compare round1 vs last-round heterogeneity across the three cases."
+echo "Done."
