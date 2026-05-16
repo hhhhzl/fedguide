@@ -32,6 +32,7 @@ lambda_local: 0
 # BC warm-start (same checkpoint FedGuide uses)
 bc_root: "./model/bc_policy"
 bc_env_name: "HalfCheetah"
+bc_blend_alpha: 0.3
 
 eval_episodes: 10
 
@@ -40,8 +41,8 @@ metrics_dir: "./metrics/halfcheetah/fedavg"
 save_every: 10
 
 device: "auto"
-gpus_per_client: 0.25
-seed: [0]
+gpus_per_client: 0.125
+seed: [1]
 
 render_eval: true
 render_mode: "video"

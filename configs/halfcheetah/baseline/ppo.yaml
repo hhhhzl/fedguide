@@ -55,3 +55,4 @@ logprob_bounds: [-1.5, 1.5]  # Bounds for logprob grid
 
 bc_root: ./model/bc_policy
 bc_env_name: HalfCheetah
+bc_blend_alpha: 0.3                        # 30% BC + 70% random init

@@ -51,7 +51,7 @@ def _make_env(
     from fedguide.envs.halfcheetah_hetero import make_halfcheetah_env_if_applicable
 
     _hc_env = make_halfcheetah_env_if_applicable(
-        metadata_path, client_id, seed, render_mode, render_eval=False
+        metadata_path, client_id, seed, render_mode, render_eval=(render_mode is not None)
     )
     if _hc_env is not None:
         return _hc_env
@@ -60,7 +60,7 @@ def _make_env(
     from fedguide.envs.mujoco_locomotion_hetero import make_locomotion_env_if_applicable
 
     _loco_env = make_locomotion_env_if_applicable(
-        metadata_path, client_id, seed, render_mode, render_eval=False
+        metadata_path, client_id, seed, render_mode, render_eval=(render_mode is not None)
     )
     if _loco_env is not None:
         return _loco_env
@@ -111,6 +111,8 @@ class FedGuideClient(FedRLClient):
         metrics_collector: Optional[Any] = None,  # Bandit2DMetricsCollector instance
         mapped_client_id: Optional[int] = None,  # Deterministic ID for env/metrics (0..N-1)
         num_clients: Optional[int] = None,
+        policy_save_dir: Optional[str] = None,
+        policy_save_every: int = 0,
     ):
         super().__init__(
             agent=agent,
@@ -130,6 +132,8 @@ class FedGuideClient(FedRLClient):
         self._mapped_client_id = mapped_client_id
         self._num_clients = num_clients or 4
         self._incoming_layout: Optional[Dict[str, Any]] = None
+        self._policy_save_dir = policy_save_dir
+        self._policy_save_every = int(policy_save_every or 0)
 
     def get_parameters(self, config: Dict[str, Any]):
         """Get parameters as a list for Flower compatibility.
@@ -435,7 +439,36 @@ class FedGuideClient(FedRLClient):
                     torch.save(payload, _os.path.join(ckpt_dir, "policy.pth"))
         except Exception as e:
             print(f"[FedGuideClient {cid}] policy ckpt save failed: {e}")
-        
+
+        # Per-client policy snapshot at fixed cadence (rounds 20/40/...): preserved
+        # alongside the overwriting `final/` ckpt above. Lands in
+        # `<policy_save_dir>/client_<id>/round_XXXX.pth`.
+        if (
+            self._policy_save_dir
+            and self._policy_save_every > 0
+            and rnd > 0
+            and (rnd % self._policy_save_every == 0)
+        ):
+            try:
+                mid = self._mapped_client_id if self._mapped_client_id is not None else cid
+                client_dir = os.path.join(self._policy_save_dir, f"client_{mid}")
+                os.makedirs(client_dir, exist_ok=True)
+                ckpt_path = os.path.join(client_dir, f"round_{int(rnd):04d}.pth")
+                policy_state = {k: v.detach().cpu() for k, v in self.agent.policy.state_dict().items()}
+                payload = {
+                    "round": int(rnd),
+                    "mapped_client_id": mid,
+                    "cid": str(cid),
+                    "policy_state_dict": policy_state,
+                }
+                log_std = getattr(self.agent, "log_std", None)
+                if log_std is not None and hasattr(log_std, "detach"):
+                    payload["log_std"] = log_std.detach().cpu()
+                torch.save(payload, ckpt_path)
+                print(f"  [FedGuideClient {mid}] Saved policy snapshot to {ckpt_path}", flush=True)
+            except Exception as e:
+                print(f"  [FedGuideClient] Warning: failed to save policy snapshot: {e}", flush=True)
+
         # Get parameters in module format for OT-MoE aggregation
         # Get dict format directly from agent (not from get_parameters which returns list)
         if hasattr(self.agent, "get_parameters"):
@@ -467,9 +500,7 @@ class FedGuideClient(FedRLClient):
         # This format is expected by FedGuideStrategy._modules_from_metrics
         modules_dict = {}
         if isinstance(param_dict, dict):
-            import torch
             import json
-            import numpy as np
             for module_name, module_params in param_dict.items():
                 if isinstance(module_params, dict):
                     # Convert state_dict to list of numpy arrays
@@ -646,7 +677,10 @@ def client_fn_builder(
     render_save_dir: Optional[str] = None,
     render_every_n_rounds: int = 10,
     render_episodes: int = 5,
+    render_all_clients: bool = False,
     reacher_render_mode: Optional[str] = None,
+    policy_save_dir: Optional[str] = None,
+    policy_save_every: int = 0,
     # Opt-in policy architecture knobs (defaults preserve legacy behaviour).
     policy_activation: str = "tanh",
     action_clamp_low: Optional[float] = None,
@@ -665,6 +699,7 @@ def client_fn_builder(
     # state-conditional priors.
     bc_dir: Optional[str] = None,
     bc_env_name: Optional[str] = None,  # subdir under bc_dir; defaults to env mapping
+    bc_blend_alpha: float = 1.0,
     # Guide-align loss weight (MSE between μ(s) and a + η·∇W). The original
     # default (1.0) is too aggressive on bandit2d where the SDICE_Critic
     # is undertrained and the gradient is noisy. Lower values (0.05–0.1)
@@ -677,6 +712,9 @@ def client_fn_builder(
     dice_v_blend_alpha: float = 1.0,
     dice_adv_beta: float = 0.0,
 ):
+
+    if render_all_clients:
+        os.environ["FEDGUIDE_FEDERATED_RENDER_ALL_CLIENTS"] = "1"
 
     def client_fn(context) -> Any:
         # 1) per-client seed and ID mapping
@@ -932,6 +970,7 @@ def client_fn_builder(
             guidance_eta=guidance_eta,
             prior_reshape=prior_reshape,
             reshape_beta=reshape_beta,
+            bc_blend_alpha=bc_blend_alpha,
         )
 
         # 5) trainer
@@ -994,6 +1033,8 @@ def client_fn_builder(
             metrics_collector=metrics_collector,
             mapped_client_id=mapped_client_id,
             num_clients=num_clients,
+            policy_save_dir=policy_save_dir,
+            policy_save_every=policy_save_every,
         )
         # Store client_id for metrics collection
         client.cid = cid

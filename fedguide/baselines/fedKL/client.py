@@ -55,7 +55,7 @@ def _make_env(
     from fedguide.envs.halfcheetah_hetero import make_halfcheetah_env_if_applicable
 
     _hc_env = make_halfcheetah_env_if_applicable(
-        metadata_path, client_id, seed, render_mode, render_eval=False
+        metadata_path, client_id, seed, render_mode, render_eval=(render_mode is not None)
     )
     if _hc_env is not None:
         return _hc_env
@@ -65,7 +65,7 @@ def _make_env(
         from fedguide.envs.mujoco_locomotion_hetero import make_locomotion_env_if_applicable
 
         _loc_env = make_locomotion_env_if_applicable(
-            metadata_path, client_id, seed, render_mode, render_eval=False,
+            metadata_path, client_id, seed, render_mode, render_eval=(render_mode is not None),
         )
         if _loc_env is not None:
             return _loc_env
@@ -496,6 +496,7 @@ def client_fn_builder(
     # of "FedKL/FedAvg + BC" vs "FedGuide + BC" isolates the federation algorithm.
     bc_root: Optional[str] = None,
     bc_env_name: Optional[str] = None,  # env subdir under bc_root; defaults to env_id
+    bc_blend_alpha: float = 1.0,
     reward_type: Optional[str] = None,  # D4RL AntMaze dense/sparse
     device: Optional[str] = None,  # cuda / cpu / auto; forwarded from runner config
     render_eval: bool = False,
@@ -592,6 +593,7 @@ def client_fn_builder(
             device=train_device,
             init_log_std=init_log_std,
             bc_ckpt_path=bc_ckpt_path,
+            bc_blend_alpha=bc_blend_alpha,
         )
 
         # Optional: warm-start the policy from a per-client Gaussian prior μ.

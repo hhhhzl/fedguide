@@ -496,6 +496,7 @@ def _create_fedguide_client_fn(config: Dict[str, Any], **kwargs):
         prior_dir=str(config.get('prior_dir', './model/models_prior')),
         bc_dir=config.get('bc_dir'),
         bc_env_name=config.get('bc_env_name'),
+        bc_blend_alpha=float(config.get('bc_blend_alpha', 1.0)),
         online_guidance=bool(config.get('online_guidance', False)),
         online_prior=bool(config.get('online_prior', False)),
         guide_coef=float(config.get('guide_coef', 1.0)),
@@ -505,6 +506,11 @@ def _create_fedguide_client_fn(config: Dict[str, Any], **kwargs):
         dice_reward_eta=float(config.get('dice_reward_eta', 0.0)),
         dice_v_blend_alpha=float(config.get('dice_v_blend_alpha', 1.0)),
         dice_adv_beta=float(config.get('dice_adv_beta', 0.0)),
+        render_all_clients=bool(config.get('render_all_clients', False)),
+        policy_save_dir=config.get('policy_save_dir') or (
+            os.path.join(config['metrics_dir'], 'policies') if config.get('metrics_dir') else None
+        ),
+        policy_save_every=int(config.get('policy_save_every', 0)),
     )
 
 
@@ -564,6 +570,7 @@ def _create_fedkl_client_fn(config: Dict[str, Any], **kwargs):
         prior_env_name=config.get('prior_env_name'),
         bc_root=config.get('bc_root'),
         bc_env_name=config.get('bc_env_name'),
+        bc_blend_alpha=float(config.get('bc_blend_alpha', 1.0)),
         policy_save_dir=config.get('policy_save_dir') or (
             os.path.join(config['metrics_dir'], 'policies') if config.get('metrics_dir') else None
         ),
@@ -683,6 +690,7 @@ def _create_fedrl_client_fn(config: Dict[str, Any], **kwargs):
         ),
         bc_root=config.get('bc_root'),
         bc_env_name=config.get('bc_env_name'),
+        bc_blend_alpha=float(config.get('bc_blend_alpha', 1.0)),
     )
 
 
@@ -843,6 +851,7 @@ def _create_mfpo_client_fn(config: Dict[str, Any], **kwargs):
         mfpo_test_episodes=int(config.get('mfpo_test_episodes', 10)),
         bc_root=config.get('bc_root'),
         bc_env_name=config.get('bc_env_name'),
+        bc_blend_alpha=float(config.get('bc_blend_alpha', 1.0)),
     )
 
 

@@ -1,13 +1,15 @@
-env_type: d4rl
-env_name: Hopper-v4
-metadata_path: data/hopper/metadata.json
+env_type: "d4rl"
+env_name: "Hopper-v4"
+metadata_path: "data/hopper/metadata.json"
 num_clients: 8
 random_select_clients: false
+
 rounds: 100
 cpus_per_client: 2
 n_steps: 4096
 update_epochs: 10
 minibatch_size: 64
+
 hidden_dim: 256
 lr: 1e-4
 gamma: 0.99
@@ -16,20 +18,28 @@ clip_eps: 0.2
 entropy_coef: 0.0
 value_coef: 0.5
 max_grad_norm: 0.5
+
+# Federation regularizers
 lambda_global: 0
 lambda_local: 0
+
+# BC warm-start (same checkpoint FedGuide uses)
+bc_root: "./model/bc_policy"
+bc_env_name: "Hopper"
+bc_blend_alpha: 0.3
+
 eval_episodes: 10
-output_dir: ./model/policy/hopper/fedavg
-metrics_dir: ./metrics/hopper/fedavg
+
+output_dir: "./model/policy/hopper/fedavg"
+metrics_dir: "./metrics/hopper/fedavg"
 save_every: 10
-device: auto
-gpus_per_client: 0.25
-seed:
-- 0
+
+device: "auto"
+gpus_per_client: 0.125
+seed: [0]
+
 render_eval: true
-render_mode: video
-render_save_dir: ./plots/hopper/fedavg
+render_mode: "video"
+render_save_dir: "./plots/hopper/fedavg"
 render_every_n_rounds: 20
 render_episodes: 3
-bc_root: ./model/bc_policy
-bc_env_name: Hopper

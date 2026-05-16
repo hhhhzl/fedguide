@@ -40,11 +40,14 @@ def _default_method_conf(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _load_bc_into_mfpo_worker(worker: Any, bc_ckpt_path: str) -> bool:
+def _load_bc_into_mfpo_worker(worker: Any, bc_ckpt_path: str, bc_blend_alpha: float = 1.0) -> bool:
     """Copy BC Sequential(Linear,Tanh,Linear,Tanh,Linear) weights into MFPO's
     policy module. BC keys 0/2 (hidden layers) map to worker.network.network.0/2,
     BC key 4 (mu head) maps to worker.network.output. The sigma head
     (worker.network.output_) stays at random init — MFPO learns log-sigma online.
+
+    With ``bc_blend_alpha < 1.0`` the loaded weights are blended with the
+    existing (random) init: w ← α·w_BC + (1−α)·w_init.
     """
     import os
     if not bc_ckpt_path or not os.path.isfile(bc_ckpt_path):
@@ -52,7 +55,7 @@ def _load_bc_into_mfpo_worker(worker: Any, bc_ckpt_path: str) -> bool:
     try:
         ck = torch.load(bc_ckpt_path, map_location="cpu", weights_only=False)
         bc_sd = ck["policy"] if isinstance(ck, dict) and "policy" in ck else ck
-        # Map BC Sequential keys into MFPO's policy module (worker.network).
+        a = max(0.0, min(1.0, float(bc_blend_alpha)))
         mapping = {
             "0.weight": "network.0.weight",
             "0.bias":   "network.0.bias",
@@ -66,11 +69,13 @@ def _load_bc_into_mfpo_worker(worker: Any, bc_ckpt_path: str) -> bool:
         for src_key, dst_key in mapping.items():
             if src_key in bc_sd and dst_key in target_sd:
                 if bc_sd[src_key].shape == target_sd[dst_key].shape:
-                    target_sd[dst_key] = bc_sd[src_key].clone()
+                    src_t = bc_sd[src_key].to(target_sd[dst_key].device,
+                                              dtype=target_sd[dst_key].dtype)
+                    target_sd[dst_key] = (1.0 - a) * target_sd[dst_key] + a * src_t
                     loaded += 1
         worker.network.load_state_dict(target_sd, strict=False)
         worker.old_network.load_state_dict(target_sd, strict=False)
-        print(f"[MFPO] BC warm-start ← {bc_ckpt_path} ({loaded}/6 tensors loaded)")
+        print(f"[MFPO] BC warm-start ← {bc_ckpt_path} ({loaded}/6 tensors loaded, blend α={a:.2f})")
         return loaded > 0
     except Exception as e:
         print(f"[MFPO] BC warm-start failed: {e}")
@@ -98,6 +103,7 @@ def client_fn_builder(
     metrics_collector: Optional[Any] = None,
     bc_root: Optional[str] = None,
     bc_env_name: Optional[str] = None,
+    bc_blend_alpha: float = 1.0,
     **config_overrides: Any,
 ):
     """Build Flower client_fn for MFPO (1:1 with MFPO-INFOCOM24)."""
@@ -158,7 +164,7 @@ def client_fn_builder(
                 str(bc_root), str(bc_env_name),
                 f"client_{int(mapped_client_id)}", "final", "policy.pth",
             )
-            _load_bc_into_mfpo_worker(worker, bc_ckpt_path)
+            _load_bc_into_mfpo_worker(worker, bc_ckpt_path, bc_blend_alpha=bc_blend_alpha)
 
         agent = MFPOAgent(worker, average_type=method_conf["average_type"], device=device)
         trainer = MFPTrainer(

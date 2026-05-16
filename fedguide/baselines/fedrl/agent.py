@@ -352,7 +352,7 @@ class DDPGActor(nn.Module):
         """Forward pass: return action in [-threshold, threshold]."""
         return self.rescale * self.net(x.float())
 
-    def load_bc_weights(self, bc_ckpt_path: str) -> bool:
+    def load_bc_weights(self, bc_ckpt_path: str, bc_blend_alpha: float = 1.0) -> bool:
         """Load BC pretrain weights into the BC-compatible 256→256→Tanh net.
 
         BC's `policy` is `Sequential(Linear(s,256), Tanh, Linear(256,256),
@@ -360,6 +360,9 @@ class DDPGActor(nn.Module):
         Tanh on top so the action lands in [-1,1] before `rescale`. The
         first 3 Linear layers (indices 0/2/4) load cleanly from BC; the
         final Tanh is just an extra squash.
+
+        With ``bc_blend_alpha < 1.0`` the loaded weights are blended with the
+        existing (random) initialisation: w ← α·w_BC + (1−α)·w_init.
         """
         if not self.bc_compatible:
             print("[DDPGActor] BC load skipped — bc_compatible=False")
@@ -367,14 +370,18 @@ class DDPGActor(nn.Module):
         try:
             bc = torch.load(bc_ckpt_path, map_location="cpu", weights_only=False)
             ps = bc["policy"]
-            # Sequential indices for our BC-compat net: 0 (Linear), 2 (Linear), 4 (Linear)
-            self.net[0].weight.data.copy_(ps["0.weight"])
-            self.net[0].bias.data.copy_(ps["0.bias"])
-            self.net[2].weight.data.copy_(ps["2.weight"])
-            self.net[2].bias.data.copy_(ps["2.bias"])
-            self.net[4].weight.data.copy_(ps["4.weight"])
-            self.net[4].bias.data.copy_(ps["4.bias"])
-            print(f"[DDPGActor] BC warm-start ← {bc_ckpt_path}")
+            a = max(0.0, min(1.0, float(bc_blend_alpha)))
+
+            def _blend(dst, src):
+                src_t = src.to(dst.device, dtype=dst.dtype)
+                dst.data.mul_(1.0 - a).add_(src_t, alpha=a)
+            _blend(self.net[0].weight, ps["0.weight"])
+            _blend(self.net[0].bias,   ps["0.bias"])
+            _blend(self.net[2].weight, ps["2.weight"])
+            _blend(self.net[2].bias,   ps["2.bias"])
+            _blend(self.net[4].weight, ps["4.weight"])
+            _blend(self.net[4].bias,   ps["4.bias"])
+            print(f"[DDPGActor] BC warm-start ← {bc_ckpt_path} (blend α={a:.2f})")
             return True
         except Exception as e:
             print(f"[DDPGActor] BC load FAILED ({bc_ckpt_path}): {e}")
@@ -447,6 +454,7 @@ class DDPGAgent(nn.Module):
         ou_epsilon: float = 1.0,
         bc_compatible: bool = False,
         bc_ckpt_path: Optional[str] = None,
+        bc_blend_alpha: float = 1.0,
         hidden_dim: int = 256,
     ):
         super().__init__()
@@ -478,7 +486,7 @@ class DDPGAgent(nn.Module):
             bc_compatible=bc_compatible, hidden_dim=hidden_dim,
         ).to(self.device)
         if bc_compatible and bc_ckpt_path:
-            self.actor.load_bc_weights(bc_ckpt_path)
+            self.actor.load_bc_weights(bc_ckpt_path, bc_blend_alpha=bc_blend_alpha)
         self.target_actor = DDPGActor(
             state_dim, action_dim, threshold,
             bc_compatible=bc_compatible, hidden_dim=hidden_dim,

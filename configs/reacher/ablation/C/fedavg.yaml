@@ -1,11 +1,13 @@
-env_type: reacher_hetero
-metadata_path: data/reacher/metadata_C.json
+env_type: "reacher_hetero"
+metadata_path: "data/reacher/metadata_C.json"
 num_clients: 8
 random_select_clients: false
+
 rounds: 100
 n_steps: 2048
 update_epochs: 10
 minibatch_size: 64
+
 hidden_dim: 256
 lr: 3e-4
 gamma: 0.99
@@ -14,20 +16,28 @@ clip_eps: 0.2
 entropy_coef: 0.01
 value_coef: 0.5
 max_grad_norm: 0.5
+
+# Federation regularizers
 lambda_global: 0
 lambda_local: 0
+
+# BC warm-start (same checkpoint FedGuide uses)
+bc_root: "./model/bc_policy_ablation/C"
+bc_env_name: "Reacher"
+bc_blend_alpha: 0.3
+
 eval_episodes: 10
-output_dir: ./model/policy/reacher/ablation/C/fedavg
-metrics_dir: ./metrics/reacher/ablation/C/fedavg
+
+output_dir: "./model/policy/reacher/ablation/C/fedavg"
+metrics_dir: "./metrics/reacher/ablation/C/fedavg"
 save_every: 10
-device: auto
-gpus_per_client: 0.25
-seed:
-- 0
+
+device: "auto"
+gpus_per_client: 0.125
+seed: [0]
+
 render_eval: true
-render_mode: video
-render_save_dir: ./plots/reacher/ablation/C/fedavg
+render_mode: "video"
+render_save_dir: "./plots/reacher/ablation/C/fedavg"
 render_every_n_rounds: 20
 render_episodes: 10
-bc_root: ./model/bc_policy_ablation/C
-bc_env_name: Reacher

@@ -46,3 +46,4 @@ render_episodes: 1  # Number of episodes to render per round
 
 bc_root: ./model/bc_policy
 bc_env_name: HalfCheetah
+bc_blend_alpha: 0.3                        # 30% BC + 70% random init

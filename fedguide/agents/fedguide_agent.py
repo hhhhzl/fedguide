@@ -68,6 +68,7 @@ class FedguideAgent(nn.Module):
         # the policy gradient directly.
         prior_reshape: bool = False,
         reshape_beta: float = 0.1,
+        bc_blend_alpha: float = 1.0,
     ):
         super().__init__()
 
@@ -147,19 +148,44 @@ class FedguideAgent(nn.Module):
         # -------- Actor ----------
         if actor_ckpt is not None and os.path.isfile(actor_ckpt):
             sd = torch.load(actor_ckpt, map_location="cpu")
+            a = max(0.0, min(1.0, float(bc_blend_alpha)))
+
+            def _blend_state_dict(module, src_sd):
+                # Blend module params: w ← a * w_BC + (1-a) * w_init.
+                # Only blend keys present in both; preserve dtype/device.
+                dst_sd = module.state_dict()
+                for k, src in src_sd.items():
+                    if k not in dst_sd:
+                        continue
+                    dst = dst_sd[k]
+                    if dst.shape != src.shape:
+                        continue
+                    src_t = src.to(dst.device, dtype=dst.dtype)
+                    dst.mul_(1.0 - a).add_(src_t, alpha=a)
+                module.load_state_dict(dst_sd, strict=False)
+
             if "policy" in sd:
-                self.policy.load_state_dict(sd["policy"], strict=False)
+                _blend_state_dict(self.policy, sd["policy"])
             elif isinstance(sd, dict):
                 try:
-                    self.policy.load_state_dict(sd, strict=False)
+                    _blend_state_dict(self.policy, sd)
                 except Exception:
                     pass
 
             if "value" in sd:
                 try:
-                    self.value_fn.load_state_dict(sd["value"], strict=False)
+                    _blend_state_dict(self.value_fn, sd["value"])
                 except Exception:
                     pass
+            if "log_std" in sd and sd["log_std"] is not None:
+                try:
+                    ls = sd["log_std"]
+                    if isinstance(ls, torch.Tensor):
+                        ls_t = ls.to(self.log_std.device, dtype=self.log_std.dtype)
+                        self.log_std.data.mul_(1.0 - a).add_(ls_t, alpha=a)
+                except Exception:
+                    pass
+            print(f"[FedguideAgent] BC warm-start ← {actor_ckpt} (blend α={a:.2f})")
 
         # -------- Optimizers ----------
         self.lr = lr
