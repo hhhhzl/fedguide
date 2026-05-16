@@ -9,12 +9,39 @@ Outputs:
 """
 from __future__ import annotations
 import argparse
+import os
 import pickle
+import sys
 from pathlib import Path
-from collections import defaultdict
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+MPLCONFIGDIR = Path(os.environ.get("TMPDIR", "/tmp")) / "fedguide-matplotlib"
+MPLCONFIGDIR.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("MPLCONFIGDIR", str(MPLCONFIGDIR))
+os.environ.setdefault("MPLBACKEND", "Agg")
 
 import numpy as np
 import matplotlib.pyplot as plt
+
+
+def _install_numpy_pickle_aliases():
+    """Allow numpy-2 pickles to load in older numpy environments."""
+    try:
+        import numpy.core as np_core
+        import numpy.core.multiarray as np_multiarray
+        import numpy.core.numeric as np_numeric
+        import numpy.core.umath as np_umath
+    except Exception:
+        return
+    sys.modules.setdefault("numpy._core", np_core)
+    sys.modules.setdefault("numpy._core.multiarray", np_multiarray)
+    sys.modules.setdefault("numpy._core.numeric", np_numeric)
+    sys.modules.setdefault("numpy._core.umath", np_umath)
+
+
+_install_numpy_pickle_aliases()
 
 
 # Display name + color for each algorithm.
@@ -29,9 +56,16 @@ ALGOS = [
 ]
 
 ENVS_DEFAULT = ["halfcheetah", "walker", "hopper", "reacher", "metaworld"]
+BANDIT2D_ALGOS = [
+    ("fedavg", "FedAvg", "#1f77b4"),
+    ("fedguide_p", "FedGuide-p", "#d62728"),
+    ("fedguide_a", "FedGuide-a", "#ff7f0e"),
+    ("fedguide", "FedGuide", "#2ca02c"),
+]
 
 METRICS_ROOT = Path("metrics")
 OUT_DIR      = Path("plots/posttrain")
+BANDIT2D_METRICS_ROOT = Path("metrics/bandit2d")
 
 
 def load_seed_curve(env: str, algo: str, seed: int):
@@ -144,15 +178,188 @@ def summary_table(envs, seeds):
             print(f"{env:<14} {label:<14} {n:>8} {last10:>14.1f} {mean.max():>10.1f}")
 
 
+def _parse_seed_arg(value: str) -> list[int]:
+    return [int(s.strip()) for s in value.split(",") if s.strip()]
+
+
+def discover_bandit2d_seeds(algos=None) -> list[int]:
+    algos = [a for a, _, _ in BANDIT2D_ALGOS] if algos is None else algos
+    seeds: set[int] = set()
+    for algo in algos:
+        algo_dir = BANDIT2D_METRICS_ROOT / algo
+        if not algo_dir.exists():
+            continue
+        for path in algo_dir.glob("seed_*"):
+            try:
+                seeds.add(int(path.name.split("_", 1)[1]))
+            except (IndexError, ValueError):
+                continue
+    return sorted(seeds)
+
+
+def load_bandit2d_curve(algo: str, seed: int, metric: str):
+    p = BANDIT2D_METRICS_ROOT / algo / f"seed_{seed}" / "training_history.pkl"
+    if not p.exists():
+        return None
+    try:
+        with open(p, "rb") as f:
+            h = pickle.load(f)
+    except Exception as exc:
+        print(f"[bandit2d] could not load {p}: {exc}")
+        return None
+    ev = getattr(h, "metrics_distributed_fit", {}).get(metric, [])
+    if not ev:
+        return None
+    rounds = np.asarray([int(r) for (r, _) in ev], dtype=int)
+    vals = np.asarray([float(v) for (_, v) in ev], dtype=float)
+    return rounds, vals
+
+
+def _align_curves(curves):
+    if not curves:
+        return None
+    common_rounds = sorted(set(curves[0][0]).intersection(*[set(c[0]) for c in curves[1:]]))
+    if not common_rounds:
+        return None
+    stack = []
+    for r_arr, v_arr in curves:
+        d = dict(zip(r_arr.tolist(), v_arr.tolist()))
+        stack.append(np.asarray([d[r] for r in common_rounds], dtype=float))
+    return np.asarray(common_rounds, dtype=int), np.stack(stack, axis=0)
+
+
+def _smooth_stack(stack: np.ndarray, w: int = 3):
+    if stack.shape[1] < w or w <= 1:
+        return stack.copy(), np.arange(stack.shape[1])
+    kernel = np.ones(w, dtype=float) / float(w)
+    out = np.stack([np.convolve(row, kernel, mode="valid") for row in stack], axis=0)
+    return out, np.arange(w - 1, stack.shape[1])
+
+
+def plot_bandit2d_returns(seeds: list[int], out_dir: Path = OUT_DIR):
+    out_dir.mkdir(parents=True, exist_ok=True)
+    metrics = [("eval/return", "eval/return"), ("train/return", "train/return")]
+    plt.rcParams.update({
+        "font.size": 10,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.grid": True,
+        "grid.alpha": 0.25,
+        "grid.linewidth": 0.8,
+    })
+    fig, axes = plt.subplots(1, 2, figsize=(11.0, 3.8), squeeze=False)
+
+    for ax, (metric, title) in zip(axes.ravel(), metrics):
+        plotted = 0
+        for algo, label, color in BANDIT2D_ALGOS:
+            curves = []
+            used_seeds = []
+            for seed in seeds:
+                c = load_bandit2d_curve(algo, seed, metric)
+                if c is not None:
+                    curves.append(c)
+                    used_seeds.append(seed)
+            aligned = _align_curves(curves)
+            if aligned is None:
+                continue
+            rounds, stack = aligned
+            smooth_stack, idx = _smooth_stack(stack, w=15)
+            xs = rounds[idx]
+            mean = smooth_stack.mean(axis=0)
+            lo = smooth_stack.min(axis=0)
+            hi = smooth_stack.max(axis=0)
+            ax.fill_between(xs, lo, hi, color=color, alpha=0.16, linewidth=0)
+            ax.plot(xs, mean, color=color, linewidth=2.0,
+                    label=f"{label} (n={len(used_seeds)})")
+            plotted += 1
+
+        if plotted == 0:
+            ax.text(0.5, 0.5, "no data", ha="center", va="center",
+                    transform=ax.transAxes)
+        ax.set_title(f"Bandit2D {title}")
+        ax.set_xlabel("Round")
+        ax.set_ylabel(title)
+        if metric == "eval/return":
+            ax.axhline(1.0, color="0.35", alpha=0.8, linestyle="--", linewidth=1.0)
+            ax.text(0.99, 0.96, "upper bound = 1", color="0.25",
+                    ha="right", va="top", transform=ax.transAxes, fontsize=8)
+
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, loc="lower center", ncol=4, frameon=False,
+                   bbox_to_anchor=(0.5, -0.03), fontsize=9)
+    fig.tight_layout(rect=(0, 0.08, 1, 1))
+    paths = []
+    for ext in ("png", "pdf"):
+        out = out_dir / f"bandit2d_returns_all_seeds.{ext}"
+        fig.savefig(out, dpi=180 if ext == "png" else None, bbox_inches="tight")
+        print(f"  -> {out}")
+        paths.append(out)
+    plt.close(fig)
+    return paths
+
+
+def _import_bandit2d_viz_modules():
+    bandit_script_dir = Path(__file__).resolve().parent / "envs" / "bandit2d"
+    if str(bandit_script_dir) not in sys.path:
+        sys.path.insert(0, str(bandit_script_dir))
+    import viz_priors
+    import viz_distribution
+    return viz_priors, viz_distribution
+
+
+def run_bandit2d(seeds: list[int]):
+    if not seeds:
+        print("[bandit2d] no seeds found under metrics/bandit2d")
+        return
+
+    viz_priors, viz_distribution = _import_bandit2d_viz_modules()
+
+    print("=== bandit2d OT-MoE global prior ===")
+    viz_priors.plot_global_prior(
+        metrics_path="metrics/bandit2d/fedguide_p/seed_0/bandit2d_metrics.pkl",
+        metadata="data/bandit2d/metadata.json",
+        out="plots/bandit2d_priors/aggregate_prior.png",
+        grid=240,
+        bound=1.5,
+        source="ring",
+        write_pdf=True,
+    )
+
+    print("\n=== bandit2d policy distributions ===")
+    viz_distribution.plot_bandit2d_policy_distributions(
+        metrics_root=str(BANDIT2D_METRICS_ROOT),
+        metadata="data/bandit2d/metadata.json",
+        out_dir="plots/bandit2d_policy_density",
+        algos=[a for a, _, _ in BANDIT2D_ALGOS],
+        seeds=seeds,
+        bound=1.5,
+        write_pdf=True,
+    )
+
+    print("\n=== bandit2d return curves ===")
+    plot_bandit2d_returns(seeds, OUT_DIR)
+
+
 def main():
+    argv = sys.argv[1:]
+    seeds_explicit = any(a == "--seeds" or a.startswith("--seeds=") for a in argv)
     ap = argparse.ArgumentParser()
+    ap.add_argument("--bandit2d", action="store_true",
+                    help="generate the Bandit2D prior, policy-density, diagnostics, and all-seed return plots")
     ap.add_argument("--envs", type=str, default=",".join(ENVS_DEFAULT),
                     help="comma-separated env names")
     ap.add_argument("--seeds", type=str, default="0,1,2",
                     help="comma-separated seeds")
     args = ap.parse_args()
+
+    if args.bandit2d:
+        seeds = _parse_seed_arg(args.seeds) if seeds_explicit else discover_bandit2d_seeds()
+        run_bandit2d(seeds)
+        return
+
     envs  = [e.strip() for e in args.envs.split(",") if e.strip()]
-    seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
+    seeds = _parse_seed_arg(args.seeds)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 

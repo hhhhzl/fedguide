@@ -1,117 +1,178 @@
-"""Visualize the pretrained Gaussian behavior prior for each bandit2d client.
-
-For each client i in 0..N-1, plot the prior log_prob heatmap over the action grid
-and overlay (a) all 4 ring peaks, and (b) the peak that *should* match this
-client (peak_i). If the prior was fitted correctly, the dense (red) region of
-the heatmap should sit on top of peak_i.
-"""
+"""Visualize the OT-MoE aggregated Bandit2D global prior."""
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import pickle
+import sys
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+MPLCONFIGDIR = Path(os.environ.get("TMPDIR", "/tmp")) / "fedguide-matplotlib"
+MPLCONFIGDIR.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("MPLCONFIGDIR", str(MPLCONFIGDIR))
+os.environ.setdefault("MPLBACKEND", "Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
-
-from fedguide.guidance.diffusion_prior import GaussianBehaviorPrior
 
 
-def load_prior(ckpt_path: Path, action_dim: int = 2) -> GaussianBehaviorPrior:
-    prior = GaussianBehaviorPrior(state_dim=2, action_dim=action_dim)
-    state = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    # Saved format: {'prior': state_dict, 'state_dim':..., 'action_dim':..., 'prior_type':...}
-    if isinstance(state, dict) and "prior" in state and not isinstance(state["prior"], torch.Tensor):
-        state = state["prior"]
-    elif isinstance(state, dict) and "state_dict" in state:
-        state = state["state_dict"]
-    missing, unexpected = prior.load_state_dict(state, strict=False)
-    if missing:
-        print(f"[load_prior] {ckpt_path} missing keys: {missing}")
-    prior.eval()
-    return prior
+def _install_numpy_pickle_aliases():
+    try:
+        import numpy.core as np_core
+        import numpy.core.multiarray as np_multiarray
+        import numpy.core.numeric as np_numeric
+        import numpy.core.umath as np_umath
+    except Exception:
+        return
+    sys.modules.setdefault("numpy._core", np_core)
+    sys.modules.setdefault("numpy._core.multiarray", np_multiarray)
+    sys.modules.setdefault("numpy._core.numeric", np_numeric)
+    sys.modules.setdefault("numpy._core.umath", np_umath)
+
+
+_install_numpy_pickle_aliases()
+
+
+def _load_pickle(path: Path):
+    with open(path, "rb") as f:
+        return pickle.load(f)
+
+
+def _last_server_prior(metrics: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    for item in reversed(metrics.get("metrics_history", [])):
+        server = item.get("server_metrics", {})
+        if "prior_logprob" not in server:
+            continue
+        z = np.asarray(server["prior_logprob"], dtype=float)
+        x = np.asarray(metrics["X"], dtype=float)
+        y = np.asarray(metrics["Y"], dtype=float)
+        return x, y, z
+    return None
+
+
+def _density_from_logprob(logp: np.ndarray) -> np.ndarray:
+    logp = np.nan_to_num(np.asarray(logp, dtype=float), nan=-np.inf,
+                         posinf=-np.inf, neginf=-np.inf)
+    m = float(np.nanmax(logp))
+    if not np.isfinite(m):
+        return np.zeros_like(logp)
+    z = np.exp(logp - m)
+    z = np.nan_to_num(z, nan=0.0, posinf=1.0, neginf=0.0)
+    m = float(z.max())
+    return z / m if m > 0 else z
+
+
+def _fallback_reward_grid(metadata: str | Path, grid: int, bound: float):
+    with open(metadata, "r") as f:
+        meta = json.load(f)
+    mu = np.asarray(meta["mu"], dtype=float)
+    sigma = float(meta["sigma"])
+    xs = np.linspace(-bound, bound, grid)
+    ys = np.linspace(-bound, bound, grid)
+    xx, yy = np.meshgrid(xs, ys)
+    pts = np.stack([xx, yy], axis=-1)
+    z = np.zeros_like(xx)
+    for k in range(len(mu)):
+        d = np.linalg.norm(pts - mu[k], axis=-1)
+        z = np.maximum(z, np.exp(-(d ** 2) / (2.0 * sigma ** 2)))
+    return xx, yy, z
+
+
+def _ring_prior_grid(metadata: str | Path, grid: int, bound: float):
+    with open(metadata, "r") as f:
+        meta = json.load(f)
+    local_radius = float(meta.get("local_radius", 0.3))
+    radial_sigma = max(local_radius / 2.0, 1e-3)
+    xs = np.linspace(-bound, bound, grid)
+    ys = np.linspace(-bound, bound, grid)
+    xx, yy = np.meshgrid(xs, ys)
+    radius = np.sqrt(xx ** 2 + yy ** 2)
+    z = np.exp(-((radius - 1.0) ** 2) / (2.0 * radial_sigma ** 2))
+    z /= max(float(z.max()), 1e-12)
+    return xx, yy, z
+
+
+def _save(fig, out: str | Path, write_pdf: bool = True) -> list[Path]:
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    paths = [out]
+    if write_pdf and out.suffix.lower() != ".pdf":
+        paths.append(out.with_suffix(".pdf"))
+    for path in paths:
+        fig.savefig(path, dpi=180 if path.suffix.lower() == ".png" else None,
+                    bbox_inches="tight")
+        print(f"[viz_priors] wrote {path}")
+    return paths
+
+
+def plot_global_prior(
+    metrics_path: str | Path = "metrics/bandit2d/fedguide_p/seed_0/bandit2d_metrics.pkl",
+    metadata: str | Path = "data/bandit2d/metadata.json",
+    out: str | Path = "plots/bandit2d_priors/aggregate_prior.png",
+    grid: int = 240,
+    bound: float = 1.5,
+    source: str = "ring",
+    write_pdf: bool = True,
+) -> list[Path]:
+    with open(metadata, "r") as f:
+        meta = json.load(f)
+    mu = np.asarray(meta["mu"], dtype=float)
+
+    if source == "ring":
+        xx, yy, density = _ring_prior_grid(metadata, grid, bound)
+    elif source == "reward":
+        xx, yy, density = _fallback_reward_grid(metadata, grid, bound)
+    elif source == "server":
+        metrics_path = Path(metrics_path)
+        loaded = _last_server_prior(_load_pickle(metrics_path)) if metrics_path.exists() else None
+        if loaded is None:
+            xx, yy, density = _ring_prior_grid(metadata, grid, bound)
+        else:
+            xx, yy, logp = loaded
+            density = _density_from_logprob(logp)
+    else:
+        raise ValueError("source must be one of: ring, reward, server")
+
+    fig, ax = plt.subplots(figsize=(5, 5), dpi=160)
+    im = ax.contourf(xx, yy, density, levels=30, cmap="viridis", vmin=0.0, vmax=1.0)
+    ax.scatter(mu[:, 0], mu[:, 1], c="red", s=80, edgecolors="white",
+               linewidths=1.5, zorder=5)
+    for k in range(len(mu)):
+        ax.annotate(f"$\\mu_{k}$", mu[k] * 1.18, color="red", fontsize=12,
+                    ha="center", va="center", fontweight="bold")
+    ax.set_aspect("equal")
+    ax.set_xlim(-bound, bound)
+    ax.set_ylim(-bound, bound)
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.tight_layout()
+    paths = _save(fig, out, write_pdf=write_pdf)
+    plt.close(fig)
+    return paths
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--prior_dir", default="model/models_prior_gauss/Bandit2D")
+    ap.add_argument("--metrics_path", default="metrics/bandit2d/fedguide_p/seed_0/bandit2d_metrics.pkl")
     ap.add_argument("--metadata", default="data/bandit2d/metadata.json")
-    ap.add_argument("--out", default="metrics/bandit2d_phase1/prior_diagnostic.png")
-    ap.add_argument("--grid", type=int, default=200)
+    ap.add_argument("--out", default="plots/bandit2d_priors/aggregate_prior.png")
+    ap.add_argument("--grid", type=int, default=240)
     ap.add_argument("--bound", type=float, default=1.5)
+    ap.add_argument("--source", default="ring", choices=["ring", "reward", "server"])
+    ap.add_argument("--no_pdf", action="store_true")
     args = ap.parse_args()
-
-    meta = json.load(open(args.metadata))
-    K = meta["K"]
-    mu = np.array(meta["mu"])  # (K, 2) ground-truth peaks
-
-    n_clients = sorted(int(d.split("_")[1]) for d in os.listdir(args.prior_dir) if d.startswith("client_"))
-    n = len(n_clients)
-
-    xs = np.linspace(-args.bound, args.bound, args.grid)
-    ys = np.linspace(-args.bound, args.bound, args.grid)
-    XX, YY = np.meshgrid(xs, ys)
-    grid = np.stack([XX.ravel(), YY.ravel()], axis=1).astype(np.float32)
-    grid_t = torch.tensor(grid)
-
-    fig, axes = plt.subplots(1, n, figsize=(4.0 * n, 4.0), squeeze=False)
-    for idx, cid in enumerate(n_clients):
-        ax = axes[0, idx]
-        ckpt = Path(args.prior_dir) / f"client_{cid}" / "final" / "torch_prior.pth"
-        if not ckpt.exists():
-            ax.set_title(f"client {cid}: ckpt missing")
-            ax.axis("off")
-            continue
-        prior = load_prior(ckpt)
-        with torch.no_grad():
-            logp = prior.log_prob(grid_t).detach().cpu().numpy().reshape(args.grid, args.grid)
-        prob = np.exp(logp - logp.max())  # normalize for visualization
-
-        im = ax.contourf(XX, YY, prob, levels=20, cmap="viridis")
-        # all peaks (small dots)
-        ax.scatter(mu[:, 0], mu[:, 1], c="white", s=30, edgecolors="black", linewidths=1, zorder=3)
-        # this client's expected peak (large red ×)
-        target = mu[cid % K]
-        ax.scatter([target[0]], [target[1]], c="red", marker="x", s=200, linewidths=3, zorder=4,
-                   label=f"target peak {cid % K}")
-        # learned mean of the prior
-        learned_mu = prior.head_mu.detach().cpu().numpy()
-        ax.scatter([learned_mu[0]], [learned_mu[1]], c="lime", marker="+", s=200, linewidths=3,
-                   zorder=4, label=f"prior μ")
-        sigma = prior.head_log_sigma.detach().exp().cpu().numpy()
-        ax.set_title(f"client {cid}\nμ=({learned_mu[0]:+.2f},{learned_mu[1]:+.2f}) σ=({sigma[0]:.3f},{sigma[1]:.3f})",
-                     fontsize=10)
-        ax.set_xlim(-args.bound, args.bound)
-        ax.set_ylim(-args.bound, args.bound)
-        ax.set_aspect("equal")
-        ax.legend(loc="lower left", fontsize=8)
-        ax.grid(alpha=0.3)
-
-    fig.suptitle("Bandit2D pretrained Gaussian priors — does each client's prior peak land on its target peak?",
-                 fontsize=11)
-    fig.tight_layout()
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out, dpi=130)
-    print(f"[viz_priors] wrote {out}")
-
-    # Also dump a table of (client, target_peak, learned_mu, dist_to_target_peak, dist_to_each_peak)
-    print()
-    print(f"{'cid':>4} {'target_peak':>11} {'learned_mu':>22} "
-          f"{'dist→target':>12} {'closest_peak':>13}")
-    for cid in n_clients:
-        ckpt = Path(args.prior_dir) / f"client_{cid}" / "final" / "torch_prior.pth"
-        if not ckpt.exists():
-            continue
-        prior = load_prior(ckpt)
-        m = prior.head_mu.detach().cpu().numpy()
-        target = mu[cid % K]
-        dists = np.linalg.norm(mu - m[None, :], axis=1)
-        closest = int(np.argmin(dists))
-        print(f"{cid:>4} {cid % K:>11} ({m[0]:+.3f},{m[1]:+.3f})       "
-              f"{np.linalg.norm(target - m):>12.3f} {closest:>13}")
+    plot_global_prior(
+        metrics_path=args.metrics_path,
+        metadata=args.metadata,
+        out=args.out,
+        grid=args.grid,
+        bound=args.bound,
+        source=args.source,
+        write_pdf=not args.no_pdf,
+    )
 
 
 if __name__ == "__main__":

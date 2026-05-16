@@ -48,7 +48,7 @@ metrics_dir: "./metrics/bandit2d/fedguide_p"
 collect_metrics_every: 1
 
 device: "auto"
-seed: [0]
+seed: [0, 1, 2, 3, 4]
 
 bc_root: ./model/bc_policy
 bc_env_name: Bandit2D
