@@ -87,6 +87,7 @@ class FedKLAgent(nn.Module):
         device: Optional[str] = None,
         init_log_std: float = 0.0,
         bc_ckpt_path: Optional[str] = None,
+        bc_blend_alpha: float = 1.0,
         policy_activation: str = "tanh",
     ):
         super().__init__()
@@ -117,18 +118,24 @@ class FedKLAgent(nn.Module):
             try:
                 bc = torch.load(bc_ckpt_path, map_location=self.device, weights_only=False)
                 pol_sd = bc["policy"]
+                a = float(bc_blend_alpha)
+                a = max(0.0, min(1.0, a))
+                # Blend: w ← a * w_BC + (1-a) * w_init. a=1 → pure BC; a=0 → keep random init.
                 # Sequential keys 0.weight/0.bias (fc1), 2.weight/2.bias (fc2), 4.weight/4.bias (mean)
-                self.policy.fc1.weight.data.copy_(pol_sd["0.weight"].to(self.device))
-                self.policy.fc1.bias.data.copy_(pol_sd["0.bias"].to(self.device))
-                self.policy.fc2.weight.data.copy_(pol_sd["2.weight"].to(self.device))
-                self.policy.fc2.bias.data.copy_(pol_sd["2.bias"].to(self.device))
-                self.policy.mean.weight.data.copy_(pol_sd["4.weight"].to(self.device))
-                self.policy.mean.bias.data.copy_(pol_sd["4.bias"].to(self.device))
+                def _blend(dst, src):
+                    src = src.to(self.device, dtype=dst.dtype)
+                    dst.data.mul_(1.0 - a).add_(src, alpha=a)
+                _blend(self.policy.fc1.weight, pol_sd["0.weight"])
+                _blend(self.policy.fc1.bias,   pol_sd["0.bias"])
+                _blend(self.policy.fc2.weight, pol_sd["2.weight"])
+                _blend(self.policy.fc2.bias,   pol_sd["2.bias"])
+                _blend(self.policy.mean.weight, pol_sd["4.weight"])
+                _blend(self.policy.mean.bias,   pol_sd["4.bias"])
                 if "log_std" in bc and bc["log_std"] is not None:
                     ls = bc["log_std"]
                     if isinstance(ls, torch.Tensor):
-                        self.log_std.data.copy_(ls.to(self.device))
-                print(f"[FedKLAgent] BC warm-start ← {bc_ckpt_path}")
+                        _blend(self.log_std, ls)
+                print(f"[FedKLAgent] BC warm-start ← {bc_ckpt_path} (blend α={a:.2f})")
             except Exception as e:
                 print(f"[FedKLAgent] BC warm-start FAILED ({bc_ckpt_path}): {e}")
         

@@ -55,7 +55,7 @@ def _make_env(
     from fedguide.envs.halfcheetah_hetero import make_halfcheetah_env_if_applicable
 
     _hc_env = make_halfcheetah_env_if_applicable(
-        metadata_path, client_id, seed, render_mode, render_eval=False
+        metadata_path, client_id, seed, render_mode, render_eval=(render_mode is not None)
     )
     if _hc_env is not None:
         return _hc_env

@@ -62,7 +62,7 @@ def _make_env(
     from fedguide.envs.halfcheetah_hetero import make_halfcheetah_env_if_applicable
 
     _hc_env = make_halfcheetah_env_if_applicable(
-        metadata_path, client_id, seed, render_mode, render_eval=False
+        metadata_path, client_id, seed, render_mode, render_eval=(render_mode is not None)
     )
     if _hc_env is not None:
         return _hc_env
@@ -456,6 +456,7 @@ def client_fn_builder(
     # BC warm-start (DDPG only; actor architecture switches to 256→256 Tanh)
     bc_root: Optional[str] = None,
     bc_env_name: Optional[str] = None,
+    bc_blend_alpha: float = 1.0,
 ):
     """
     Build client function for FedRL (supports both DQN and DDPG).
@@ -566,6 +567,7 @@ def client_fn_builder(
                 ou_epsilon=ou_epsilon,
                 bc_compatible=bool(bc_root),
                 bc_ckpt_path=bc_ckpt_path,
+                bc_blend_alpha=bc_blend_alpha,
                 hidden_dim=256,
             )
         

@@ -47,3 +47,4 @@ render_episodes: 3
 
 bc_root: ./model/bc_policy
 bc_env_name: HalfCheetah
+bc_blend_alpha: 0.3                        # 30% BC + 70% random init
