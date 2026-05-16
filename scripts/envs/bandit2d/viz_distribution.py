@@ -212,6 +212,43 @@ def plot_policy_grid_for_seed(
     return paths
 
 
+def plot_policy_grid_for_algo_seed(
+    metrics_root: str | Path,
+    metadata: str | Path,
+    out: str | Path,
+    algo: str,
+    seed: int = 0,
+    bound: float = 1.5,
+    write_pdf: bool = True,
+) -> list[Path]:
+    with open(metadata, "r") as f:
+        meta = json.load(f)
+    mu = np.asarray(meta["mu"], dtype=float)
+    client_ids = list(range(int(meta.get("n_clients", len(mu)))))
+
+    metrics = load_bandit_metrics(metrics_root, algo, seed)
+    if metrics is None:
+        raise FileNotFoundError(f"No Bandit2D metrics found for {algo} seed {seed}")
+    extent = _extent(metrics, bound)
+    xx, yy = _grid_xy(metrics)
+    last = _last_round_with_clients(metrics)
+    masses = _client_policy_masses(last) if last is not None else {}
+    global_mass = _global_mixture(masses, client_ids)
+
+    fig, axes = plt.subplots(
+        1, len(client_ids) + 1,
+        figsize=(2.15 * (len(client_ids) + 1), 2.15),
+        squeeze=False,
+    )
+    for c, cid in enumerate(client_ids):
+        _draw_panel(axes[0, c], masses.get(cid), extent, mu, bound, xx, yy, global_mass)
+    _draw_panel(axes[0, -1], global_mass, extent, mu, bound, xx, yy, global_mass)
+    fig.subplots_adjust(left=0, right=1, bottom=0, top=1, wspace=0.03, hspace=0.0)
+    paths = _save(fig, out, write_pdf=write_pdf)
+    plt.close(fig)
+    return paths
+
+
 def _reward_surfaces(x: np.ndarray, y: np.ndarray, mu: np.ndarray, sigma: float):
     points = np.stack([x.ravel(), y.ravel()], axis=1)
     d2 = ((points[:, None, :] - mu[None, :, :]) ** 2).sum(axis=-1)
@@ -375,17 +412,18 @@ def plot_bandit2d_policy_distributions(
     seeds = list(seeds) if seeds is not None else discover_seeds(metrics_root, algos)
     paths: list[Path] = []
     for seed in seeds:
-        paths.extend(
-            plot_policy_grid_for_seed(
-                metrics_root=metrics_root,
-                metadata=metadata,
-                out=Path(out_dir) / f"policy_density_seed{seed}.png",
-                algos=algos,
-                seed=int(seed),
-                bound=bound,
-                write_pdf=write_pdf,
+        for algo in algos:
+            paths.extend(
+                plot_policy_grid_for_algo_seed(
+                    metrics_root=metrics_root,
+                    metadata=metadata,
+                    out=Path(out_dir) / f"policy_density_{algo}_seed{seed}.png",
+                    algo=algo,
+                    seed=int(seed),
+                    bound=bound,
+                    write_pdf=write_pdf,
+                )
             )
-        )
     paths.extend(
         plot_federal_diagnostics(
             metrics_root=metrics_root,

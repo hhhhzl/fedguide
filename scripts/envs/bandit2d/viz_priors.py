@@ -96,6 +96,28 @@ def _ring_prior_grid(metadata: str | Path, grid: int, bound: float):
     return xx, yy, z
 
 
+def _bandit_grid(metadata: str | Path, grid: int, bound: float):
+    with open(metadata, "r") as f:
+        meta = json.load(f)
+    mu = np.asarray(meta["mu"], dtype=float)
+    sigma = float(meta["sigma"])
+    xs = np.linspace(-bound, bound, grid)
+    ys = np.linspace(-bound, bound, grid)
+    xx, yy = np.meshgrid(xs, ys)
+    pts = np.stack([xx, yy], axis=-1)
+    return meta, mu, sigma, xx, yy, pts
+
+
+def _client_reward_density(pts: np.ndarray, mu: np.ndarray, sigma: float, cid: int):
+    weights = np.ones(len(mu), dtype=float) * 0.1
+    weights[cid % len(mu)] = 1.0
+    z = np.zeros(pts.shape[:2], dtype=float)
+    for k in range(len(mu)):
+        d = np.linalg.norm(pts - mu[k], axis=-1)
+        z = np.maximum(z, weights[k] * np.exp(-(d ** 2) / (2.0 * sigma ** 2)))
+    return z
+
+
 def _save(fig, out: str | Path, write_pdf: bool = True) -> list[Path]:
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -106,6 +128,83 @@ def _save(fig, out: str | Path, write_pdf: bool = True) -> list[Path]:
         fig.savefig(path, dpi=180 if path.suffix.lower() == ".png" else None,
                     bbox_inches="tight")
         print(f"[viz_priors] wrote {path}")
+    return paths
+
+
+def _style_bandit_axis(ax, tick_fontsize: int = 18):
+    ax.set_xticks([-1.5, 0.0, 1.5])
+    ax.set_yticks([-1.5, 0.0, 1.5])
+    ax.tick_params(axis="both", labelsize=tick_fontsize)
+
+
+def _draw_bandit_panel(ax, xx, yy, density, mu, bound: float, mark_all: bool = True):
+    im = ax.contourf(xx, yy, density, levels=30, cmap="viridis", vmin=0.0, vmax=1.0)
+    if mark_all:
+        ax.scatter(mu[:, 0], mu[:, 1], c="red", s=48, edgecolors="white",
+                   linewidths=1.1, zorder=5)
+    ax.set_aspect("equal")
+    ax.set_xlim(-bound, bound)
+    ax.set_ylim(-bound, bound)
+    _style_bandit_axis(ax)
+    return im
+
+
+def plot_ground_truth_distributions(
+    metadata: str | Path = "data/bandit2d/metadata.json",
+    out: str | Path = "plots/bandit2d_priors/ground_truth_distributions.png",
+    grid: int = 240,
+    bound: float = 1.5,
+    write_pdf: bool = True,
+) -> list[Path]:
+    meta, mu, sigma, xx, yy, pts = _bandit_grid(metadata, grid, bound)
+    n_clients = int(meta.get("n_clients", len(mu)))
+    _, _, global_density = _ring_prior_grid(metadata, grid, bound)
+
+    fig, axes = plt.subplots(1, n_clients + 1, figsize=(3.0 * (n_clients + 1), 3.1),
+                             dpi=160, squeeze=False)
+    for cid in range(n_clients):
+        density = _client_reward_density(pts, mu, sigma, cid)
+        _draw_bandit_panel(axes[0, cid], xx, yy, density, mu, bound)
+    _draw_bandit_panel(axes[0, -1], xx, yy, global_density, mu, bound)
+    fig.tight_layout(pad=0.4, w_pad=0.3)
+    paths = _save(fig, out, write_pdf=write_pdf)
+    plt.close(fig)
+    return paths
+
+
+def plot_ground_truth_peaks(
+    metadata: str | Path = "data/bandit2d/metadata.json",
+    out: str | Path = "plots/bandit2d_priors/ground_truth_peaks.png",
+    grid: int = 240,
+    bound: float = 1.5,
+    write_pdf: bool = True,
+) -> list[Path]:
+    _, mu, _, xx, yy, _ = _bandit_grid(metadata, grid, bound)
+    _, _, density = _fallback_reward_grid(metadata, grid, bound)
+    fig, ax = plt.subplots(figsize=(5, 5), dpi=160)
+    _draw_bandit_panel(ax, xx, yy, density, mu, bound)
+    fig.tight_layout()
+    paths = _save(fig, out, write_pdf=write_pdf)
+    plt.close(fig)
+    return paths
+
+
+def plot_ground_truth_ring(
+    metadata: str | Path = "data/bandit2d/metadata.json",
+    out: str | Path = "plots/bandit2d_priors/ground_truth_ring.png",
+    grid: int = 240,
+    bound: float = 1.5,
+    write_pdf: bool = True,
+) -> list[Path]:
+    with open(metadata, "r") as f:
+        meta = json.load(f)
+    mu = np.asarray(meta["mu"], dtype=float)
+    xx, yy, density = _ring_prior_grid(metadata, grid, bound)
+    fig, ax = plt.subplots(figsize=(5, 5), dpi=160)
+    _draw_bandit_panel(ax, xx, yy, density, mu, bound)
+    fig.tight_layout()
+    paths = _save(fig, out, write_pdf=write_pdf)
+    plt.close(fig)
     return paths
 
 
@@ -141,13 +240,13 @@ def plot_global_prior(
     im = ax.contourf(xx, yy, density, levels=30, cmap="viridis", vmin=0.0, vmax=1.0)
     ax.scatter(mu[:, 0], mu[:, 1], c="red", s=80, edgecolors="white",
                linewidths=1.5, zorder=5)
-    for k in range(len(mu)):
-        ax.annotate(f"$\\mu_{k}$", mu[k] * 1.18, color="red", fontsize=12,
-                    ha="center", va="center", fontweight="bold")
     ax.set_aspect("equal")
     ax.set_xlim(-bound, bound)
     ax.set_ylim(-bound, bound)
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    _style_bandit_axis(ax)
+    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_ticks([0.0, 0.5, 1.0])
+    cbar.ax.tick_params(labelsize=18)
     fig.tight_layout()
     paths = _save(fig, out, write_pdf=write_pdf)
     plt.close(fig)
@@ -162,8 +261,38 @@ def main():
     ap.add_argument("--grid", type=int, default=240)
     ap.add_argument("--bound", type=float, default=1.5)
     ap.add_argument("--source", default="ring", choices=["ring", "reward", "server"])
+    ap.add_argument("--ground_truth", action="store_true")
+    ap.add_argument("--ground_truth_peaks", action="store_true")
+    ap.add_argument("--ground_truth_ring", action="store_true")
     ap.add_argument("--no_pdf", action="store_true")
     args = ap.parse_args()
+    if args.ground_truth_peaks:
+        plot_ground_truth_peaks(
+            metadata=args.metadata,
+            out=args.out,
+            grid=args.grid,
+            bound=args.bound,
+            write_pdf=not args.no_pdf,
+        )
+        return
+    if args.ground_truth_ring:
+        plot_ground_truth_ring(
+            metadata=args.metadata,
+            out=args.out,
+            grid=args.grid,
+            bound=args.bound,
+            write_pdf=not args.no_pdf,
+        )
+        return
+    if args.ground_truth:
+        plot_ground_truth_distributions(
+            metadata=args.metadata,
+            out=args.out,
+            grid=args.grid,
+            bound=args.bound,
+            write_pdf=not args.no_pdf,
+        )
+        return
     plot_global_prior(
         metrics_path=args.metrics_path,
         metadata=args.metadata,

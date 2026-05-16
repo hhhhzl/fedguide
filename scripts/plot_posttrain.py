@@ -325,6 +325,27 @@ def run_bandit2d(seeds: list[int]):
         source="ring",
         write_pdf=True,
     )
+    viz_priors.plot_ground_truth_distributions(
+        metadata="data/bandit2d/metadata.json",
+        out="plots/bandit2d_priors/ground_truth_distributions.png",
+        grid=240,
+        bound=1.5,
+        write_pdf=True,
+    )
+    viz_priors.plot_ground_truth_peaks(
+        metadata="data/bandit2d/metadata.json",
+        out="plots/bandit2d_priors/ground_truth_peaks.png",
+        grid=240,
+        bound=1.5,
+        write_pdf=True,
+    )
+    viz_priors.plot_ground_truth_ring(
+        metadata="data/bandit2d/metadata.json",
+        out="plots/bandit2d_priors/ground_truth_ring.png",
+        grid=240,
+        bound=1.5,
+        write_pdf=True,
+    )
 
     print("\n=== bandit2d policy distributions ===")
     viz_distribution.plot_bandit2d_policy_distributions(
