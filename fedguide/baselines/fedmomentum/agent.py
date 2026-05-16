@@ -20,6 +20,10 @@ def _to_device(module_or_tensor, device):
     return module_or_tensor
 
 
+_DEFAULT_ACTION_LOW: float = -1.0
+_DEFAULT_ACTION_HIGH: float = 1.0
+
+
 class PolicyNetwork(nn.Module):
     """Policy network for continuous action spaces."""
     
@@ -36,9 +40,12 @@ class PolicyNetwork(nn.Module):
         
         x = F.relu(self.fc1(state))
         x = F.relu(self.fc2(x))
+        # Output the raw mean. Bounding the mean before sampling clips
+        # gradients on saturated outputs (the previous Bandit2D-only
+        # `clamp(-1.5, 1.5)` here broke training on Reacher / HalfCheetah).
+        # Action clipping is applied at sampling time using the env's actual
+        # action_space bounds, not here.
         mean = self.mean(x)
-        # Clamp to valid range for Bandit2D
-        mean = torch.clamp(mean, -1.5, 1.5)
         return mean
 
 
@@ -81,11 +88,18 @@ class FedMomentumAgent(nn.Module):
         vf_coef: float = 0.5,
         max_grad_norm: float = 0.5,
         device: Optional[str] = None,
+        action_low: Optional[float] = None,
+        action_high: Optional[float] = None,
     ):
         super().__init__()
-        
+
         self.state_dim = state_dim
         self.action_dim = action_dim
+        # Bounds used to clip *sampled actions* (NOT the policy mean) at
+        # sampling time. Defaults to [-1, 1] which matches MuJoCo MuJoCo
+        # cont-control envs (Reacher / HalfCheetah / Hopper / Walker / Ant).
+        self.action_low = float(action_low) if action_low is not None else _DEFAULT_ACTION_LOW
+        self.action_high = float(action_high) if action_high is not None else _DEFAULT_ACTION_HIGH
         self.gamma = gamma
         self.clip_eps = clip_eps
         self.gae_lambda = gae_lambda
@@ -142,8 +156,10 @@ class FedMomentumAgent(nn.Module):
         
         dist, mu = self._dist(state)
         action = mu if deterministic else dist.sample()
-        action = torch.clamp(action, -1.5, 1.5)  # Clamp for Bandit2D
+        # Clamp sampled action to env action bounds. log_prob is computed on
+        # the unclamped sample so gradients still flow.
         logp = dist.log_prob(action).sum(dim=-1)
+        action = torch.clamp(action, self.action_low, self.action_high)
         value = self.value_fn(state).squeeze(-1)
         
         # Return numpy arrays

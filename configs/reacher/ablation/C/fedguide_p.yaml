@@ -1,0 +1,64 @@
+env_type: "reacher_hetero"
+metadata_path: "data/reacher/metadata_C.json"
+num_clients: 8
+random_select_clients: false
+
+rounds: 100
+cpus_per_client: 2
+n_steps: 2048
+update_epochs: 4
+minibatch_size: 64
+
+# Federation regularizers
+lambda_local: 0.05
+lambda_guide: 0.5
+lambda_guide_anneal: true
+lambda_guide_decay_rounds: 50
+init_log_std: 0.0
+
+# FedGuide aggregation (OT-MoE prior)
+aggregate_mode: "prior"
+use_pretrained_models: true
+prior_adapt_fallback_all: true
+prior_dir: "./model/models_prior_ablation/C"
+moe_enable: true
+num_experts_prior: 8
+num_experts_guidance: 1
+ot_mode: "sinkhorn"
+ot_reg: 0.05
+personalized_routing: true
+guide_coef: 0.0
+guidance_eta: 0.1
+
+# Policy architecture
+policy_activation: "tanh"
+action_clamp_low: -1.0
+action_clamp_high: 1.0
+log_std_anneal: false
+log_std_anneal_target: -1.5
+log_std_anneal_rounds: 80
+
+# BC warm-start (same checkpoint FedGuide uses)
+bc_dir: "./model/bc_policy_ablation/C"
+bc_env_name: "Reacher"
+bc_blend_alpha: 1.0
+
+collect_metrics_every: 5
+
+# Logging
+use_wandb: false
+wandb_project: null
+run_name: null
+
+output_dir: "./model/policy/reacher/ablation/C/fedguide_p"
+metrics_dir: "./metrics/reacher/ablation/C/fedguide_p"
+
+device: "auto"
+gpus_per_client: 0.125
+seed: [0]
+
+render_eval: true
+render_mode: "video"
+render_save_dir: "./plots/reacher/ablation/C/fedguide_p"
+render_every_n_rounds: 20
+render_episodes: 10

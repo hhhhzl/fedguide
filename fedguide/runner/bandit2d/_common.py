@@ -247,34 +247,16 @@ def save_training_results(
         metrics_collector.save("bandit2d_metrics.pkl")
         print(f"\nMetrics saved to {metrics_dir}/bandit2d_metrics.pkl")
         print(f"  Final metrics_history length: {len(metrics_collector.metrics_history)}")
-        print("  To visualize, run:")
-        print(f"    python scripts/envs/bandit2d/visualize_bandit2d.py --metrics_path {metrics_dir}/bandit2d_metrics.pkl")
-    
+        print("  To plot ring / curves / prior, run:")
+        print(f"    python scripts/envs/bandit2d/plots.py all --hetero")
+
     # Save training history
     os.makedirs(metrics_dir, exist_ok=True)
     history_path = os.path.join(metrics_dir, "training_history.pkl")
-    
+
     with open(history_path, 'wb') as f:
         pickle.dump(history, f)
-    
+
     print(f"\nTraining history saved to {history_path}")
-    print("  To plot reward curves, run:")
-    if algorithm == 'fedguide':
-        print(f"    python scripts/envs/bandit2d/plot_reward_curves.py \\")
-        print(f"        --fedguide_history {history_path}")
-    elif algorithm == 'fedkl':
-        print(f"    python scripts/envs/bandit2d/plot_reward_curves.py \\")
-        print(f"        --fedkl_history {history_path}")
-    elif algorithm == 'fmarl':
-        print(f"    python scripts/envs/bandit2d/plot_reward_curves.py \\")
-        print(f"        --fedkl_history {history_path}  # FMARL uses same format as FedKL")
-    elif algorithm == 'fedrl':
-        print(f"    python scripts/envs/bandit2d/plot_reward_curves.py \\")
-        print(f"        --fedkl_history {history_path}  # FedRL uses same format as FedKL")
-    elif algorithm == 'fedrep':
-        print(f"    python scripts/envs/bandit2d/plot_reward_curves.py \\")
-        print(f"        --fedkl_history {history_path}  # FedRep uses same format as FedKL")
-    elif algorithm == 'fedmomentum':
-        print(f"    python scripts/envs/bandit2d/plot_reward_curves.py \\")
-        print(f"        --fedkl_history {history_path}  # FedMomentum uses same format as FedKL")
+    print("  Run `bash scripts/envs/bandit2d/analyze.sh` to regenerate all figures + summary table.")
 

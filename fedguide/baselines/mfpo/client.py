@@ -26,13 +26,60 @@ def _default_method_conf(config: Dict[str, Any]) -> Dict[str, Any]:
         "learning_rate_c": float(config.get("learning_rate_c", config.get("lr_c", 1e-4))),
         "gamma": float(config.get("gamma", 0.99)),
         "eps": float(config.get("eps", 1e-5)),
-        "average_type": str(config.get("average_type", "target")),
+        # MFPO's `average_type` selects which module the federation actually
+        # aggregates. Upstream defaults to "target" (the critic's target net),
+        # which means the policy is never federated and clients are
+        # effectively independent. We default to "network" (the policy)
+        # so this baseline does what its name says.
+        "average_type": str(config.get("average_type", "network")),
         "fault_type": config.get("fault_type"),
         "c": float(config.get("c", 3.0)),
         "decay_rate": float(config.get("decay_rate", 0.99)),
         "decay_start_iter_id": int(config.get("decay_start_iter_id", 500)),
         "mfpo_test_episodes": int(config.get("mfpo_test_episodes", 10)),
     }
+
+
+def _load_bc_into_mfpo_worker(worker: Any, bc_ckpt_path: str, bc_blend_alpha: float = 1.0) -> bool:
+    """Copy BC Sequential(Linear,Tanh,Linear,Tanh,Linear) weights into MFPO's
+    policy module. BC keys 0/2 (hidden layers) map to worker.network.network.0/2,
+    BC key 4 (mu head) maps to worker.network.output. The sigma head
+    (worker.network.output_) stays at random init — MFPO learns log-sigma online.
+
+    With ``bc_blend_alpha < 1.0`` the loaded weights are blended with the
+    existing (random) init: w ← α·w_BC + (1−α)·w_init.
+    """
+    import os
+    if not bc_ckpt_path or not os.path.isfile(bc_ckpt_path):
+        return False
+    try:
+        ck = torch.load(bc_ckpt_path, map_location="cpu", weights_only=False)
+        bc_sd = ck["policy"] if isinstance(ck, dict) and "policy" in ck else ck
+        a = max(0.0, min(1.0, float(bc_blend_alpha)))
+        mapping = {
+            "0.weight": "network.0.weight",
+            "0.bias":   "network.0.bias",
+            "2.weight": "network.2.weight",
+            "2.bias":   "network.2.bias",
+            "4.weight": "output.weight",
+            "4.bias":   "output.bias",
+        }
+        target_sd = worker.network.state_dict()
+        loaded = 0
+        for src_key, dst_key in mapping.items():
+            if src_key in bc_sd and dst_key in target_sd:
+                if bc_sd[src_key].shape == target_sd[dst_key].shape:
+                    src_t = bc_sd[src_key].to(target_sd[dst_key].device,
+                                              dtype=target_sd[dst_key].dtype)
+                    target_sd[dst_key] = (1.0 - a) * target_sd[dst_key] + a * src_t
+                    loaded += 1
+        worker.network.load_state_dict(target_sd, strict=False)
+        worker.old_network.load_state_dict(target_sd, strict=False)
+        print(f"[MFPO] BC warm-start ← {bc_ckpt_path} ({loaded}/6 tensors loaded, blend α={a:.2f})")
+        return loaded > 0
+    except Exception as e:
+        print(f"[MFPO] BC warm-start failed: {e}")
+        return False
 
 
 def client_fn_builder(
@@ -54,6 +101,9 @@ def client_fn_builder(
     wandb_project: Optional[str] = None,
     run_name: Optional[str] = None,
     metrics_collector: Optional[Any] = None,
+    bc_root: Optional[str] = None,
+    bc_env_name: Optional[str] = None,
+    bc_blend_alpha: float = 1.0,
     **config_overrides: Any,
 ):
     """Build Flower client_fn for MFPO (1:1 with MFPO-INFOCOM24)."""
@@ -105,6 +155,16 @@ def client_fn_builder(
             raise ValueError(
                 f"MFPO baseline supports continuous Box envs or CartPole-v1; got env_id={env_id}"
             )
+
+        # BC warm-start (continuous worker only). Path:
+        # {bc_root}/{bc_env_name}/client_{mapped_client_id}/final/policy.pth
+        if bc_root and bc_env_name and not is_discrete:
+            import os as _os
+            bc_ckpt_path = _os.path.join(
+                str(bc_root), str(bc_env_name),
+                f"client_{int(mapped_client_id)}", "final", "policy.pth",
+            )
+            _load_bc_into_mfpo_worker(worker, bc_ckpt_path, bc_blend_alpha=bc_blend_alpha)
 
         agent = MFPOAgent(worker, average_type=method_conf["average_type"], device=device)
         trainer = MFPTrainer(

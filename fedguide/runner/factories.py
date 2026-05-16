@@ -217,7 +217,11 @@ def _set_gym_mujoco_render_mode_rgb(env) -> None:
 
 
 def _create_d4rl_env(config: Dict[str, Any], **kwargs):
-    """Create D4RL environment (or Gymnasium HalfCheetah when metadata env=halfcheetah)."""
+    """Dispatcher for "d4rl" env_type. Routes to per-env hetero loaders based on
+    the metadata.json `env` tag (halfcheetah / walker / hopper / metaworld /
+    reacher / reacher_hetero) or falls through to a plain gymnasium.make for
+    the bare env_name.
+    """
     from fedguide.utils.mujoco_headless import ensure_mujoco_headless_gl_if_needed
 
     ensure_mujoco_headless_gl_if_needed()
@@ -226,67 +230,39 @@ def _create_d4rl_env(config: Dict[str, Any], **kwargs):
     if metadata_path and os.path.exists(metadata_path):
         with open(metadata_path, "r", encoding="utf-8") as f:
             meta = json.load(f)
-        clients = meta.get("clients") or []
-        if str(meta.get("env", "")).lower() == "halfcheetah":
+        env_tag = str(meta.get("env", "")).lower()
+        seed = kwargs.get("seed", config.get("seed", 42))
+        if env_tag == "halfcheetah":
             from fedguide.envs.halfcheetah_hetero import make_hetero_halfcheetah_env_from_metadata
 
-            seed = kwargs.get("seed", config.get("seed", 42))
             return make_hetero_halfcheetah_env_from_metadata(
-                metadata_path,
-                0,
-                seed=seed,
-                render_mode=None,
+                metadata_path, 0, seed=seed, render_mode=None,
                 render_eval=bool(config.get("render_eval")),
             )
-        if meta.get("env") == "antmaze" or (
-            clients and str(clients[0].get("variant", "")).startswith("antmaze-")
-        ):
-            from fedguide.envs.antmaze_hetero import make_hetero_antmaze_env_from_metadata
+        if env_tag in ("walker", "hopper", "ant"):
+            from fedguide.envs.mujoco_locomotion_hetero import make_hetero_locomotion_env_from_metadata
 
-            seed = kwargs.get("seed", config.get("seed", 42))
-            return make_hetero_antmaze_env_from_metadata(
-                metadata_path,
-                0,
-                seed=seed,
-                reward_type=config.get("reward_type"),
+            return make_hetero_locomotion_env_from_metadata(
+                metadata_path, 0, seed=seed, render_mode=None,
                 render_eval=bool(config.get("render_eval")),
             )
+        if env_tag.startswith("metaworld"):
+            from fedguide.envs.metaworld_hetero import make_hetero_metaworld_env_from_metadata
 
-    # D4RL registers envs with the `gym` package, not Gymnasium's registry.
-    import gym as gym_legacy
-    import d4rl  # noqa: F401 — register envs
-    from fedguide.envs.antmaze_hetero import build_d4rl_make_kwargs
-
-    class _D4RLObservationSpaceFix(gym_legacy.Wrapper):
-        """Some D4RL envs (e.g. antmaze) report a wrong Box shape vs actual reset/step obs."""
-
-        def __init__(self, env, obs_dim: int):
-            super().__init__(env)
-            self.observation_space = gym_legacy.spaces.Box(
-                low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            return make_hetero_metaworld_env_from_metadata(
+                metadata_path, 0, seed=seed,
+                render_mode="rgb_array" if config.get("render_eval") else None,
             )
 
-    env_name = config.get('env_name', 'halfcheetah-medium-v2')
-    mkw = build_d4rl_make_kwargs(env_name, config)
-    env = gym_legacy.make(env_name, **mkw)
-
+    # Fall through: plain gymnasium make for the bare env_name (e.g. HC-v4).
+    import gymnasium as gym
+    env_name = config.get('env_name', 'HalfCheetah-v4')
+    env = gym.make(env_name)
     seed = kwargs.get('seed', config.get('seed', 42))
     try:
-        out = env.reset(seed=seed)
+        env.reset(seed=seed)
     except TypeError:
         env.reset()
-        if hasattr(env, "action_space") and hasattr(env.action_space, "seed"):
-            env.action_space.seed(seed)
-        out = env.reset()
-    o0 = out[0] if isinstance(out, tuple) else out
-    actual_dim = int(np.asarray(o0, dtype=np.float32).ravel().shape[0])
-    decl_dim = int(np.asarray(env.observation_space.shape).prod())
-    if actual_dim != decl_dim:
-        env = _D4RLObservationSpaceFix(env, actual_dim)
-
-    if config.get("render_eval"):
-        _set_gym_mujoco_render_mode_rgb(env)
-
     return env
 
 
@@ -511,6 +487,30 @@ def _create_fedguide_client_fn(config: Dict[str, Any], **kwargs):
             bool(config.get('render_eval', False)),
             str(config.get('render_mode', 'video')),
         ),
+        policy_activation=str(config.get('policy_activation', 'tanh')),
+        action_clamp_low=config.get('action_clamp_low'),
+        action_clamp_high=config.get('action_clamp_high'),
+        log_std_anneal=bool(config.get('log_std_anneal', False)),
+        log_std_anneal_target=float(config.get('log_std_anneal_target', -2.0)),
+        log_std_anneal_rounds=int(config.get('log_std_anneal_rounds', 40)),
+        prior_dir=str(config.get('prior_dir', './model/models_prior')),
+        bc_dir=config.get('bc_dir'),
+        bc_env_name=config.get('bc_env_name'),
+        bc_blend_alpha=float(config.get('bc_blend_alpha', 1.0)),
+        online_guidance=bool(config.get('online_guidance', False)),
+        online_prior=bool(config.get('online_prior', False)),
+        guide_coef=float(config.get('guide_coef', 1.0)),
+        guidance_eta=float(config.get('guidance_eta', 0.1)),
+        prior_reshape=bool(config.get('prior_reshape', False)),
+        reshape_beta=float(config.get('reshape_beta', 0.1)),
+        dice_reward_eta=float(config.get('dice_reward_eta', 0.0)),
+        dice_v_blend_alpha=float(config.get('dice_v_blend_alpha', 1.0)),
+        dice_adv_beta=float(config.get('dice_adv_beta', 0.0)),
+        render_all_clients=bool(config.get('render_all_clients', False)),
+        policy_save_dir=config.get('policy_save_dir') or (
+            os.path.join(config['metrics_dir'], 'policies') if config.get('metrics_dir') else None
+        ),
+        policy_save_every=int(config.get('policy_save_every', 0)),
     )
 
 
@@ -561,10 +561,20 @@ def _create_fedkl_client_fn(config: Dict[str, Any], **kwargs):
         render_save_dir=config.get('render_save_dir'),
         render_every_n_rounds=int(config.get('render_every_n_rounds', 10)),
         render_episodes=int(config.get('render_episodes', 5)),
+        render_all_clients=bool(config.get('render_all_clients', False)),
         reacher_render_mode=reacher_env_render_mode_from_config(
             bool(config.get('render_eval', False)),
             str(config.get('render_mode', 'video')),
         ),
+        prior_dir=config.get('prior_dir'),
+        prior_env_name=config.get('prior_env_name'),
+        bc_root=config.get('bc_root'),
+        bc_env_name=config.get('bc_env_name'),
+        bc_blend_alpha=float(config.get('bc_blend_alpha', 1.0)),
+        policy_save_dir=config.get('policy_save_dir') or (
+            os.path.join(config['metrics_dir'], 'policies') if config.get('metrics_dir') else None
+        ),
+        policy_save_every=int(config.get('policy_save_every', 0)),
     )
 
 
@@ -678,6 +688,9 @@ def _create_fedrl_client_fn(config: Dict[str, Any], **kwargs):
             bool(config.get('render_eval', False)),
             str(config.get('render_mode', 'video')),
         ),
+        bc_root=config.get('bc_root'),
+        bc_env_name=config.get('bc_env_name'),
+        bc_blend_alpha=float(config.get('bc_blend_alpha', 1.0)),
     )
 
 
@@ -700,6 +713,11 @@ def _create_fedrep_client_fn(config: Dict[str, Any], **kwargs):
         gamma=float(config.get('gamma', 0.99)),
         gae_lambda=float(config.get('gae_lambda', 0.95)),
         update_epochs=int(config.get('update_epochs', 10)),
+        # FedRep two-phase epochs (Collins et al. 2021). Default to 5/5
+        # which together match update_epochs=10. Set both to 0 in YAML to
+        # restore legacy single-phase PPO.
+        head_epochs=int(config.get('head_epochs', 5)),
+        rep_epochs=int(config.get('rep_epochs', 5)),
         minibatch_size=int(config.get('minibatch_size', 64)),
         clip_eps=float(config.get('clip_eps', 0.2)),
         entropy_coef=float(config.get('entropy_coef', 0.01)),
@@ -831,6 +849,9 @@ def _create_mfpo_client_fn(config: Dict[str, Any], **kwargs):
         decay_start_iter_id=int(config.get('decay_start_iter_id', 500)),
         fault_type=config.get('fault_type'),
         mfpo_test_episodes=int(config.get('mfpo_test_episodes', 10)),
+        bc_root=config.get('bc_root'),
+        bc_env_name=config.get('bc_env_name'),
+        bc_blend_alpha=float(config.get('bc_blend_alpha', 1.0)),
     )
 
 
@@ -868,10 +889,14 @@ def _create_fedguide_server(config: Dict[str, Any], **kwargs):
         moe_enable=config.get('moe_enable', True),
         num_experts_prior=config.get('num_experts_prior', 1),
         num_experts_guidance=config.get('num_experts_guidance', 1),
+        ot_mode=str(config.get('ot_mode', 'sinkhorn')),
+        ot_reg=float(config.get('ot_reg', 0.05)),
+        personalized_routing=bool(config.get('personalized_routing', True)),
         client_specific_expert_routing=config.get('client_specific_expert_routing', False),
         cid_mapping_file=config.get('cid_mapping_file'),
         num_clients=num_clients,
         routing_debug=config.get('routing_debug', False),
+        policy_agg_every_k=int(config.get('policy_agg_every_k', 1)),
     )
 
 
@@ -963,6 +988,7 @@ def _create_fedrep_server(config: Dict[str, Any], **kwargs):
         min_evaluate_clients=num_clients,
         min_available_clients=num_clients,
         on_fit_config_fn=lambda rnd: {"server_round": rnd},
+        on_evaluate_config_fn=lambda rnd: {"server_round": rnd},
         evaluate_fn=evaluate_fn,
     )
 

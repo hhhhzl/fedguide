@@ -307,8 +307,17 @@ def _run_federated_training(env_type: str, algorithm: str, config: Dict[str, Any
         # Ray only exposes GPUs to VCE actors when num_gpus > 0; omitting it forces CPU PyTorch.
         client_resources["num_gpus"] = float(config.get("gpus_per_client", 1.0))
     print(f"Ray client_resources: {client_resources}")
+    # Override Ray's container-CPU autodetect when the host has more cores than
+    # Docker reports. Setting num_cpus high enough lets all clients run in
+    # parallel actors instead of batching through a small pool.
+    ray_init_num_cpus = int(config.get("ray_init_num_cpus", 0))
+    ray_init_args = None
+    if ray_init_num_cpus > 0:
+        ray_init_args = {"num_cpus": ray_init_num_cpus,
+                         "include_dashboard": False}
+        print(f"Ray ray_init_args: {ray_init_args}")
     print(f"{'='*60}\n")
-    
+
     # Run federated simulation
     history = fl.simulation.start_simulation(
         client_fn=client_fn,
@@ -316,6 +325,7 @@ def _run_federated_training(env_type: str, algorithm: str, config: Dict[str, Any
         strategy=server,
         config=server_config,
         client_resources=client_resources,
+        **({"ray_init_args": ray_init_args} if ray_init_args else {}),
     )
     
     # Finalize hooks
@@ -356,12 +366,33 @@ def _save_federated_results(history: Any, metrics_collector: Any, config: Dict[s
 def run_training(config: Dict[str, Any], args=None, device: Optional[str] = None):
     """
     Unified training function that works for all algorithms and environments.
-    
+
     Args:
         config: Configuration dictionary
         args: Optional argparse args
         device: Optional device override
     """
+    # ----- Phase-1 sweep hook -----
+    # When FG_PHASE1_SWEEP is set, override key paths/seeds/rounds from env vars
+    # so every (algo, seed) writes into its own metrics/<run>/seed_<i>/ folder
+    # without touching individual run scripts or YAMLs.
+    if os.environ.get("FG_PHASE1_SWEEP", "0") == "1":
+        for cfg_key, env_key, cast in [
+            ("metrics_dir", "FG_PHASE1_METRICS_DIR", str),
+            ("output_dir", "FG_PHASE1_OUTPUT_DIR", str),
+            ("seed", "FG_PHASE1_SEED", int),
+            ("rounds", "FG_PHASE1_ROUNDS", int),
+            ("device", "FG_PHASE1_DEVICE", str),
+            ("gpus_per_client", "FG_PHASE1_GPUS_PER_CLIENT", float),
+            ("cpus_per_client", "FG_PHASE1_CPUS_PER_CLIENT", float),
+        ]:
+            val = os.environ.get(env_key)
+            if val is not None and val != "":
+                try:
+                    config[cfg_key] = cast(val)
+                except ValueError:
+                    pass
+
     # Determine environment type and algorithm
     env_type = config.get('env_type', 'bandit2d')
     algorithm = config.get('algorithm', 'ppo')

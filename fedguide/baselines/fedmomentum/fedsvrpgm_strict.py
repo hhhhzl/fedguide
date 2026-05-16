@@ -32,27 +32,55 @@ def _policy_grad_dict_from_trajectory(
     actions: torch.Tensor,
     rewards: torch.Tensor,
     gamma: float,
+    grad_clip_norm: float = 10.0,
 ) -> Dict[str, torch.Tensor]:
+    """REINFORCE-style policy gradient.
+
+    Paper Eq. (G * ∇log π) is unbiased but high-variance: with MuJoCo-scale
+    rewards (HalfCheetah/Walker per-step ~5) and long rollouts (~820 steps),
+    the raw G is O(1e2 -- 1e3) and the resulting weight step `η·grad`
+    overshoots into NaN territory. We use the standard control-variate
+    trick: subtract the trajectory-mean baseline from G and normalize by
+    its std. This is unbiased w.r.t. policy parameters but cuts gradient
+    variance ~100x. Additionally clip the gradient norm to keep weight
+    updates bounded.
+    """
     device = agent.device
     states = states.to(device).float()
     actions = actions.to(device).float()
     rewards = rewards.to(device).float()
     G = _discounted_returns_from_t(rewards, gamma).detach()
+    # Baseline subtraction ONLY (don't std-normalize). Subtracting the mean
+    # is unbiased and cuts variance, but std-normalize over-shrinks the
+    # gradient scale: η=5e-4 × O(1) → tiny step. Keeping G's natural HC
+    # scale (~O(50-100)) with η=5e-4 gives effective step ~0.025-0.05 per
+    # weight — within the upstream "works" regime. Grad-clip below bounds
+    # the worst spikes.
+    A = (G - G.mean()).detach()
 
     logps, _, _, _ = agent.evaluate(states, actions)
-    loss = -(G * logps).sum()
+    loss = -(A * logps).sum() / max(1, A.numel())
 
     agent.optimizer.zero_grad()
     loss.backward()
+    # Clip to bound the per-trajectory step magnitude.
+    all_params = list(agent.policy.parameters()) + [agent.log_std]
+    torch.nn.utils.clip_grad_norm_(all_params, max_norm=grad_clip_norm)
 
     params_by_name = {n: p for n, p in agent.policy.named_parameters()}
     out: Dict[str, torch.Tensor] = {}
     for key in sorted(params_by_name.keys()):
         p = params_by_name[key]
         g = p.grad if p.grad is not None else torch.zeros_like(p.data)
-        out[f"policy.{key}"] = g.detach().clone()
+        # NaN/inf guard.
+        g = torch.nan_to_num(g, nan=0.0, posinf=0.0, neginf=0.0)
+        # Sign flip: `loss = -(A · logp).sum()` so `p.grad = ∇(loss) = -∇J`.
+        # FedSVRPG-M Algorithm 1's `g(τ|θ)` is the POLICY GRADIENT ∇J(θ)
+        # (gradient *ascent* direction). Return that, not the loss gradient.
+        out[f"policy.{key}"] = (-g).detach().clone()
     g_ls = agent.log_std.grad if agent.log_std.grad is not None else torch.zeros_like(agent.log_std.data)
-    out["log_std"] = g_ls.detach().clone()
+    g_ls = torch.nan_to_num(g_ls, nan=0.0, posinf=0.0, neginf=0.0)
+    out["log_std"] = (-g_ls).detach().clone()
     agent.optimizer.zero_grad()
     return out
 
@@ -83,14 +111,55 @@ def _flat_to_grad_dict(agent: Any, flat: List[np.ndarray]) -> Dict[str, torch.Te
     return gd
 
 
-def _apply_parameter_step(
+def _apply_parameter_step_sgd(
     agent: Any, grad_step: Dict[str, torch.Tensor], eta: float
 ) -> None:
+    """Plain SGD: θ ← θ + η · u. Faithful to FedSVRPG-M Algorithm 1.
+    Only stable when (network size × reward scale) keeps raw grad magnitude
+    small (paper uses 32-hidden Gaussian + bounded rewards). With our
+    256-hidden net + full MuJoCo rewards the raw u_step is ~1e3 per
+    weight, so this path is impractical — kept for reference / debugging."""
     with torch.no_grad():
+        for key, g in grad_step.items():
+            if not torch.isfinite(g).all():
+                return
         params_by_name = {n: p for n, p in agent.policy.named_parameters()}
         for key in sorted(params_by_name.keys()):
             params_by_name[key].add_(eta * grad_step[f"policy.{key}"])
         agent.log_std.add_(eta * grad_step["log_std"])
+        agent.log_std.data.clamp_(-5.0, 2.0)
+
+
+def _apply_parameter_step_adam(
+    agent: Any, grad_step: Dict[str, torch.Tensor], optimizer: torch.optim.Optimizer
+) -> None:
+    """Adam-style step. Faithful to upstream MFPO's `optimizer_new.step()`
+    (which uses Adam under the hood). Equivalent to paper Eq. (4)'s
+    θ ← θ + η · u up to the per-weight rescaling Adam applies via running
+    sqrt(E[g²]) — paper's η=0.75 (with 32-hidden net + bounded rewards) and
+    upstream's Adam(lr=1e-4) (with 256-hidden + raw rewards) both achieve
+    per-weight step ≈ 1e-4 / step; Adam is what makes this robust to network
+    size and reward scale."""
+    # NaN/inf check on the assembled u_step; skip the step if not finite.
+    for key, g in grad_step.items():
+        if not torch.isfinite(g).all():
+            return
+    # Load u_step into .grad and let Adam do the per-parameter normalization.
+    # NB: Adam minimizes loss, so a "+u" ascent step requires a "-u" grad.
+    params_by_name = {n: p for n, p in agent.policy.named_parameters()}
+    for key in sorted(params_by_name.keys()):
+        params_by_name[key].grad = (-grad_step[f"policy.{key}"]).detach().clone()
+    agent.log_std.grad = (-grad_step["log_std"]).detach().clone()
+    optimizer.step()
+    agent.log_std.data.clamp_(-5.0, 2.0)
+
+
+def _apply_parameter_step(
+    agent: Any, grad_step: Dict[str, torch.Tensor], eta: float
+) -> None:
+    # Kept for API back-compat; new callers should use the Adam variant
+    # (which the strict trainer holds via self._step_optimizer).
+    _apply_parameter_step_sgd(agent, grad_step, eta)
 
 
 class FedSVRPGMStrictTrainer:
@@ -137,6 +206,21 @@ class FedSVRPGMStrictTrainer:
         self.render_episodes = render_episodes
         self.render_client_tag = render_client_tag
         self.n_steps = int(local_steps_k * max_horizon)
+
+        # FedSVRPG-M's Algorithm 1 writes the update as plain SGD:
+        #   θ_{r,k+1} = θ_{r,k} + η · u_{r,k}.
+        # Upstream MFPO's reference impl (MFPO-INFOCOM24/code/agent/worker_continuous.py:64-66)
+        # instead applies u via Adam (lr=1e-4, eps=1e-5, weight_decay=1e-6). Adam's per-weight
+        # normalization is crucial for stability on dense-reward MuJoCo: with raw G ~ 1e3 and SGD,
+        # any η in a useful range will overshoot or undershoot. Adam normalizes the step magnitude
+        # to ~lr per weight, which is what makes upstream actually learn on HalfCheetah.
+        # We follow the upstream practical recipe here, applying u via Adam over policy+log_std.
+        self._step_optimizer = torch.optim.Adam(
+            list(self.agent.policy.parameters()) + [self.agent.log_std],
+            lr=float(self.eta),
+            eps=1e-5,
+            weight_decay=1e-6,
+        )
 
         reset_result = self.env.reset()
         self._obs = reset_result[0] if isinstance(reset_result, tuple) else reset_result
@@ -193,6 +277,9 @@ class FedSVRPGMStrictTrainer:
         tp = _flat_to_policy_payload(self.agent, fed["theta_prev_flat"])
 
         theta_start_snap, theta_start_ls = self._save_policy_snapshot()
+        # NB: keep Adam's m,v running stats across rounds. Per-round reset
+        # was strictly worse — Adam's smoothing of grad variance is more
+        # valuable than freshness w.r.t. broadcast θ_r.
 
         train_ep_returns: List[float] = []
         for _ in range(self.local_steps_k):
@@ -228,7 +315,7 @@ class FedSVRPGMStrictTrainer:
                     u_r[key] + g_ck[key] - w * g_r1[key]
                 )
 
-            _apply_parameter_step(self.agent, u_step, self.eta)
+            _apply_parameter_step_adam(self.agent, u_step, self._step_optimizer)
 
         theta_end_snap, theta_end_ls = self._save_policy_snapshot()
 
@@ -247,11 +334,22 @@ class FedSVRPGMStrictTrainer:
         # Surrogate loss for logging (maximize return ⇔ minimize negative return)
         loss_surrogate = -train_mean
 
+        # Also report post-train local eval (deterministic policy) so the
+        # client / Flower history captures it under metrics_distributed_fit.
+        # The "official" FedSVRPG-M eval is still the distributed evaluate()
+        # of the BROADCAST global θ_r — but having both makes the
+        # local-vs-global gap visible during debugging.
+        eval_ret_local = 0.0
+        n_ep = max(1, int(self.eval_episodes))
+        for _ in range(n_ep):
+            eval_ret_local += float(self._eval_episode())
+        eval_ret_local /= float(n_ep)
+
         dur = max(time.time() - t0, 1e-8)
-        # No eval/return here: that belongs to Flower evaluate() with global θ only.
         out: Dict[str, float] = {
             "loss": float(loss_surrogate),
             "train/return": float(train_mean),
+            "eval/return": float(eval_ret_local),
             "time/sec_per_round": float(dur),
         }
         self.n_steps = int(self.local_steps_k * self.max_horizon)

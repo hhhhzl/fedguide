@@ -1,0 +1,68 @@
+# FedMomentum — inspired by FedSVRPG-M / FedHAPG-M (arxiv:2405.19499, ICML 2024).
+# Server: θ_{r+1} = θ_r + λ · (weighted mean of client policy gradients).
+# Paper's momentum β is in the *local* VR estimator (Eq. 4), not Polyak on the server.
+# Set use_server_momentum: true only if you want an extra server-side EMA (legacy).
+
+env_type: "d4rl"
+env_name: "HalfCheetah-v4"
+metadata_path: "data/halfcheetah/metadata_mild64.json"
+num_clients: 8
+random_select_clients: false
+
+algorithm: "fedmomentum"
+algorithm_type: "svrpg"
+
+rounds: 100
+cpus_per_client: 2
+
+use_server_momentum: false
+momentum_beta: 0.9
+server_lr: 0.001
+
+n_steps: 4096
+update_epochs: 4
+minibatch_size: 64
+clip_eps: 0.2
+entropy_coef: 0.01
+value_coef: 0.5
+max_grad_norm: 0.5
+gamma: 0.99
+gae_lambda: 0.95
+
+hidden_dim: 256
+lr: 3e-4
+
+reference_update_freq: 5
+use_svrpg: true
+
+hessian_alpha: 0.1
+use_diagonal_approx: true
+fisher_update_freq: 1
+use_fisher_info: true
+
+eval_episodes: 10
+
+use_wandb: false
+wandb_project: null
+run_name: null
+
+output_dir: "./model/policy/halfcheetah/fedmomentum"
+metrics_dir: "./metrics/halfcheetah/fedmomentum"
+collect_metrics_every: 1
+
+# Device configuration
+device: "auto"  # "auto", "cpu", or "cuda"
+# Ray Flower VCE: GPU fraction per virtual client (match fedavg; smaller => more parallel actors)
+gpus_per_client: 0.25
+
+seed: [0]
+
+render_eval: true
+render_mode: "video"
+render_save_dir: "./plots/halfcheetah/fedmomentum"
+render_every_n_rounds: 20
+render_episodes: 3
+
+bc_root: ./model/bc_policy
+bc_env_name: HalfCheetah
+bc_blend_alpha: 0.3                        # 30% BC + 70% random init

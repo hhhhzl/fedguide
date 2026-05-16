@@ -1,0 +1,50 @@
+# FMARL — federated Reacher with client heterogeneity
+
+env_type: "d4rl"
+env_name: "HalfCheetah-v4"
+metadata_path: "data/halfcheetah/metadata_mild64.json"
+num_clients: 8
+random_select_clients: false
+
+rounds: 100
+cpus_per_client: 2
+
+n_steps: 4096
+lambda_global: 15.0
+lambda_local: 0.05
+update_epochs: 10
+minibatch_size: 64
+clip_eps: 0.2
+entropy_coef: 0.01
+value_coef: 0.5
+max_grad_norm: 0.5
+
+hidden_dim: 256
+lr: 3e-4
+gamma: 0.99
+gae_lambda: 0.95
+
+use_wandb: false
+wandb_project: null
+run_name: null
+
+output_dir: "./model/policy/halfcheetah/fmarl"
+metrics_dir: "./metrics/halfcheetah/fmarl"
+collect_metrics_every: 1
+
+# Device configuration
+device: "auto"  # "auto", "cpu", or "cuda"
+# Ray Flower VCE: GPU fraction per virtual client (match fedavg; smaller => more parallel actors)
+gpus_per_client: 0.25
+
+seed: [0]
+
+render_eval: true
+render_mode: "video"
+render_save_dir: "./plots/halfcheetah/fmarl"
+render_every_n_rounds: 20
+render_episodes: 3
+
+bc_root: ./model/bc_policy
+bc_env_name: HalfCheetah
+bc_blend_alpha: 0.3                        # 30% BC + 70% random init

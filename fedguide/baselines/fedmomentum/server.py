@@ -205,6 +205,12 @@ class FedMomentumStrategy(Strategy):
         client_manager: ClientManager,
     ) -> List[Tuple[ClientProxy, FitIns]]:
         """Configure the next round of training."""
+        # Cache the broadcast θ_r so aggregate_fit can compute θ_{r+1} = θ_r + λ·ḡ
+        # (FedSVRPG-M Eq. 5). Without this, we used results[0].parameters
+        # (= client 0's POST-train weights) as the base, which is biased toward
+        # one client's MDP and discards the federation.
+        self._last_broadcast_params = parameters
+
         # Sample clients
         num_available = len(client_manager.all())
         
@@ -493,11 +499,16 @@ class FedMomentumStrategy(Strategy):
         if len(results) == 0:
             return None
 
-        _, first_fit_res = results[0]
-        if isinstance(first_fit_res, dict):
-            current_params = first_fit_res.get("parameters", None)
-        else:
-            current_params = first_fit_res.parameters
+        # Use the BROADCAST θ_r (cached in configure_fit), NOT the first
+        # client's post-train weights. FedSVRPG-M Eq. 5: θ_{r+1} = θ_r + λ·ḡ.
+        current_params = getattr(self, "_last_broadcast_params", None)
+        if current_params is None:
+            # Fallback: best-effort use first client's params (legacy behavior).
+            _, first_fit_res = results[0]
+            if isinstance(first_fit_res, dict):
+                current_params = first_fit_res.get("parameters", None)
+            else:
+                current_params = first_fit_res.parameters
 
         if current_params is None:
             return None

@@ -1,0 +1,53 @@
+# MFPO (INFOCOM 2024) — federated HalfCheetah-v4 with metadata heterogeneity
+
+env_type: "d4rl"
+env_name: "HalfCheetah-v4"
+metadata_path: "data/halfcheetah/metadata_mild64.json"
+num_clients: 8
+random_select_clients: false
+
+algorithm: "mfpo"
+
+rounds: 100
+cpus_per_client: 2
+
+# MFPO paper defaults use batch_size=20, local_update=10. On Reacher (~50 steps/ep)
+# that is cheap. HalfCheetah episodes are up to 1000 steps; each train() collects
+# `batch_size` full episodes × `local_update` times → ~20×1000×10 env steps/client/round
+# plus test() (10×1000). Scale down for MuJoCo or the first round looks "stuck".
+batch_size: 4
+local_update: 4
+mfpo_test_episodes: 3
+gamma: 0.99
+c: 3.0
+average_type: "target"
+learning_rate_a: 1e-4
+learning_rate_c: 1e-4
+lr_a: 1e-4
+lr_c: 1e-4
+eps: 1e-5
+decay_rate: 0.99
+decay_start_iter_id: 500
+
+use_wandb: false
+wandb_project: null
+run_name: null
+
+output_dir: "./model/policy/halfcheetah/mfpo"
+metrics_dir: "./metrics/halfcheetah/mfpo"
+collect_metrics_every: 5
+
+device: "auto"
+gpus_per_client: 0.25
+
+seed: [0]
+
+render_eval: true
+render_mode: "video"
+render_save_dir: "./plots/halfcheetah/mfpo"
+render_every_n_rounds: 20
+render_episodes: 3
+
+bc_root: ./model/bc_policy
+bc_env_name: HalfCheetah
+bc_blend_alpha: 0.3                        # 30% BC + 70% random init

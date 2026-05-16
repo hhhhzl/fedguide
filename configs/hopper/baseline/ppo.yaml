@@ -1,0 +1,47 @@
+env_type: "d4rl"
+env_name: "Hopper-v4"
+metadata_path: "data/hopper/metadata_mild64.json"
+num_clients: 8
+random_select_clients: false
+
+rounds: 100
+update_epochs: 4
+minibatch_size: null
+
+hidden_dim: 256
+lr: 3e-4
+gamma: 0.99
+gae_lambda: 0.95
+clip_eps: 0.2
+entropy_coef: 0.01
+value_coef: 0.5
+max_grad_norm: 0.5
+
+# BC warm-start (same checkpoint FedGuide uses)
+bc_root: "./model/bc_policy"
+bc_env_name: "Hopper"
+bc_blend_alpha: 0.3
+
+eval_episodes: 10
+eval_stochastic_samples: 64
+
+output_dir: "./model/policy/hopper/ppo"
+metrics_dir: "./metrics/hopper/ppo"
+save_every: 10
+
+device: "auto"
+seed: [0]
+
+render_eval: true
+render_mode: "video"
+render_save_dir: "./plots/hopper/ppo"
+render_every_n_rounds: 20
+render_episodes: 1
+
+# Other
+steps_per_round: 2000
+action_std: 0.1
+learnable_std: true
+collect_logprob: false
+logprob_grid_size: 200
+logprob_bounds: [-1.5, 1.5]

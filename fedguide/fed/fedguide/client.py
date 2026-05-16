@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Callable, Iterable
 import json
+import os
 import random
 import numpy as np
 import torch
@@ -10,20 +11,11 @@ try:
     import gymnasium as gym
 except Exception:
     import gym  # fallback to classic gym if needed
-import gym as old_gym  # Old gym package for d4rl environments
 
 from fedguide.agents.fedguide_agent import FedguideAgent
 from fedguide.trainers.fedguide_trainer import FedguideTrainer
 from fedguide.fed.client import FedRLClient
 from fedguide.utils.gym_space_utils import is_box1d as _is_box1d
-
-
-# --------- Helpers ---------
-def _is_d4rl_env(env_id: str) -> bool:
-    """Check if env_id is a d4rl environment that needs old gym."""
-    d4rl_prefixes = ["maze2d-", "antmaze-", "flow-", "kitchen-", "pen-", "door-", "hammer-", "relocate-", "push-", "stick-"]
-    env_id_lower = env_id.lower()
-    return any(env_id_lower.startswith(prefix) for prefix in d4rl_prefixes)
 
 
 def _make_env(
@@ -59,40 +51,30 @@ def _make_env(
     from fedguide.envs.halfcheetah_hetero import make_halfcheetah_env_if_applicable
 
     _hc_env = make_halfcheetah_env_if_applicable(
-        metadata_path, client_id, seed, render_mode, render_eval=False
+        metadata_path, client_id, seed, render_mode, render_eval=(render_mode is not None)
     )
     if _hc_env is not None:
         return _hc_env
 
-    # AntMaze + metadata.json (env=antmaze) — per-client D4RL variant + noise/scale
-    if _is_d4rl_env(env_id) and env_id.lower().startswith("antmaze-") and metadata_path:
-        import os
+    # Walker2D / Ant / Hopper share the locomotion-hetero loader
+    from fedguide.envs.mujoco_locomotion_hetero import make_locomotion_env_if_applicable
 
-        if os.path.isfile(metadata_path):
-            with open(metadata_path, "r") as f:
-                _meta = json.load(f)
-            _clients = _meta.get("clients") or []
-            if _meta.get("env") == "antmaze" or (
-                _clients and str(_clients[0].get("variant", "")).startswith("antmaze-")
-            ):
-                from fedguide.envs.antmaze_hetero import make_hetero_antmaze_env_from_metadata
+    _loco_env = make_locomotion_env_if_applicable(
+        metadata_path, client_id, seed, render_mode, render_eval=(render_mode is not None)
+    )
+    if _loco_env is not None:
+        return _loco_env
 
-                idx = client_id if client_id is not None else 0
-                return make_hetero_antmaze_env_from_metadata(
-                    metadata_path,
-                    idx,
-                    seed=seed,
-                    reward_type=reward_type,
-                    render_eval=False,
-                )
+    # MetaWorld ML10
+    from fedguide.envs.metaworld_hetero import make_metaworld_env_if_applicable
 
-    # Only import d4rl when needed (avoid mujoco/d4rl dependency for Bandit2D)
-    if _is_d4rl_env(env_id):
-        try:
-            import d4rl  # noqa: F401
-        except ImportError:
-            pass
-    elif env_id.lower() == "pointmazenarrow":
+    _mw_env = make_metaworld_env_if_applicable(
+        metadata_path, client_id, seed, render_mode
+    )
+    if _mw_env is not None:
+        return _mw_env
+
+    if env_id.lower() == "pointmazenarrow":
         from fedguide.envs.pointmaze_narrow import PointMazeNarrow
         env = PointMazeNarrow()
         if seed is not None:
@@ -101,32 +83,12 @@ def _make_env(
             except TypeError:
                 env.reset()
         return env
-    
-    # Use old_gym.make for d4rl environments (they register with old gym, not gymnasium)
-    # Use gym.make (gymnasium) for standard gymnasium environments
-    if _is_d4rl_env(env_id):
-        from fedguide.envs.antmaze_hetero import build_d4rl_make_kwargs
 
-        mkw = build_d4rl_make_kwargs(
-            env_id, {"reward_type": reward_type, "d4rl_env_kwargs": {}}
-        )
-        env = old_gym.make(env_id, **mkw)
-    else:
-        env = gym.make(env_id)
-    
+    env = gym.make(env_id)
     try:
         env.reset(seed=seed)
     except TypeError:
-        # Some environments may not support seed parameter in reset
         pass
-    except Exception as e:
-        # If it's a flow environment and not registered, provide helpful error
-        if "flow" in env_id.lower() or "figureeight" in env_id.lower():
-            raise ValueError(
-                f"Flow environment {env_id} not registered. "
-                "Make sure flow figureeight environments are registered in d4rl.flow"
-            ) from e
-        raise
     return env
 
 
@@ -149,6 +111,8 @@ class FedGuideClient(FedRLClient):
         metrics_collector: Optional[Any] = None,  # Bandit2DMetricsCollector instance
         mapped_client_id: Optional[int] = None,  # Deterministic ID for env/metrics (0..N-1)
         num_clients: Optional[int] = None,
+        policy_save_dir: Optional[str] = None,
+        policy_save_every: int = 0,
     ):
         super().__init__(
             agent=agent,
@@ -168,6 +132,8 @@ class FedGuideClient(FedRLClient):
         self._mapped_client_id = mapped_client_id
         self._num_clients = num_clients or 4
         self._incoming_layout: Optional[Dict[str, Any]] = None
+        self._policy_save_dir = policy_save_dir
+        self._policy_save_every = int(policy_save_every or 0)
 
     def get_parameters(self, config: Dict[str, Any]):
         """Get parameters as a list for Flower compatibility.
@@ -443,7 +409,66 @@ class FedGuideClient(FedRLClient):
         # Eval/save
         success = self.trainer.save_eval(cid, rnd)
         samples = int(getattr(self.trainer, "n_steps", 0))
-        
+
+        # Persist per-client policy each round (overwrites; last round = final).
+        # FedGuide keeps the policy LOCAL (only the prior is OT-MoE aggregated),
+        # so without this checkpoint we lose the trained per-client policies
+        # when Ray actors are torn down at sim end. Path:
+        #   <output_dir>/client_<cid>/round_<rnd>/policy.pth (and final/)
+        try:
+            import os as _os
+            output_dir = getattr(self.trainer, "output_dir", None)
+            if output_dir is None:
+                output_dir = config.get("output_dir") if isinstance(config, dict) else None
+            if output_dir:
+                client_id_str = str(getattr(self, "mapped_client_id", cid))
+                ckpt_dir = _os.path.join(output_dir, f"client_{client_id_str}", "final")
+                _os.makedirs(ckpt_dir, exist_ok=True)
+                policy_sd = self.agent.policy.state_dict() if hasattr(self.agent, "policy") else None
+                log_std = getattr(self.agent, "log_std", None)
+                if policy_sd is not None:
+                    payload = {
+                        "policy": {k: v.detach().cpu() for k, v in policy_sd.items()},
+                        "round": int(rnd),
+                        "mapped_client_id": int(self.mapped_client_id) if hasattr(self, "mapped_client_id") else -1,
+                    }
+                    if log_std is not None:
+                        payload["log_std"] = log_std.detach().cpu()
+                    if hasattr(self.agent, "value_fn"):
+                        payload["value_fn"] = {k: v.detach().cpu() for k, v in self.agent.value_fn.state_dict().items()}
+                    torch.save(payload, _os.path.join(ckpt_dir, "policy.pth"))
+        except Exception as e:
+            print(f"[FedGuideClient {cid}] policy ckpt save failed: {e}")
+
+        # Per-client policy snapshot at fixed cadence (rounds 20/40/...): preserved
+        # alongside the overwriting `final/` ckpt above. Lands in
+        # `<policy_save_dir>/client_<id>/round_XXXX.pth`.
+        if (
+            self._policy_save_dir
+            and self._policy_save_every > 0
+            and rnd > 0
+            and (rnd % self._policy_save_every == 0)
+        ):
+            try:
+                mid = self._mapped_client_id if self._mapped_client_id is not None else cid
+                client_dir = os.path.join(self._policy_save_dir, f"client_{mid}")
+                os.makedirs(client_dir, exist_ok=True)
+                ckpt_path = os.path.join(client_dir, f"round_{int(rnd):04d}.pth")
+                policy_state = {k: v.detach().cpu() for k, v in self.agent.policy.state_dict().items()}
+                payload = {
+                    "round": int(rnd),
+                    "mapped_client_id": mid,
+                    "cid": str(cid),
+                    "policy_state_dict": policy_state,
+                }
+                log_std = getattr(self.agent, "log_std", None)
+                if log_std is not None and hasattr(log_std, "detach"):
+                    payload["log_std"] = log_std.detach().cpu()
+                torch.save(payload, ckpt_path)
+                print(f"  [FedGuideClient {mid}] Saved policy snapshot to {ckpt_path}", flush=True)
+            except Exception as e:
+                print(f"  [FedGuideClient] Warning: failed to save policy snapshot: {e}", flush=True)
+
         # Get parameters in module format for OT-MoE aggregation
         # Get dict format directly from agent (not from get_parameters which returns list)
         if hasattr(self.agent, "get_parameters"):
@@ -475,9 +500,7 @@ class FedGuideClient(FedRLClient):
         # This format is expected by FedGuideStrategy._modules_from_metrics
         modules_dict = {}
         if isinstance(param_dict, dict):
-            import torch
             import json
-            import numpy as np
             for module_name, module_params in param_dict.items():
                 if isinstance(module_params, dict):
                     # Convert state_dict to list of numpy arrays
@@ -654,8 +677,44 @@ def client_fn_builder(
     render_save_dir: Optional[str] = None,
     render_every_n_rounds: int = 10,
     render_episodes: int = 5,
+    render_all_clients: bool = False,
     reacher_render_mode: Optional[str] = None,
+    policy_save_dir: Optional[str] = None,
+    policy_save_every: int = 0,
+    # Opt-in policy architecture knobs (defaults preserve legacy behaviour).
+    policy_activation: str = "tanh",
+    action_clamp_low: Optional[float] = None,
+    action_clamp_high: Optional[float] = None,
+    log_std_anneal: bool = False,
+    log_std_anneal_target: float = -2.0,
+    log_std_anneal_rounds: int = 40,
+    # Where to look for pretrained prior/guidance ckpts. Defaults to the
+    # legacy SimpleDiffusionPrior path; set to ``./model/models_prior_gauss``
+    # to load Gaussian priors instead.
+    prior_dir: str = "./model/models_prior",
+    # If set, the agent's policy will be initialized from a per-client BC
+    # checkpoint at <bc_dir>/<env>/client_<cid>/final/policy.pth (the format
+    # produced by `scripts/envs/reacher/_bc_pretrain.py`). This is the warm-
+    # start equivalent of bandit2d's "policy.bias ← prior.head_mu" trick for
+    # state-conditional priors.
+    bc_dir: Optional[str] = None,
+    bc_env_name: Optional[str] = None,  # subdir under bc_dir; defaults to env mapping
+    bc_blend_alpha: float = 1.0,
+    # Guide-align loss weight (MSE between μ(s) and a + η·∇W). The original
+    # default (1.0) is too aggressive on bandit2d where the SDICE_Critic
+    # is undertrained and the gradient is noisy. Lower values (0.05–0.1)
+    # let the prior dominate and use the guidance only as a fine adjustment.
+    guide_coef: float = 1.0,
+    guidance_eta: float = 0.1,
+    prior_reshape: bool = False,
+    reshape_beta: float = 0.1,
+    dice_reward_eta: float = 0.0,
+    dice_v_blend_alpha: float = 1.0,
+    dice_adv_beta: float = 0.0,
 ):
+
+    if render_all_clients:
+        os.environ["FEDGUIDE_FEDERATED_RENDER_ALL_CLIENTS"] = "1"
 
     def client_fn(context) -> Any:
         # 1) per-client seed and ID mapping
@@ -713,6 +772,25 @@ def client_fn_builder(
             "bandit2d": "Bandit2D",
             "bandit_2d": "Bandit2D",
             "2dbandit": "Bandit2D",
+            "reacher_hetero": "Reacher",
+            "reacher": "Reacher",
+            "halfcheetah-v4": "HalfCheetah",
+            "halfcheetah-v3": "HalfCheetah",
+            "walker2d-v4": "Walker2D",
+            "hopper-v4": "Hopper",
+            # MetaWorld ML10 — every task shares the same prior subdir.
+            "metaworld_ml10": "MetaWorld",
+            "metaworld-ml10": "MetaWorld",
+            "reach-v3": "MetaWorld",
+            "push-v3": "MetaWorld",
+            "pick-place-v3": "MetaWorld",
+            "door-open-v3": "MetaWorld",
+            "drawer-close-v3": "MetaWorld",
+            "button-press-topdown-v3": "MetaWorld",
+            "peg-insert-side-v3": "MetaWorld",
+            "window-open-v3": "MetaWorld",
+            "sweep-v3": "MetaWorld",
+            "basketball-v3": "MetaWorld",
         }
         env_name = env_name_map.get(env_id.lower(), env_id)
         
@@ -722,33 +800,64 @@ def client_fn_builder(
                 raise FileNotFoundError("pretrained model loading disabled by config")
             # Use mapped_client_id instead of raw cid for model path
             client_id = mapped_client_id
-            # Use relative path to match pretrain script: ./model/models_prior
-            base_dir = "./model/models_prior"
+            base_dir = prior_dir
             client_dir = os.path.join(base_dir, env_name, f"client_{client_id}", "final")
-            
+
             prior_path = os.path.join(client_dir, "torch_prior.pth")
             guidance_path = os.path.join(client_dir, "guidance_sdice.pth")
-            
+
             # Load prior if checkpoint exists
             if os.path.isfile(prior_path):
                 # Try to detect model type from checkpoint
                 sd = torch.load(prior_path, map_location="cpu")
+                is_gaussian_prior = False
                 is_simple_prior = False
-                
+
+                is_diffusion_unet = False
                 if isinstance(sd, dict):
-                    # SimpleDiffusionPrior format: has "prior" key or "state_dim" but no "unet"
-                    if "prior" in sd or ("state_dim" in sd and "unet" not in sd):
-                        is_simple_prior = True
-                    # Also check if it's a direct state dict with encoder/decoder keys
-                    elif not ("unet" in sd or "scheduler_config" in sd):
-                        # Check if keys suggest SimpleDiffusionPrior structure
-                        if any("encoder" in k or "decoder" in k for k in sd.keys()):
+                    pt = sd.get("prior_type")
+                    if pt == "gaussian":
+                        is_gaussian_prior = True
+                    elif pt in ("diffusion", "diffusion_unet", "diffusion_guidance"):
+                        is_diffusion_unet = True
+                    else:
+                        inner = sd.get("prior") if "prior" in sd and isinstance(sd["prior"], dict) else sd
+                        if isinstance(inner, dict) and any(k in inner for k in ("head_mu", "head_log_sigma")):
+                            is_gaussian_prior = True
+                        elif isinstance(inner, dict) and any(k.startswith("model.") for k in inner.keys()):
+                            # DiffusionGuidance saves UNet under "model.*"
+                            is_diffusion_unet = True
+                        elif "prior" in sd or ("state_dim" in sd and "unet" not in sd):
                             is_simple_prior = True
-                
-                if is_simple_prior:
+                        elif not ("unet" in sd or "scheduler_config" in sd):
+                            if any("encoder" in k or "decoder" in k for k in sd.keys()):
+                                is_simple_prior = True
+
+                if is_gaussian_prior:
+                    from fedguide.guidance.diffusion_prior import GaussianBehaviorPrior
+
+                    prior = GaussianBehaviorPrior(state_dim=state_dim, action_dim=action_dim)
+                    prior_ckpt = prior_path
+                    print(f"[Client {cid} (mapped to {client_id})] Found pretrained GaussianBehaviorPrior at: {prior_path}")
+                elif is_diffusion_unet:
+                    from fedguide.guidance.diffusion_prior import DiffusionGuidance
+
+                    hidden_dim = sd.get("hidden_dim", 64) if isinstance(sd, dict) else 64
+                    timesteps = sd.get("timesteps", 1000) if isinstance(sd, dict) else 1000
+                    horizon = sd.get("horizon", 64) if isinstance(sd, dict) else 64
+                    prior = DiffusionGuidance(
+                        state_dim=state_dim,
+                        action_dim=action_dim,
+                        hidden_dim=hidden_dim,
+                        timesteps=timesteps,
+                        horizon=horizon,
+                    )
+                    prior_ckpt = prior_path
+                    print(f"[Client {cid} (mapped to {client_id})] Found pretrained DiffusionGuidance(UNet) at: {prior_path}")
+                elif is_simple_prior:
                     # Load SimpleDiffusionPrior
                     from fedguide.guidance.diffusion_prior import SimpleDiffusionPrior
-                    
+
                     # Extract hyperparameters from checkpoint if available
                     if isinstance(sd, dict) and "prior" in sd:
                         hidden_dim = sd.get("hidden_dim", 256)
@@ -760,7 +869,7 @@ def client_fn_builder(
                         # Default hyperparameters (should match pretrain settings)
                         hidden_dim = 256
                         timesteps = 1000
-                    
+
                     prior = SimpleDiffusionPrior(
                         state_dim=state_dim,
                         action_dim=action_dim,
@@ -818,6 +927,28 @@ def client_fn_builder(
             prior, guidance = None, None
             prior_ckpt, guidance_ckpt = None, None
 
+        # Optional: BC warm-start checkpoint per client (reacher's
+        # state-conditional analogue of bandit2d's "policy.bias ← prior.head_mu").
+        actor_ckpt = None
+        if bc_dir:
+            try:
+                env_subdir = bc_env_name or {
+                    "Bandit2D": "Bandit2D",
+                    "bandit2d": "Bandit2D",
+                    "Reacher": "Reacher",
+                    "reacher_hetero": "Reacher",
+                }.get(env_id, env_id)
+                cand = os.path.join(bc_dir, env_subdir,
+                                    f"client_{mapped_client_id}",
+                                    "final", "policy.pth")
+                if os.path.isfile(cand):
+                    actor_ckpt = cand
+                    print(f"[FedGuide cid={mapped_client_id}] BC warm-start ← {cand}")
+                else:
+                    print(f"[FedGuide cid={mapped_client_id}] BC ckpt not found: {cand} (training without warm-start)")
+            except Exception as e:
+                print(f"[FedGuide cid={mapped_client_id}] BC lookup skipped: {e}")
+
         # 4) agent
         agent = FedguideAgent(
             state_dim=state_dim,
@@ -826,8 +957,20 @@ def client_fn_builder(
             guidance=guidance,
             prior_ckpt=prior_ckpt,
             guidance_ckpt=guidance_ckpt,
+            actor_ckpt=actor_ckpt,
             init_log_std=init_log_std,
             prior_adapt_fallback_all=prior_adapt_fallback_all,
+            policy_activation=policy_activation,
+            action_clamp_low=action_clamp_low,
+            action_clamp_high=action_clamp_high,
+            log_std_anneal=log_std_anneal,
+            log_std_anneal_target=log_std_anneal_target,
+            log_std_anneal_rounds=log_std_anneal_rounds,
+            guide_coef=guide_coef,
+            guidance_eta=guidance_eta,
+            prior_reshape=prior_reshape,
+            reshape_beta=reshape_beta,
+            bc_blend_alpha=bc_blend_alpha,
         )
 
         # 5) trainer
@@ -851,6 +994,9 @@ def client_fn_builder(
             render_every_n_rounds=render_every_n_rounds,
             render_episodes=render_episodes,
             render_client_tag=str(mapped_client_id),
+            dice_reward_eta=dice_reward_eta,
+            dice_v_blend_alpha=dice_v_blend_alpha,
+            dice_adv_beta=dice_adv_beta,
         )
 
         # Get collector from global variable if not passed directly
@@ -887,6 +1033,8 @@ def client_fn_builder(
             metrics_collector=metrics_collector,
             mapped_client_id=mapped_client_id,
             num_clients=num_clients,
+            policy_save_dir=policy_save_dir,
+            policy_save_every=policy_save_every,
         )
         # Store client_id for metrics collection
         client.cid = cid

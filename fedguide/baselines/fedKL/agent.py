@@ -19,33 +19,28 @@ def _to_device(module_or_tensor, device):
 
 
 class PolicyNetwork(nn.Module):
-    """Policy network for continuous action spaces."""
-    
-    def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 256):
+    """Policy network for continuous action spaces.
+
+    Activation defaults to Tanh so the architecture matches BC pretrain
+    checkpoints (`scripts/envs/*/_bc_pretrain.py` uses Tanh). The previous
+    ReLU + `clamp(mean, -1.5, 1.5)` was a Bandit2D-only setup that prevented
+    direct BC weight loading.
+    """
+
+    def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 256,
+                 activation: str = "tanh"):
         super().__init__()
         self.fc1 = nn.Linear(state_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.mean = nn.Linear(hidden_dim, action_dim)
-        
+        self._act = torch.tanh if activation == "tanh" else F.relu
+
     def forward(self, state):
-        """
-        Forward pass.
-        
-        Args:
-            state: (batch_size, state_dim) or (state_dim,)
-        
-        Returns:
-            mean: (batch_size, action_dim)
-        """
         if state.dim() == 1:
             state = state.unsqueeze(0)
-        
-        x = F.relu(self.fc1(state))
-        x = F.relu(self.fc2(x))
-        mean = self.mean(x)
-        # Clamp to valid range for Bandit2D
-        mean = torch.clamp(mean, -1.5, 1.5)
-        return mean
+        x = self._act(self.fc1(state))
+        x = self._act(self.fc2(x))
+        return self.mean(x)
 
 
 class ValueNetwork(nn.Module):
@@ -91,9 +86,12 @@ class FedKLAgent(nn.Module):
         max_grad_norm: float = 0.5,
         device: Optional[str] = None,
         init_log_std: float = 0.0,
+        bc_ckpt_path: Optional[str] = None,
+        bc_blend_alpha: float = 1.0,
+        policy_activation: str = "tanh",
     ):
         super().__init__()
-        
+
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.gamma = gamma
@@ -103,20 +101,49 @@ class FedKLAgent(nn.Module):
         self.vf_coef = vf_coef
         self.max_grad_norm = max_grad_norm
         self.init_log_std = init_log_std
-        
+
         if device == "auto":
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device or "cpu")
-        
+
         # Local policy network
-        self.policy = PolicyNetwork(state_dim, action_dim, hidden_dim).to(self.device)
+        self.policy = PolicyNetwork(state_dim, action_dim, hidden_dim, activation=policy_activation).to(self.device)
         self.log_std = nn.Parameter(torch.full((action_dim,), init_log_std, device=self.device))
+
+        # Optional BC warm-start (load Linear weights from `scripts/envs/.../_bc_pretrain.py`
+        # checkpoint into our PolicyNetwork's fc1, fc2, mean). Architecture must match
+        # the BC pretrain script's MLP (Linear(state,256) → Tanh → Linear(256,256) →
+        # Tanh → Linear(256,act)). Also overwrites log_std with the BC-pretrained value.
+        if bc_ckpt_path is not None:
+            try:
+                bc = torch.load(bc_ckpt_path, map_location=self.device, weights_only=False)
+                pol_sd = bc["policy"]
+                a = float(bc_blend_alpha)
+                a = max(0.0, min(1.0, a))
+                # Blend: w ← a * w_BC + (1-a) * w_init. a=1 → pure BC; a=0 → keep random init.
+                # Sequential keys 0.weight/0.bias (fc1), 2.weight/2.bias (fc2), 4.weight/4.bias (mean)
+                def _blend(dst, src):
+                    src = src.to(self.device, dtype=dst.dtype)
+                    dst.data.mul_(1.0 - a).add_(src, alpha=a)
+                _blend(self.policy.fc1.weight, pol_sd["0.weight"])
+                _blend(self.policy.fc1.bias,   pol_sd["0.bias"])
+                _blend(self.policy.fc2.weight, pol_sd["2.weight"])
+                _blend(self.policy.fc2.bias,   pol_sd["2.bias"])
+                _blend(self.policy.mean.weight, pol_sd["4.weight"])
+                _blend(self.policy.mean.bias,   pol_sd["4.bias"])
+                if "log_std" in bc and bc["log_std"] is not None:
+                    ls = bc["log_std"]
+                    if isinstance(ls, torch.Tensor):
+                        _blend(self.log_std, ls)
+                print(f"[FedKLAgent] BC warm-start ← {bc_ckpt_path} (blend α={a:.2f})")
+            except Exception as e:
+                print(f"[FedKLAgent] BC warm-start FAILED ({bc_ckpt_path}): {e}")
         
         # Value network (remains local, not aggregated)
         self.value_fn = ValueNetwork(state_dim, hidden_dim).to(self.device)
         
         # Global policy (reference) - updated from server
-        self.global_policy = PolicyNetwork(state_dim, action_dim, hidden_dim).to(self.device)
+        self.global_policy = PolicyNetwork(state_dim, action_dim, hidden_dim, activation=policy_activation).to(self.device)
         self.global_log_std = nn.Parameter(torch.zeros(action_dim, device=self.device))
         
         # Copy initial parameters to global policy

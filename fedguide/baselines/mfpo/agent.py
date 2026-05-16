@@ -288,15 +288,26 @@ class MFPOContinuousWorker(nn.Module):
             old_logp.append(action_prob)
         old_logp = torch.stack(old_logp)
 
-        ratios = torch.exp(old_logp.detach() - torch.stack(action_prob_batch).detach())
+        # Importance-sampling ratio. Clamp in log-space first to avoid the
+        # exp() blowing up to inf on long trajectories (Reacher episodes are
+        # 50 steps and the per-trajectory log-prob sum easily exceeds ±20).
+        # Without this, `loss_old.backward()` silently NaN-poisons the grad,
+        # which propagates into Adam and the policy diverges.
+        log_ratio = (old_logp.detach() - torch.stack(action_prob_batch).detach()).clamp(-20.0, 20.0)
+        ratios = torch.exp(log_ratio)
+        ratios = torch.clamp(ratios, max=10.0)
 
         loss_old = -(old_logp * advantage * ratios).mean()
-        self.optimizer_old.zero_grad()
-        loss_old.backward()
+        if torch.isfinite(loss_old):
+            self.optimizer_old.zero_grad()
+            loss_old.backward()
+            grad_old = [item.grad for item in self.old_network.parameters()]
+        else:
+            # Skip the variance-reduction term this step rather than poison
+            # `network.grad` with NaN. (Upstream had no guard for this.)
+            grad_old = [None for _ in self.old_network.parameters()]
 
-        grad_old = [item.grad for item in self.old_network.parameters()]
-
-        if grad[0] is not None:
+        if grad[0] is not None and all(g is not None for g in grad_old):
             for idx, item in enumerate(self.network.parameters()):
                 item.grad = item.grad + (1 - self.c * self.learning_rate_a**2) * (
                     grad[idx] - grad_old[idx]
@@ -304,7 +315,15 @@ class MFPOContinuousWorker(nn.Module):
 
         grad = [item.grad for item in self.network.parameters()]
 
-        self.old_model = copy.deepcopy(self.network)
+        # Sync the snapshot policy θ_{r-1} ← θ_{r,k} so that g_old in the
+        # NEXT step is computed at the previous local iterate, not at the
+        # orthogonal-init weights `old_network` was constructed with.
+        # Upstream had `self.old_model = copy.deepcopy(self.network)` here,
+        # but `gen_action_prob` reads `self.old_network` (a *different*
+        # instance), so the deepcopy went into an unused attribute and the
+        # variance-reduction term reduced to zero. Fixing by syncing the
+        # actual `old_network` parameters in-place (preserves the optimizer).
+        self.old_network.load_state_dict(self.network.state_dict())
 
         self.optimizer_new.step()
 
@@ -560,7 +579,11 @@ class MFPODiscreteCartPoleWorker(nn.Module):
 
         grad = [item.grad for item in self.network.parameters()]
 
-        self.old_model = copy.deepcopy(self.network)
+        # Sync the snapshot policy θ_{r-1} ← θ_{r,k} in-place. Upstream did
+        # `self.old_model = copy.deepcopy(self.network)` which detaches the
+        # `optimizer_old` from the new module instance. Use load_state_dict
+        # so the optimizer keeps stepping the same parameter tensors.
+        self.old_model.load_state_dict(self.network.state_dict())
 
         self.optimizer_new.step()
 

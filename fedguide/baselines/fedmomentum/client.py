@@ -54,7 +54,7 @@ def _make_env(
     from fedguide.envs.halfcheetah_hetero import make_halfcheetah_env_if_applicable
 
     _hc_env = make_halfcheetah_env_if_applicable(
-        metadata_path, client_id, seed, render_mode, render_eval=False
+        metadata_path, client_id, seed, render_mode, render_eval=(render_mode is not None)
     )
     if _hc_env is not None:
         return _hc_env
@@ -356,10 +356,10 @@ class FedMomentumClient(BaseFedRLClient):
             fit_metrics["train/return"] = float(train_return)
         if eval_return is not None:
             fit_metrics["eval/return"] = float(eval_return)
-
-        # Strict FedSVRPG-M: eval/return must come from evaluate(global θ), not post-local train
-        if use_strict and "eval/return" in fit_metrics:
-            del fit_metrics["eval/return"]
+        # NB: previously stripped eval/return under strict mode, on the
+        # rationale that the "official" FedSVRPG-M eval should come from
+        # evaluate(global θ_r). But that hides post-train local eval which
+        # is informative for debugging — keep it so both metrics are visible.
         
         # Add policy gradient to metrics (if available)
         if policy_gradient is not None:
@@ -577,7 +577,13 @@ def client_fn_builder(
         state_dim = int(obs_space.shape[0])
         action_dim = int(act_space.shape[0])
         
-        # 3) agent
+        # 3) agent — pass env action bounds so the policy clamps to the
+        # actual env range, not the legacy Bandit2D-specific [-1.5, 1.5].
+        try:
+            act_low = float(np.min(act_space.low))
+            act_high = float(np.max(act_space.high))
+        except Exception:
+            act_low, act_high = -1.0, 1.0
         agent = FedMomentumAgent(
             state_dim=state_dim,
             action_dim=action_dim,
@@ -590,6 +596,8 @@ def client_fn_builder(
             vf_coef=value_coef,
             max_grad_norm=max_grad_norm,
             device=device,
+            action_low=act_low,
+            action_high=act_high,
         )
         
         # 4) trainer (select based on algorithm type)

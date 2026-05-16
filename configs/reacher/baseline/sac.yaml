@@ -1,0 +1,39 @@
+env_type: "reacher_hetero"
+metadata_path: "data/reacher/metadata.json"
+num_clients: 8
+random_select_clients: false
+
+rounds: 100
+
+hidden_dim: 256
+lr: 3e-4
+gamma: 0.99
+
+# DDPG (fedrl) replay/critic
+tau: 0.005
+batch_size: 256
+
+# BC warm-start (same checkpoint FedGuide uses)
+bc_root: "./model/bc_policy"
+bc_env_name: "Reacher"
+bc_blend_alpha: 0.3
+
+eval_episodes: 10
+
+output_dir: "./model/policy/reacher/sac"
+metrics_dir: "./metrics/reacher/sac"
+save_every: 10
+
+device: "auto"
+seed: [0]
+
+render_eval: true
+render_mode: "video"
+render_save_dir: "./plots/reacher/sac"
+render_every_n_rounds: 20
+render_episodes: 1
+
+# Other
+update_steps: 1500
+alpha: 0.2
+action_std: 0.1

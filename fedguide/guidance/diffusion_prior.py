@@ -5,6 +5,95 @@ import torch.nn.functional as F
 import numpy as np
 
 
+class GaussianBehaviorPrior(nn.Module):
+    """Closed-form 2D Gaussian behavior prior with the same interface as
+    SimpleDiffusionPrior. Designed for low-dim toy environments (Bandit2D)
+    where SimpleDiffusionPrior's autoencoder-style log_prob proxy fails to
+    rank action density correctly (it ranked the origin above the training
+    peak, which destroyed bonus-PG-driven FedGuide variants).
+
+    State_dict keys are deliberately picked to start with "head_" so they
+    are always selected by FedguideAgent._init_prior_adapt_params() (the
+    "head" tag triggers prior_adapt aggregation), keeping OT-MoE on the
+    Gaussian parameters as if they were a small adapter head.
+
+    Parameters
+    ----------
+    state_dim, action_dim : int
+        Dimensionality of state/action vectors. Total density is over the
+        action ``a`` only — states are accepted to match the interface but
+        the marginal Gaussian on ``a`` does not depend on ``s`` here. This
+        matches Bandit2D where the optimal action does not depend on state.
+    hidden_dim, timesteps : int
+        Accepted for ctor-signature compatibility with SimpleDiffusionPrior;
+        unused by the Gaussian density.
+    """
+
+    def __init__(self, state_dim, action_dim, hidden_dim=128, timesteps=1000):
+        super().__init__()
+        self.state_dim = int(state_dim)
+        self.action_dim = int(action_dim)
+        # parameters use the "head" tag so prior_adapt aggregation picks them up.
+        self.head_mu = nn.Parameter(torch.zeros(self.action_dim))
+        self.head_log_sigma = nn.Parameter(torch.zeros(self.action_dim))  # σ=1 init
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.to(self.device)
+
+    def _to_dev(self, x: torch.Tensor) -> torch.Tensor:
+        return x.to(self.device).float()
+
+    def log_prob(self, actions, states=None):
+        if actions is None:
+            B = 0 if states is None else states.shape[0]
+            return torch.zeros(B, device=self.device)
+        a = self._to_dev(actions)
+        if a.dim() == 1:
+            a = a.unsqueeze(-1)
+        mu = self.head_mu
+        log_sigma = self.head_log_sigma.clamp(-5.0, 2.0)
+        sigma = log_sigma.exp()
+        # Diagonal Gaussian log pdf, summed over action dims.
+        var = sigma.pow(2) + 1e-8
+        logp = -0.5 * (((a - mu) ** 2) / var + 2 * log_sigma + np.log(2 * np.pi))
+        return logp.sum(dim=-1)
+
+    @torch.no_grad()
+    def sample(self, states=None, batch_size=1, num_steps=100, noise_scale=0.1):
+        if states is not None:
+            if states.dim() == 1:
+                states = states.unsqueeze(0)
+            B = int(states.shape[0])
+        else:
+            B = int(batch_size)
+        sigma = self.head_log_sigma.clamp(-5.0, 2.0).exp()
+        eps = torch.randn(B, self.action_dim, device=self.device)
+        return self.head_mu + sigma * eps
+
+    def update(self, states, actions, lr=1e-4):
+        """Closed-form MLE refit on the supplied minibatch (no NN training)."""
+        a = self._to_dev(actions)
+        if a.dim() == 1:
+            a = a.unsqueeze(-1)
+        mu = a.mean(dim=0)
+        sigma = a.std(dim=0).clamp(min=1e-3)
+        with torch.no_grad():
+            self.head_mu.data = mu.detach()
+            self.head_log_sigma.data = sigma.log().detach()
+        # Return -log-likelihood for parity with SimpleDiffusionPrior.update.
+        return float(-self.log_prob(a).mean().item())
+
+    def fit(self, actions: torch.Tensor):
+        """Fit μ, log σ to the entire offline action set in closed form."""
+        a = self._to_dev(actions)
+        if a.dim() == 1:
+            a = a.unsqueeze(-1)
+        mu = a.mean(dim=0)
+        sigma = a.std(dim=0).clamp(min=1e-3)
+        with torch.no_grad():
+            self.head_mu.data = mu.detach()
+            self.head_log_sigma.data = sigma.log().detach()
+
+
 class SimpleDiffusionPrior(nn.Module):
     """
     Lightweight diffusion-inspired guidance prior for low-dimensional RL trajectories.
