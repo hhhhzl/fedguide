@@ -54,7 +54,7 @@ collect_metrics_every: 5
 gpus_per_client: 0.125                     # 8 clients on one GPU
 
 device: "auto"
-seed: [1]
+seed: [2]
 
 # Per-client MP4 render every 20 rounds (R20, R40 for a 50-round run).
 render_eval: true

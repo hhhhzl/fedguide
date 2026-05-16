@@ -52,7 +52,7 @@ metrics_dir: "./metrics/halfcheetah/fedguide_p"
 gpus_per_client: 0.125                     # 8 clients on one GPU
 
 device: "auto"
-seed: [1]
+seed: [2]
 
 # Per-client final-round MP4 render. Set FEDGUIDE_FEDERATED_RENDER_ALL_CLIENTS=1
 # in the launching shell to capture every client (default = client 0 only).

@@ -41,7 +41,7 @@ device: "auto"  # "auto", "cpu", or "cuda"
 gpus_per_client: 0.125
 
 # Seed configuration
-seed: [1]  # Run 5 different seeds
+seed: [2]
 
 # Rendering configuration (for MuJoCo/Maze environments)
 render_eval: true  # Enable rendering during evaluation

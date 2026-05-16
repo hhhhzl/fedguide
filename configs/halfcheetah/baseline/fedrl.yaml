@@ -51,7 +51,7 @@ collect_metrics_every: 5
 
 device: "auto"
 gpus_per_client: 0.125
-seed: [1]
+seed: [2]
 
 render_eval: true
 render_mode: "video"
