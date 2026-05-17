@@ -438,13 +438,18 @@ def client_fn_builder(
     render_save_dir: Optional[str] = None,
     render_every_n_rounds: int = 10,
     render_episodes: int = 5,
+    render_all_clients: bool = False,
     reacher_render_mode: Optional[str] = None,
     device: Optional[str] = "auto",
 ):
     """
     Build client function for FMARL.
     """
-    
+
+    if render_all_clients:
+        import os
+        os.environ["FEDGUIDE_FEDERATED_RENDER_ALL_CLIENTS"] = "1"
+
     def client_fn(context) -> Any:
         # Import here to avoid circular imports
         from fedguide.baselines.fmarl.agent import FMARLAgent

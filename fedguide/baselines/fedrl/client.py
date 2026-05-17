@@ -67,6 +67,17 @@ def _make_env(
     if _hc_env is not None:
         return _hc_env
 
+    try:
+        from fedguide.envs.mujoco_locomotion_hetero import make_locomotion_env_if_applicable
+
+        _loc_env = make_locomotion_env_if_applicable(
+            metadata_path, client_id, seed, render_mode, render_eval=(render_mode is not None),
+        )
+        if _loc_env is not None:
+            return _loc_env
+    except Exception:
+        pass
+
     if env_id.lower() == "reacher":
         env = gym.make("Reacher-v4")
     else:
@@ -452,6 +463,7 @@ def client_fn_builder(
     render_save_dir: Optional[str] = None,
     render_every_n_rounds: int = 10,
     render_episodes: int = 5,
+    render_all_clients: bool = False,
     reacher_render_mode: Optional[str] = None,
     # BC warm-start (DDPG only; actor architecture switches to 256→256 Tanh)
     bc_root: Optional[str] = None,
@@ -460,16 +472,19 @@ def client_fn_builder(
 ):
     """
     Build client function for FedRL (supports both DQN and DDPG).
-    
+
     Args:
         env_id: Environment ID
         algo: Algorithm type ("dqn" or "ddpg")
         ... (other hyperparameters)
-    
+
     Returns:
         client_fn function for Flower
     """
-    
+
+    if render_all_clients:
+        os.environ["FEDGUIDE_FEDERATED_RENDER_ALL_CLIENTS"] = "1"
+
     def client_fn(context) -> Any:
         # Import here to avoid circular imports
         from fedguide.baselines.fedrl.agent import DQNAgent, DDPGAgent

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Callable, Iterable, List
 import random
+import hashlib
+import os
 import numpy as np
 import torch
 import json
@@ -94,6 +96,7 @@ class FedMomentumClient(BaseFedRLClient):
         wandb_project: Optional[str] = None,
         logger_level: int = None,
         metrics_collector: Optional[Any] = None,  # Bandit2DMetricsCollector instance
+        state_path: Optional[str] = None,
     ):
         super().__init__(
             agent=agent,
@@ -109,6 +112,75 @@ class FedMomentumClient(BaseFedRLClient):
             logger_level=(logger_level or 20),
         )
         self.metrics_collector = metrics_collector
+        self.state_path = state_path
+
+    def _move_optimizer_state_to_device(self) -> None:
+        """Torch keeps optimizer state tensors on their load device."""
+        device = getattr(self.agent, "device", torch.device("cpu"))
+        opt = getattr(self.agent, "optimizer", None)
+        if opt is None:
+            return
+        for state in opt.state.values():
+            for key, value in list(state.items()):
+                if isinstance(value, torch.Tensor):
+                    state[key] = value.to(device)
+
+    def _load_persistent_state(self, cid: str) -> None:
+        """Restore local-only state after server parameters are installed."""
+        if not self.state_path or not os.path.isfile(self.state_path):
+            return
+        try:
+            ckpt = torch.load(
+                self.state_path,
+                map_location=getattr(self.agent, "device", "cpu"),
+                weights_only=False,
+            )
+            value_state = ckpt.get("value_fn")
+            if value_state is not None and hasattr(self.agent, "value_fn"):
+                self.agent.value_fn.load_state_dict(value_state)
+            opt_state = ckpt.get("optimizer")
+            if opt_state is not None and hasattr(self.agent, "optimizer"):
+                self.agent.optimizer.load_state_dict(opt_state)
+                self._move_optimizer_state_to_device()
+            trainer_state = ckpt.get("trainer")
+            if trainer_state is not None and hasattr(self.trainer, "load_state_dict"):
+                self.trainer.load_state_dict(trainer_state)
+            print(
+                f"[FedMomentumClient {cid}] restored local state "
+                f"from round {ckpt.get('round', '?')}"
+            )
+        except Exception as e:
+            print(f"[FedMomentumClient {cid}] Warning: failed to restore local state: {e}")
+
+    def _save_persistent_state(self, cid: str, rnd: int) -> None:
+        """Persist local-only state for the next Flower VCE client instance."""
+        if not self.state_path:
+            return
+        try:
+            os.makedirs(os.path.dirname(self.state_path), exist_ok=True)
+            payload = {
+                "round": int(rnd),
+                "value_fn": (
+                    self.agent.value_fn.state_dict()
+                    if hasattr(self.agent, "value_fn")
+                    else None
+                ),
+                "optimizer": (
+                    self.agent.optimizer.state_dict()
+                    if hasattr(self.agent, "optimizer")
+                    else None
+                ),
+                "trainer": (
+                    self.trainer.state_dict()
+                    if hasattr(self.trainer, "state_dict")
+                    else None
+                ),
+            }
+            tmp_path = f"{self.state_path}.tmp.{os.getpid()}"
+            torch.save(payload, tmp_path)
+            os.replace(tmp_path, self.state_path)
+        except Exception as e:
+            print(f"[FedMomentumClient {cid}] Warning: failed to persist local state: {e}")
     
     def get_parameters(self, config: Dict[str, Any]):
         """Get parameters as a list for Flower compatibility."""
@@ -274,6 +346,11 @@ class FedMomentumClient(BaseFedRLClient):
             except Exception as e:
                 # Continue anyway - agent will use current parameters
                 print(f"[FedMomentumClient {cid}] Parameter loading failed in fit(): {e}")
+
+        # Flower VCE may reconstruct NumPyClient objects for every message.
+        # Restore the local-only state after the server's global policy is
+        # installed so the broadcast remains authoritative.
+        self._load_persistent_state(str(cid))
         
         if hasattr(self, "metrics"):
             self.metrics.set_step(rnd)
@@ -294,6 +371,8 @@ class FedMomentumClient(BaseFedRLClient):
             train_result = self.trainer.train_one_round(fed)
         else:
             train_result = self.trainer.train_one_round()
+
+        self._save_persistent_state(str(cid), rnd)
         
         # Extract loss and other metrics from trainer result
         delta_flat: Optional[List[np.ndarray]] = None
@@ -412,7 +491,7 @@ class FedMomentumClient(BaseFedRLClient):
                 # Store in metrics as JSON string
                 fit_metrics["client_actions"] = json.dumps(actions_list)
                 # Also store client_id for mapping
-                mapped_id = abs(hash(cid)) % (getattr(self, '_num_clients', 100) if hasattr(self, '_num_clients') else 100)
+                mapped_id = int(getattr(self, "mapped_client_id", 0))
                 fit_metrics["client_id_mapped"] = mapped_id
             except Exception:
                 pass
@@ -491,6 +570,8 @@ def client_fn_builder(
     # Network architecture
     hidden_dim: int = 256,
     lr: float = 3e-4,
+    init_log_std: float = 0.0,
+    policy_activation: str = "tanh",
     # Algorithm selection
     algorithm: str = "svrpg",  # "svrpg" or "hapg"
     # SVRPG-specific parameters
@@ -518,12 +599,17 @@ def client_fn_builder(
     render_save_dir: Optional[str] = None,
     render_every_n_rounds: int = 10,
     render_episodes: int = 5,
+    render_all_clients: bool = False,
     reacher_render_mode: Optional[str] = None,
     use_fedsvrpgm_strict: bool = False,
     fedsvrpgm_eta: float = 0.01,
     fedsvrpgm_beta: float = 0.2,
     local_steps_k: int = 5,
     fedsvrpgm_max_horizon: int = 500,
+    bc_root: Optional[str] = None,
+    bc_env_name: Optional[str] = None,
+    bc_blend_alpha: float = 1.0,
+    client_state_dir: Optional[str] = None,
 ):
     """
     Build client function for FedMomentum (SVRPG-based).
@@ -535,7 +621,10 @@ def client_fn_builder(
     Returns:
         client_fn function for Flower
     """
-    
+
+    if render_all_clients:
+        os.environ["FEDGUIDE_FEDERATED_RENDER_ALL_CLIENTS"] = "1"
+
     def client_fn(context) -> Any:
         # Import here to avoid circular imports
         from fedguide.baselines.fedmomentum.agent import FedMomentumAgent
@@ -549,12 +638,18 @@ def client_fn_builder(
             from fedguide.utils.client_id_mapping import get_mapped_client_id
             mapped_client_id = get_mapped_client_id(cid, num_c, cid_mapping_file)
         else:
-            if num_clients is not None:
-                mapped_client_id = abs(hash(cid)) % num_clients
-            else:
-                mapped_client_id = abs(hash(cid)) % 100
+            try:
+                if str(cid).isdigit() and int(cid) < 10000:
+                    mapped_client_id = int(cid) % num_c
+                else:
+                    h = int(hashlib.sha256(str(cid).encode()).hexdigest()[:8], 16)
+                    mapped_client_id = h % num_c
+            except (ValueError, TypeError):
+                h = int(hashlib.sha256(str(cid).encode()).hexdigest()[:8], 16)
+                mapped_client_id = h % num_c
         
-        base = 42 + (abs(hash(cid)) % 10000)
+        stable_hash = int(hashlib.sha256(str(cid).encode()).hexdigest()[:8], 16)
+        base = 42 + (stable_hash % 10000)
         random.seed(base)
         np.random.seed(base)
         torch.manual_seed(base)
@@ -584,6 +679,37 @@ def client_fn_builder(
             act_high = float(np.max(act_space.high))
         except Exception:
             act_low, act_high = -1.0, 1.0
+
+        bc_ckpt_path: Optional[str] = None
+        if bc_root:
+            env_subdir_bc = bc_env_name or {
+                "bandit2d": "Bandit2D",
+                "bandit_2d": "Bandit2D",
+                "2dbandit": "Bandit2D",
+                "reacher_hetero": "Reacher",
+                "reacher": "Reacher",
+                "halfcheetah-v4": "HalfCheetah",
+                "halfcheetah-v3": "HalfCheetah",
+                "walker2d-v4": "Walker2D",
+                "hopper-v4": "Hopper",
+                "ant-v4": "Ant",
+            }.get(env_id.lower(), env_id)
+            cand = os.path.join(
+                str(bc_root),
+                str(env_subdir_bc),
+                f"client_{mapped_client_id}",
+                "final",
+                "policy.pth",
+            )
+            if os.path.isfile(cand):
+                bc_ckpt_path = cand
+                print(f"[FedMomentum cid={mapped_client_id}] BC warm-start ← {cand}")
+            else:
+                print(
+                    f"[FedMomentum cid={mapped_client_id}] BC ckpt not found: {cand} "
+                    "(training without warm-start)"
+                )
+
         agent = FedMomentumAgent(
             state_dim=state_dim,
             action_dim=action_dim,
@@ -598,6 +724,10 @@ def client_fn_builder(
             device=device,
             action_low=act_low,
             action_high=act_high,
+            init_log_std=init_log_std,
+            bc_ckpt_path=bc_ckpt_path,
+            bc_blend_alpha=bc_blend_alpha,
+            policy_activation=policy_activation,
         )
         
         # 4) trainer (select based on algorithm type)
@@ -699,9 +829,16 @@ def client_fn_builder(
             use_wandb=use_wandb,
             wandb_project=wandb_project,
             metrics_collector=metrics_collector,
+            state_path=(
+                os.path.join(client_state_dir, f"client_{mapped_client_id}.pth")
+                if client_state_dir
+                else None
+            ),
         )
         # Store client_id for metrics collection
         client.cid = cid
+        client.mapped_client_id = mapped_client_id
+        client._num_clients = num_c
         
         # Register agent with metrics collector for visualization
         if metrics_collector is not None:
@@ -712,4 +849,3 @@ def client_fn_builder(
         return client.to_client()
     
     return client_fn
-

@@ -16,6 +16,16 @@ import json
 import os
 
 
+def _clone_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    """Clone tensors before temporary policy swaps.
+
+    ``nn.Module.state_dict()`` returns tensors tied to module storage; using it
+    directly as a snapshot means a later ``load_state_dict`` can mutate the
+    supposed "original" values.
+    """
+    return {k: v.detach().clone() for k, v in state_dict.items()}
+
+
 class SVRPGTrainer:
     """
     SVRPG (Stochastic Variance Reduced Policy Gradient) Trainer.
@@ -213,12 +223,12 @@ class SVRPGTrainer:
             return torch.zeros(states.shape[0], device=self.device)
         
         # Temporarily swap to reference policy
-        original_state_dict = self.agent.policy.state_dict()
+        original_state_dict = _clone_state_dict(self.agent.policy.state_dict())
         original_log_std = self.agent.log_std.data.clone()
         
         # Load reference policy
         self.agent.policy.load_state_dict(self.reference_policy)
-        self.agent.log_std.data = self.reference_log_std.clone()
+        self.agent.log_std.data.copy_(self.reference_log_std.to(self.agent.log_std.device))
         
         # Compute log probabilities with reference policy
         with torch.no_grad():
@@ -226,7 +236,7 @@ class SVRPGTrainer:
         
         # Restore original policy
         self.agent.policy.load_state_dict(original_state_dict)
-        self.agent.log_std.data = original_log_std
+        self.agent.log_std.data.copy_(original_log_std.to(self.agent.log_std.device))
         
         return logps_ref
     
@@ -315,12 +325,12 @@ class SVRPGTrainer:
         ref_advantages = advantages.detach()  # Simplified: use current advantages
         
         # Temporarily swap to reference policy to compute gradient
-        original_state_dict = self.agent.policy.state_dict()
+        original_state_dict = _clone_state_dict(self.agent.policy.state_dict())
         original_log_std = self.agent.log_std.data.clone()
         
         # Load reference policy
         self.agent.policy.load_state_dict(self.reference_policy)
-        self.agent.log_std.data = self.reference_log_std.clone()
+        self.agent.log_std.data.copy_(self.reference_log_std.to(self.agent.log_std.device))
         
         # Compute reference gradient (without clipping, for variance reduction)
         reference_grad = self.agent.compute_policy_gradient(
@@ -329,7 +339,7 @@ class SVRPGTrainer:
         
         # Restore original policy
         self.agent.policy.load_state_dict(original_state_dict)
-        self.agent.log_std.data = original_log_std
+        self.agent.log_std.data.copy_(original_log_std.to(self.agent.log_std.device))
         
         # 3. Update smooth reference gradient (moving average)
         if self.smooth_reference_gradient is None:
@@ -473,6 +483,64 @@ class SVRPGTrainer:
             return policy_grad
         
         return self.last_policy_gradient
+
+    def state_dict(self) -> Dict[str, Any]:
+        """Persist trainer-side SVRPG state across Flower VCE client rebuilds."""
+        smooth = None
+        if self.smooth_reference_gradient is not None:
+            smooth = {
+                k: v.detach().cpu().clone()
+                for k, v in self.smooth_reference_gradient.items()
+            }
+        return {
+            "round_count": int(self.round_count),
+            "reference_policy": (
+                {k: v.detach().cpu().clone() for k, v in self.reference_policy.items()}
+                if self.reference_policy is not None
+                else None
+            ),
+            "reference_log_std": (
+                self.reference_log_std.detach().cpu().clone()
+                if self.reference_log_std is not None
+                else None
+            ),
+            "smooth_reference_gradient": smooth,
+            "reference_gradient_count": int(self.reference_gradient_count),
+            "obs": np.asarray(self._obs, dtype=np.float32),
+        }
+
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        """Restore trainer-side SVRPG state.
+
+        The current policy is intentionally not restored here; the server's
+        broadcast parameters remain authoritative at the start of each round.
+        """
+        if not state:
+            return
+        self.round_count = int(state.get("round_count", self.round_count))
+        ref = state.get("reference_policy")
+        self.reference_policy = (
+            {k: v.detach().clone() for k, v in ref.items()}
+            if isinstance(ref, dict)
+            else None
+        )
+        ref_log_std = state.get("reference_log_std")
+        self.reference_log_std = (
+            ref_log_std.detach().clone().to(self.agent.device)
+            if isinstance(ref_log_std, torch.Tensor)
+            else None
+        )
+        smooth = state.get("smooth_reference_gradient")
+        self.smooth_reference_gradient = (
+            {k: v.detach().clone().to(self.agent.device) for k, v in smooth.items()}
+            if isinstance(smooth, dict)
+            else None
+        )
+        self.reference_gradient_count = int(
+            state.get("reference_gradient_count", self.reference_gradient_count)
+        )
+        if "obs" in state and state["obs"] is not None:
+            self._obs = np.asarray(state["obs"], dtype=np.float32)
     
     def _eval_episode(self) -> float:
         """Evaluate policy for one episode."""
@@ -957,4 +1025,3 @@ class HAPGTrainer(SVRPGTrainer):
         )
 
         return out
-

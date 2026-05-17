@@ -51,6 +51,7 @@ render_eval: true
 render_mode: "video"
 render_save_dir: "./plots/walker/fedrl_ddpg_bc"
 render_every_n_rounds: 20
+render_all_clients: true                   # render every client, not just client 0
 render_episodes: 3
 
 # Other

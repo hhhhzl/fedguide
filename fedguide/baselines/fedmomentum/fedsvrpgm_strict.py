@@ -229,6 +229,26 @@ class FedSVRPGMStrictTrainer:
     def set_server_round(self, rnd: int) -> None:
         self.server_round = int(rnd)
 
+    def state_dict(self) -> Dict[str, Any]:
+        """Persist local strict-loop state across Flower VCE client rebuilds."""
+        return {
+            "obs": np.asarray(self._obs, dtype=np.float32),
+            "step_optimizer": self._step_optimizer.state_dict(),
+        }
+
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        if not state:
+            return
+        if "obs" in state and state["obs"] is not None:
+            self._obs = np.asarray(state["obs"], dtype=np.float32)
+        opt_state = state.get("step_optimizer")
+        if opt_state is not None:
+            self._step_optimizer.load_state_dict(opt_state)
+            for opt_slot in self._step_optimizer.state.values():
+                for key, value in list(opt_slot.items()):
+                    if isinstance(value, torch.Tensor):
+                        opt_slot[key] = value.to(self.agent.device)
+
     def _sample_trajectory(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         obs_list, act_list, rew_list = [], [], []
         obs = self._obs
