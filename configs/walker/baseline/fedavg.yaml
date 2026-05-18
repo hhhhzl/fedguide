@@ -11,13 +11,19 @@ update_epochs: 10
 minibatch_size: 64
 
 hidden_dim: 256
-lr: 1e-4
+lr: 5e-5
 gamma: 0.99
 gae_lambda: 0.95
-clip_eps: 0.2
-entropy_coef: 0.0
+clip_eps: 0.1
+entropy_coef: 0.01
 value_coef: 0.5
 max_grad_norm: 0.5
+
+# Walker2d NaN防护: 同 hopper
+init_log_std: -0.5
+log_std_anneal: true
+log_std_anneal_target: -2.0
+log_std_anneal_rounds: 60
 
 # Federation regularizers
 lambda_global: 0
@@ -42,4 +48,5 @@ render_eval: true
 render_mode: "video"
 render_save_dir: "./plots/walker/fedavg"
 render_every_n_rounds: 20
+render_all_clients: true                   # render every client, not just client 0
 render_episodes: 3

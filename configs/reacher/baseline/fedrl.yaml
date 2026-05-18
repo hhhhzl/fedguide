@@ -54,7 +54,7 @@ render_all_clients: true                   # render every client, not just clien
 render_episodes: 10
 
 # Other
-merge_interval: 20000
+merge_interval: 2048
 replay_size: 100000
 add_noise: true
 replay_persist_across_rounds: false

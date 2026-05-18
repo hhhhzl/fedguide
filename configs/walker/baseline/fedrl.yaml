@@ -1,6 +1,6 @@
 env_type: "d4rl"
 env_name: "Walker2d-v4"
-metadata_path: "data/walker/metadata_mild64.json"
+metadata_path: "data/walker/metadata.json"
 num_clients: 8
 random_select_clients: false
 
