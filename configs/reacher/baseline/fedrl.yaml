@@ -50,10 +50,11 @@ render_eval: true
 render_mode: "video"
 render_save_dir: "./plots/reacher/fedrl_ddpg"
 render_every_n_rounds: 20
+render_all_clients: true                   # render every client, not just client 0
 render_episodes: 10
 
 # Other
-merge_interval: 20000
+merge_interval: 2048
 replay_size: 100000
 add_noise: true
 replay_persist_across_rounds: false

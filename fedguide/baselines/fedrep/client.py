@@ -377,13 +377,18 @@ def client_fn_builder(
     render_save_dir: Optional[str] = None,
     render_every_n_rounds: int = 10,
     render_episodes: int = 5,
+    render_all_clients: bool = False,
     reacher_render_mode: Optional[str] = None,
     eval_episodes: int = 1,
 ):
     """
     Build client function for FedRep.
     """
-    
+
+    if render_all_clients:
+        import os
+        os.environ["FEDGUIDE_FEDERATED_RENDER_ALL_CLIENTS"] = "1"
+
     def client_fn(context) -> Any:
         from fedguide.baselines.fedrep.agent import FedRepAgent
         from fedguide.baselines.fedrep.trainer import FedRepTrainer

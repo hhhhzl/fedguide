@@ -1,6 +1,6 @@
 env_type: "d4rl"
 env_name: "Hopper-v4"
-metadata_path: "data/hopper/metadata_mild64.json"
+metadata_path: "data/hopper/metadata.json"
 num_clients: 8
 random_select_clients: false
 
@@ -40,8 +40,8 @@ use_wandb: false
 wandb_project: null
 run_name: null
 
-output_dir: "./model/policy/hopper/fedrl_ddpg_bc"
-metrics_dir: "./metrics/hopper/fedrl_ddpg_bc"
+output_dir: "./model/policy/hopper/fedrl_ddpg"
+metrics_dir: "./metrics/hopper/fedrl_ddpg"
 
 device: "auto"
 gpus_per_client: 0.125
@@ -49,8 +49,9 @@ seed: [0]
 
 render_eval: true
 render_mode: "video"
-render_save_dir: "./plots/hopper/fedrl_ddpg_bc"
+render_save_dir: "./plots/hopper/fedrl_ddpg"
 render_every_n_rounds: 20
+render_all_clients: true                   # render every client, not just client 0
 render_episodes: 3
 
 # Other

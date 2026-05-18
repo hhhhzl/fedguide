@@ -96,6 +96,7 @@ def client_fn_builder(
     render_save_dir: Optional[str] = None,
     render_every_n_rounds: int = 10,
     render_episodes: int = 5,
+    render_all_clients: bool = False,
     reacher_render_mode: Optional[str] = None,
     use_wandb: bool = False,
     wandb_project: Optional[str] = None,
@@ -107,6 +108,10 @@ def client_fn_builder(
     **config_overrides: Any,
 ):
     """Build Flower client_fn for MFPO (1:1 with MFPO-INFOCOM24)."""
+
+    if render_all_clients:
+        import os
+        os.environ["FEDGUIDE_FEDERATED_RENDER_ALL_CLIENTS"] = "1"
 
     def client_fn(context) -> Any:
         cid = str(getattr(context, "client_id", None) or getattr(context, "node_id", None) or "0")

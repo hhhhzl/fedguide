@@ -25,21 +25,32 @@ _DEFAULT_ACTION_HIGH: float = 1.0
 
 
 class PolicyNetwork(nn.Module):
-    """Policy network for continuous action spaces."""
+    """Policy network for continuous action spaces.
+
+    Tanh hidden activations match the paper's HalfCheetah setup and the
+    repo's BC pretrain checkpoints.
+    """
     
-    def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 256):
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        hidden_dim: int = 256,
+        activation: str = "tanh",
+    ):
         super().__init__()
         self.fc1 = nn.Linear(state_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.mean = nn.Linear(hidden_dim, action_dim)
+        self._act = torch.tanh if activation == "tanh" else F.relu
         
     def forward(self, state):
         """Forward pass."""
         if state.dim() == 1:
             state = state.unsqueeze(0)
         
-        x = F.relu(self.fc1(state))
-        x = F.relu(self.fc2(x))
+        x = self._act(self.fc1(state))
+        x = self._act(self.fc2(x))
         # Output the raw mean. Bounding the mean before sampling clips
         # gradients on saturated outputs (the previous Bandit2D-only
         # `clamp(-1.5, 1.5)` here broke training on Reacher / HalfCheetah).
@@ -90,6 +101,10 @@ class FedMomentumAgent(nn.Module):
         device: Optional[str] = None,
         action_low: Optional[float] = None,
         action_high: Optional[float] = None,
+        init_log_std: float = 0.0,
+        bc_ckpt_path: Optional[str] = None,
+        bc_blend_alpha: float = 1.0,
+        policy_activation: str = "tanh",
     ):
         super().__init__()
 
@@ -112,8 +127,53 @@ class FedMomentumAgent(nn.Module):
         self.device = torch.device(device or "cpu")
         
         # Policy network (will be aggregated)
-        self.policy = PolicyNetwork(state_dim, action_dim, hidden_dim).to(self.device)
-        self.log_std = nn.Parameter(torch.zeros(action_dim, device=self.device))
+        self.policy = PolicyNetwork(
+            state_dim, action_dim, hidden_dim, activation=policy_activation
+        ).to(self.device)
+        self.log_std = nn.Parameter(
+            torch.full((action_dim,), float(init_log_std), device=self.device)
+        )
+
+        # Optional BC warm-start from scripts/envs/*/_bc_pretrain.py checkpoints.
+        # Checkpoints store a Sequential policy with keys 0/2/4; map them into
+        # fc1/fc2/mean and blend with random init when alpha < 1.
+        if bc_ckpt_path is not None:
+            try:
+                bc = torch.load(bc_ckpt_path, map_location=self.device, weights_only=False)
+                pol_sd = bc.get("policy", bc) if isinstance(bc, dict) else bc
+                a = max(0.0, min(1.0, float(bc_blend_alpha)))
+
+                def _blend(dst: torch.Tensor, src: torch.Tensor) -> None:
+                    if src.shape != dst.shape:
+                        return
+                    src_t = src.to(self.device, dtype=dst.dtype)
+                    dst.data.mul_(1.0 - a).add_(src_t, alpha=a)
+
+                if isinstance(pol_sd, dict):
+                    # Sequential BC checkpoint layout.
+                    if "0.weight" in pol_sd:
+                        _blend(self.policy.fc1.weight, pol_sd["0.weight"])
+                        _blend(self.policy.fc1.bias, pol_sd["0.bias"])
+                        _blend(self.policy.fc2.weight, pol_sd["2.weight"])
+                        _blend(self.policy.fc2.bias, pol_sd["2.bias"])
+                        _blend(self.policy.mean.weight, pol_sd["4.weight"])
+                        _blend(self.policy.mean.bias, pol_sd["4.bias"])
+                    # Native FedMomentum/FedKL-style layout.
+                    elif "fc1.weight" in pol_sd:
+                        _blend(self.policy.fc1.weight, pol_sd["fc1.weight"])
+                        _blend(self.policy.fc1.bias, pol_sd["fc1.bias"])
+                        _blend(self.policy.fc2.weight, pol_sd["fc2.weight"])
+                        _blend(self.policy.fc2.bias, pol_sd["fc2.bias"])
+                        _blend(self.policy.mean.weight, pol_sd["mean.weight"])
+                        _blend(self.policy.mean.bias, pol_sd["mean.bias"])
+
+                if isinstance(bc, dict) and "log_std" in bc and bc["log_std"] is not None:
+                    ls = bc["log_std"]
+                    if isinstance(ls, torch.Tensor) and ls.shape == self.log_std.shape:
+                        _blend(self.log_std, ls)
+                print(f"[FedMomentumAgent] BC warm-start ← {bc_ckpt_path} (blend α={a:.2f})")
+            except Exception as e:
+                print(f"[FedMomentumAgent] BC warm-start FAILED ({bc_ckpt_path}): {e}")
         
         # Value network (remains local, not aggregated)
         self.value_fn = ValueNetwork(state_dim, hidden_dim).to(self.device)
@@ -156,10 +216,11 @@ class FedMomentumAgent(nn.Module):
         
         dist, mu = self._dist(state)
         action = mu if deterministic else dist.sample()
-        # Clamp sampled action to env action bounds. log_prob is computed on
-        # the unclamped sample so gradients still flow.
-        logp = dist.log_prob(action).sum(dim=-1)
+        # Store and train against the same action actually applied to the env.
+        # The previous code stored a clipped action but kept the old log-prob of
+        # the unclipped sample, making PPO/SVRPG ratios inconsistent.
         action = torch.clamp(action, self.action_low, self.action_high)
+        logp = dist.log_prob(action).sum(dim=-1)
         value = self.value_fn(state).squeeze(-1)
         
         # Return numpy arrays
@@ -179,7 +240,7 @@ class FedMomentumAgent(nn.Module):
         use_clipped: bool = True,
     ) -> Dict[str, torch.Tensor]:
         """
-        Compute policy gradient: ∇_θ log π_θ(a|s) * A(s,a)
+        Compute policy gradient ascent direction: ∇_θ log π_θ(a|s) * A(s,a)
         
         Args:
             states: Batch of states [batch_size, state_dim]
@@ -217,16 +278,18 @@ class FedMomentumAgent(nn.Module):
         self.optimizer.zero_grad()
         policy_loss.backward()
         
-        # Extract gradients in the same key order as get_parameters() / Flower flat list
+        # Extract ascent directions in the same key order as get_parameters()
+        # / Flower flat list. `policy_loss = -J`, so autograd gives -∇J; the
+        # server applies θ ← θ + λg, therefore return +∇J.
         # (sorted policy state_dict keys, then log_std) — required for server aggregation.
         policy_grad = {}
         params_by_name = {n: p for n, p in self.policy.named_parameters()}
         for key in sorted(params_by_name.keys()):
             param = params_by_name[key]
             g = param.grad if param.grad is not None else torch.zeros_like(param.data)
-            policy_grad[f"policy.{key}"] = g.clone()
+            policy_grad[f"policy.{key}"] = (-g).clone()
         g_ls = self.log_std.grad if self.log_std.grad is not None else torch.zeros_like(self.log_std.data)
-        policy_grad["log_std"] = g_ls.clone()
+        policy_grad["log_std"] = (-g_ls).clone()
         
         # Clear gradients (we'll compute them again during actual update)
         self.optimizer.zero_grad()
@@ -407,4 +470,3 @@ class FedMomentumAgent(nn.Module):
             self.log_std.data = state_dict["log_std"]
         if "value_fn" in state_dict:
             self.value_fn.load_state_dict(state_dict["value_fn"])
-

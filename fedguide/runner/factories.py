@@ -621,6 +621,7 @@ def _create_fmarl_client_fn(config: Dict[str, Any], **kwargs):
         render_save_dir=config.get('render_save_dir'),
         render_every_n_rounds=int(config.get('render_every_n_rounds', 10)),
         render_episodes=int(config.get('render_episodes', 5)),
+        render_all_clients=bool(config.get('render_all_clients', False)),
         reacher_render_mode=reacher_env_render_mode_from_config(
             bool(config.get('render_eval', False)),
             str(config.get('render_mode', 'video')),
@@ -684,6 +685,7 @@ def _create_fedrl_client_fn(config: Dict[str, Any], **kwargs):
         render_save_dir=config.get('render_save_dir'),
         render_every_n_rounds=int(config.get('render_every_n_rounds', 10)),
         render_episodes=int(config.get('render_episodes', 5)),
+        render_all_clients=bool(config.get('render_all_clients', False)),
         reacher_render_mode=reacher_env_render_mode_from_config(
             bool(config.get('render_eval', False)),
             str(config.get('render_mode', 'video')),
@@ -739,6 +741,7 @@ def _create_fedrep_client_fn(config: Dict[str, Any], **kwargs):
         render_save_dir=config.get('render_save_dir'),
         render_every_n_rounds=int(config.get('render_every_n_rounds', 10)),
         render_episodes=int(config.get('render_episodes', 5)),
+        render_all_clients=bool(config.get('render_all_clients', False)),
         eval_episodes=int(config.get('eval_episodes', 1)),
         reacher_render_mode=reacher_env_render_mode_from_config(
             bool(config.get('render_eval', False)),
@@ -772,6 +775,8 @@ def _create_fedmomentum_client_fn(config: Dict[str, Any], **kwargs):
         max_grad_norm=float(config.get('max_grad_norm', 0.5)),
         hidden_dim=int(config.get('hidden_dim', 256)),
         lr=float(config.get('lr', 3e-4)),
+        init_log_std=float(config.get('init_log_std', 0.0)),
+        policy_activation=str(config.get('policy_activation', 'tanh')),
         algorithm=config.get('algorithm_type', 'svrpg'),
         reference_update_freq=int(config.get('reference_update_freq', 5)),
         use_svrpg=bool(config.get('use_svrpg', True)),
@@ -794,6 +799,7 @@ def _create_fedmomentum_client_fn(config: Dict[str, Any], **kwargs):
         render_save_dir=config.get('render_save_dir'),
         render_every_n_rounds=int(config.get('render_every_n_rounds', 10)),
         render_episodes=int(config.get('render_episodes', 5)),
+        render_all_clients=bool(config.get('render_all_clients', False)),
         reacher_render_mode=reacher_env_render_mode_from_config(
             bool(config.get('render_eval', False)),
             str(config.get('render_mode', 'video')),
@@ -803,6 +809,10 @@ def _create_fedmomentum_client_fn(config: Dict[str, Any], **kwargs):
         fedsvrpgm_beta=float(config.get('fedsvrpgm_beta', 0.2)),
         local_steps_k=int(config.get('local_steps_k', 5)),
         fedsvrpgm_max_horizon=int(config.get('fedsvrpgm_max_horizon', config.get('max_horizon', 500))),
+        bc_root=config.get('bc_root'),
+        bc_env_name=config.get('bc_env_name'),
+        bc_blend_alpha=float(config.get('bc_blend_alpha', 1.0)),
+        client_state_dir=config.get('client_state_dir'),
     )
 
 
@@ -831,6 +841,7 @@ def _create_mfpo_client_fn(config: Dict[str, Any], **kwargs):
         render_save_dir=config.get('render_save_dir'),
         render_every_n_rounds=int(config.get('render_every_n_rounds', 10)),
         render_episodes=int(config.get('render_episodes', 5)),
+        render_all_clients=bool(config.get('render_all_clients', False)),
         reacher_render_mode=reacher_env_render_mode_from_config(
             bool(config.get('render_eval', False)),
             str(config.get('render_mode', 'video')),
@@ -1035,4 +1046,3 @@ try:
 except ImportError:
     # If hooks module isn't available, continue without hooks
     pass
-

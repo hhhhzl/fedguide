@@ -13,6 +13,7 @@ import yaml
 import torch
 import pickle
 import copy
+import shutil
 from typing import Dict, Any, Optional, Callable, List
 from pathlib import Path
 
@@ -258,6 +259,15 @@ def _run_federated_training(env_type: str, algorithm: str, config: Dict[str, Any
     from fedguide.utils.client_id_mapping import clear_mapping_file
     clear_mapping_file(cid_mapping_file)
     config['cid_mapping_file'] = cid_mapping_file
+
+    if algorithm.lower() == 'fedmomentum':
+        client_state_dir = os.path.abspath(
+            os.path.join(metrics_dir, "fedmomentum_client_state")
+        )
+        if bool(config.get("clear_client_state", True)):
+            shutil.rmtree(client_state_dir, ignore_errors=True)
+        os.makedirs(client_state_dir, exist_ok=True)
+        config['client_state_dir'] = client_state_dir
     
     # Initialize hooks and get metrics collector if available
     if hooks:
@@ -470,4 +480,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

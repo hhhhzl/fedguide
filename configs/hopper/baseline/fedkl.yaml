@@ -1,6 +1,6 @@
 env_type: "d4rl"
 env_name: "Hopper-v4"
-metadata_path: "data/hopper/metadata_mild64.json"
+metadata_path: "data/hopper/metadata.json"
 num_clients: 8
 random_select_clients: false
 
@@ -10,13 +10,19 @@ update_epochs: 10
 minibatch_size: 64
 
 hidden_dim: 256
-lr: 3e-4
+lr: 1e-4
 gamma: 0.99
 gae_lambda: 0.95
-clip_eps: 0.2
+clip_eps: 0.1
 entropy_coef: 0.01
 value_coef: 0.5
 max_grad_norm: 0.5
+
+
+init_log_std: -0.5
+log_std_anneal: true
+log_std_anneal_target: -2.0
+log_std_anneal_rounds: 60
 
 # Federation regularizers
 lambda_global: 0.1
@@ -41,4 +47,5 @@ render_eval: true
 render_mode: "video"
 render_save_dir: "./plots/hopper/fedkl"
 render_every_n_rounds: 20
-render_episodes: 1
+render_all_clients: true                   # render every client, not just client 0
+render_episodes: 3

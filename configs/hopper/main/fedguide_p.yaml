@@ -62,4 +62,5 @@ render_eval: true
 render_mode: "video"
 render_save_dir: "./plots/hopper/fedguide_p"
 render_every_n_rounds: 20
+render_all_clients: true                   # render every client, not just client 0
 render_episodes: 3

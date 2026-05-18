@@ -16,6 +16,7 @@ log
 /results
 /plots
 
+.claude
 .vscode/
 build
 __pycache__
