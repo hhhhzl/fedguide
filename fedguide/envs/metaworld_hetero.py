@@ -71,7 +71,10 @@ def make_hetero_metaworld_env_from_metadata(
     env_cls = ml10.train_classes.get(task_name) or ml10.test_classes.get(task_name)
     if env_cls is None:
         raise KeyError(f"task {task_name} not in MetaWorld ML10")
-    env = env_cls()
+    try:
+        env = env_cls(render_mode=render_mode) if render_mode else env_cls()
+    except TypeError:
+        env = env_cls()
     # MetaWorld envs need an explicit task setup before reset.
     tasks_for_name = [t for t in (ml10.train_tasks + ml10.test_tasks) if t.env_name == task_name]
     if not tasks_for_name:

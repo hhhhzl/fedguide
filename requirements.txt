@@ -26,6 +26,10 @@ mujoco==3.3.6
 cython==0.29.22
 minari==0.5.3
 pyglet==2.1.11
+# MetaWorld envs (heterogeneous ML10 sweep). Pip-installable from Farama fork; pulls
+# in gymnasium>=1.x and mujoco>=3.3 as a side effect — both still work with the rest
+# of the stack (gym 0.26.2 and gymnasium 0.29 callers continue to import correctly).
+metaworld @ git+https://github.com/Farama-Foundation/Metaworld.git
 # 4.12+ requires numpy>=2 on py3.9+; stack pins numpy 1.26.x (accelerate, SB3).
 opencv-python==4.11.0.86
 imutils==0.5.4

@@ -3,9 +3,9 @@ env_name: metaworld_ml10
 metadata_path: data/metaworld/metadata.json
 num_clients: 10
 random_select_clients: false
-rounds: 50
+rounds: 100
 cpus_per_client: 2
-n_steps: 2000
+n_steps: 4096
 lambda_local: 0.05
 lambda_guide: 0.5
 lambda_guide_anneal: true
@@ -16,9 +16,12 @@ init_log_std: 0.0
 aggregate_mode: prior
 use_pretrained_models: true
 prior_adapt_fallback_all: true
+
 prior_dir: ./model/models_prior
 bc_dir: ./model/bc_policy
 bc_env_name: MetaWorld
+bc_blend_alpha: 1.0
+
 moe_enable: true
 num_experts_prior: 8
 num_experts_guidance: 8
@@ -43,12 +46,15 @@ gpus_per_client: 0.1
 device: auto
 seed:
 - 0
-render_eval: false
+render_eval: true
 render_mode: video
 render_save_dir: ./plots/metaworld/fedguide
-render_every_n_rounds: 50
+render_every_n_rounds: 20
 render_episodes: 3
+render_all_clients: true
+policy_save_every: 20
 dice_v_blend_alpha: 0.5
 min_fit_clients: 10
 min_evaluate_clients: 10
 min_available_clients: 10
+eval_episodes: 10

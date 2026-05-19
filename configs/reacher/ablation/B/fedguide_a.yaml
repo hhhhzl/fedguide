@@ -45,6 +45,8 @@ bc_dir: "./model/bc_policy_ablation/B"
 bc_env_name: "Reacher"
 bc_blend_alpha: 1.0
 
+eval_episodes: 10
+
 collect_metrics_every: 5
 
 # Logging
