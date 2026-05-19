@@ -1,6 +1,6 @@
 env_type: "d4rl"
 env_name: "Walker2d-v4"
-metadata_path: "data/walker/metadata.json"
+metadata_path: "data/walker/metadata_hard.json"
 num_clients: 8
 random_select_clients: false
 
@@ -36,8 +36,8 @@ bc_blend_alpha: 0.3
 
 eval_episodes: 10
 
-output_dir: "./model/policy/walker/fedavg"
-metrics_dir: "./metrics/walker/fedavg"
+output_dir: "./model/policy/walker_hard/fedavg"
+metrics_dir: "./metrics/walker_hard/fedavg"
 save_every: 10
 
 device: "auto"
@@ -46,7 +46,7 @@ seed: [0]
 
 render_eval: true
 render_mode: "video"
-render_save_dir: "./plots/walker/fedavg"
+render_save_dir: "./plots/walker_hard/fedavg"
 render_every_n_rounds: 20
 render_all_clients: true                   # render every client, not just client 0
 render_episodes: 3
