@@ -16,6 +16,8 @@ lambda_guide_anneal: true
 lambda_guide_decay_rounds: 50
 init_log_std: 0.0
 
+eval_episodes: 10
+
 # FedGuide aggregation (OT-MoE prior)
 aggregate_mode: "prior"
 use_pretrained_models: true

@@ -325,7 +325,21 @@ def _run_federated_training(env_type: str, algorithm: str, config: Dict[str, Any
     if ray_init_num_cpus > 0:
         ray_init_args = {"num_cpus": ray_init_num_cpus,
                          "include_dashboard": False}
-        print(f"Ray ray_init_args: {ray_init_args}")
+
+    # Ray actor workers don't inherit the parent's LD_LIBRARY_PATH, so MuJoCo
+    # fails to locate libmujoco210.so unless we forward it via runtime_env.
+    mujoco_bin = os.path.expanduser("~/.mujoco/mujoco210/bin")
+    parent_ld = os.environ.get("LD_LIBRARY_PATH", "")
+    if mujoco_bin not in parent_ld.split(":"):
+        parent_ld = f"{mujoco_bin}:{parent_ld}" if parent_ld else mujoco_bin
+    forwarded_env = {"LD_LIBRARY_PATH": parent_ld}
+    for var in ("MUJOCO_PY_MUJOCO_PATH", "MUJOCO_GL", "D4RL_SUPPRESS_IMPORT_ERROR"):
+        if os.environ.get(var):
+            forwarded_env[var] = os.environ[var]
+    if ray_init_args is None:
+        ray_init_args = {"include_dashboard": False}
+    ray_init_args["runtime_env"] = {"env_vars": forwarded_env}
+    print(f"Ray ray_init_args: {ray_init_args}")
     print(f"{'='*60}\n")
 
     # Run federated simulation
@@ -335,7 +349,7 @@ def _run_federated_training(env_type: str, algorithm: str, config: Dict[str, Any
         strategy=server,
         config=server_config,
         client_resources=client_resources,
-        **({"ray_init_args": ray_init_args} if ray_init_args else {}),
+        ray_init_args=ray_init_args,
     )
     
     # Finalize hooks
