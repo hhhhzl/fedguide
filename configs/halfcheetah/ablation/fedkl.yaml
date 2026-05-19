@@ -1,0 +1,58 @@
+# FedKL Training Configuration for Reacher with Client Heterogeneity
+
+# Environment configuration
+env_type: "d4rl"  # Environment type: "bandit2d", "d4rl", "minari", or "reacher_hetero"
+env_name: "HalfCheetah-v4"
+metadata_path: "data/halfcheetah/metadata.json"  # Path to reacher metadata.json file
+num_clients: 8  # Number of clients to use (selects first N clients from metadata.json, or random if random_select_clients=true)
+random_select_clients: false  # If true, randomly select num_clients from metadata.json; if false, select first num_clients
+
+# Training configuration
+rounds: 100  # Number of federated rounds
+n_steps: 4096  # Number of rollout steps per round (on-policy)
+update_epochs: 10  # Number of PPO update epochs per round
+minibatch_size: 64  # Minibatch size for PPO updates
+
+# Agent configuration (PPO)
+hidden_dim: 256
+lr: 3e-4
+gamma: 0.99
+gae_lambda: 0.95
+clip_eps: 0.2
+entropy_coef: 0.01
+value_coef: 0.5
+max_grad_norm: 0.5
+
+# FedKL specific parameters
+lambda_global: 0.1  # Weight for KL(π_local || π_global) penalty
+lambda_local: 0.05  # Weight for KL(π || π_local_snapshot) penalty (local trust region)
+
+# Evaluation configuration
+eval_episodes: 10
+
+# Output configuration
+output_dir: "./model/policy/halfcheetah_hard/fedkl"
+metrics_dir: "./metrics/halfcheetah_hard/fedkl"
+save_every: 10
+
+# Device configuration
+device: "auto"  # "auto", "cpu", or "cuda"
+# Ray Flower VCE: GPU fraction per virtual client (match fedavg; smaller => more parallel actors)
+gpus_per_client: 0.125
+
+# Seed configuration
+seed: [2]
+
+# Rendering configuration (for MuJoCo/Maze environments)
+render_eval: true  # Enable rendering during evaluation
+render_mode: "video"  # "human" (display), "rgb_array" (collect frames), "video" (save video)
+render_save_dir: "./plots/halfcheetah_hard/fedkl"  # Directory to save videos
+render_every_n_rounds: 20  # Render every N rounds (0 = only last round, -1 = all rounds)
+render_all_clients: true                   # render every client, not just client 0
+render_episodes: 1  # Number of episodes to render per round
+
+# Per-client policy snapshots every 20 rounds → metrics_dir/policies/client_*/round_XXXX.pth
+policy_save_every: 20
+bc_root: ./model/bc_policy
+bc_env_name: HalfCheetah
+bc_blend_alpha: 0.3                        # 30% BC + 70% random init

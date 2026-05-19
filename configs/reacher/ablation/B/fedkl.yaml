@@ -41,3 +41,4 @@ render_mode: "video"
 render_save_dir: "./plots/reacher/ablation/B/fedkl"
 render_every_n_rounds: 20
 render_episodes: 10
+render_all_clients: true  

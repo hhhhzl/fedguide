@@ -32,6 +32,8 @@ bc_env_name: "Reacher"
 bc_blend_alpha: 0.3
 
 eval_episodes: 10
+
+eval_episodes: 10
 collect_metrics_every: 5
 
 # Logging
@@ -51,6 +53,7 @@ render_mode: "video"
 render_save_dir: "./plots/reacher/ablation/C/fedrl_ddpg"
 render_every_n_rounds: 20
 render_episodes: 10
+render_all_clients: true
 
 # Other
 merge_interval: 2048

@@ -1,6 +1,6 @@
 env_type: "d4rl"
 env_name: "HalfCheetah-v4"
-metadata_path: "data/halfcheetah/metadata.json"
+metadata_path: "data/halfcheetah/metadata_mild64.json"
 num_clients: 8
 random_select_clients: false
 
@@ -24,6 +24,8 @@ prior_dir: "./model/models_prior"          # use real DiffusionGuidance ckpts
 bc_dir: "./model/bc_policy"
 bc_env_name: "HalfCheetah"
 bc_blend_alpha: 1.0
+
+eval_episodes: 10
 
 moe_enable: true
 num_experts_prior: 8                       # one expert per client
