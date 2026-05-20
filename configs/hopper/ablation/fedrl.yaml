@@ -1,0 +1,61 @@
+env_type: "d4rl"
+env_name: "Hopper-v4"
+metadata_path: "data/hopper/metadata_hard.json"
+num_clients: 8
+random_select_clients: false
+
+rounds: 100
+cpus_per_client: 2
+
+hidden_dim: 256
+lr: 1e-4
+gamma: 0.99
+
+# DDPG (fedrl) replay/critic
+tau: 0.001
+batch_size: 64
+replay_initial: 1000
+threshold: 1.0
+aggregate_critic: true
+ou_enabled: true
+ou_mu: 0.0
+ou_theta: 0.15
+ou_sigma: 0.2
+ou_epsilon: 1.0
+
+# Federation regularizers
+algorithm: "fedrl"
+algo: "ddpg"
+
+# BC warm-start (same checkpoint FedGuide uses)
+bc_root: "./model/bc_policy"
+bc_env_name: "Hopper"
+bc_blend_alpha: 0.3
+
+eval_episodes: 10
+collect_metrics_every: 5
+
+# Logging
+use_wandb: false
+wandb_project: null
+run_name: null
+
+output_dir: "./model/policy/hopper_hard/fedrl_ddpg"
+metrics_dir: "./metrics/hopper_hard/fedrl_ddpg"
+
+device: "auto"
+gpus_per_client: 0.125
+seed: [0]
+
+render_eval: true
+render_mode: "video"
+render_save_dir: "./plots/hopper_hard/fedrl_ddpg"
+render_every_n_rounds: 20
+render_all_clients: true                   # render every client, not just client 0
+render_episodes: 3
+
+# Other
+merge_interval: 4096
+replay_size: 100000
+add_noise: true
+replay_persist_across_rounds: false

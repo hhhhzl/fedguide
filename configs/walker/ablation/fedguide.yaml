@@ -1,6 +1,6 @@
 env_type: "d4rl"
 env_name: "Walker2d-v4"
-metadata_path: "data/walker/metadata.json"
+metadata_path: "data/walker/metadata_hard.json"
 num_clients: 8
 random_select_clients: false
 
@@ -54,8 +54,8 @@ use_wandb: false
 wandb_project: null
 run_name: null
 
-output_dir: "./model/policy/walker/fedguide"
-metrics_dir: "./metrics/walker/fedguide"
+output_dir: "./model/policy/walker_hard/fedguide"
+metrics_dir: "./metrics/walker_hard/fedguide"
 
 device: "auto"
 gpus_per_client: 0.125
@@ -63,7 +63,7 @@ seed: [0]
 
 render_eval: true
 render_mode: "video"
-render_save_dir: "./plots/walker/fedguide"
+render_save_dir: "./plots/walker_hard/fedguide"
 render_every_n_rounds: 20
 render_episodes: 3
 render_all_clients: true   

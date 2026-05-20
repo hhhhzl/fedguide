@@ -1,6 +1,6 @@
 env_type: "d4rl"
-env_name: "Walker2d-v4"
-metadata_path: "data/walker/metadata.json"
+env_name: "Hopper-v4"
+metadata_path: "data/hopper/metadata_hard.json"
 num_clients: 8
 random_select_clients: false
 
@@ -18,7 +18,7 @@ lambda_guide_decay_rounds: 50
 init_log_std: 0.0
 
 # FedGuide aggregation (OT-MoE prior)
-aggregate_mode: "prior"
+aggregate_mode: "all"
 use_pretrained_models: true
 prior_adapt_fallback_all: true
 prior_dir: "./model/models_prior"
@@ -28,6 +28,7 @@ num_experts_guidance: 8
 ot_mode: "sinkhorn"
 ot_reg: 0.05
 personalized_routing: true
+policy_agg_every_k: 5
 dice_v_blend_alpha: 0.5
 guide_coef: 0.0
 guidance_eta: 0.1
@@ -42,7 +43,7 @@ log_std_anneal_rounds: 80
 
 # BC warm-start (same checkpoint FedGuide uses)
 bc_dir: "./model/bc_policy"
-bc_env_name: "Walker2D"
+bc_env_name: "Hopper"
 bc_blend_alpha: 1.0
 
 eval_episodes: 10
@@ -54,8 +55,8 @@ use_wandb: false
 wandb_project: null
 run_name: null
 
-output_dir: "./model/policy/walker/fedguide"
-metrics_dir: "./metrics/walker/fedguide"
+output_dir: "./model/policy/hopper_hard/fedguide_a"
+metrics_dir: "./metrics/hopper_hard/fedguide_a"
 
 device: "auto"
 gpus_per_client: 0.125
@@ -63,7 +64,7 @@ seed: [0]
 
 render_eval: true
 render_mode: "video"
-render_save_dir: "./plots/walker/fedguide"
+render_save_dir: "./plots/hopper_hard/fedguide_a"
 render_every_n_rounds: 20
+render_all_clients: true                   # render every client, not just client 0
 render_episodes: 3
-render_all_clients: true   

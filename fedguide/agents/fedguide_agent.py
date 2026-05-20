@@ -349,22 +349,25 @@ class FedguideAgent(nn.Module):
 
     def _init_prior_adapt_params(self):
         named = list(self.prior.named_parameters())
-        adapt, frozen = [], []
+        adapt, adapt_names, frozen = [], [], []
         for n, p in named:
             if any(tag in n.lower() for tag in ("lora", "adapter", "head")):
                 adapt.append(p)
+                adapt_names.append(n)
             else:
                 frozen.append(p)
         # Experimental fallback for priors without adapter/lora/head naming.
         # Keeps default behavior unless explicitly enabled by config.
         if len(adapt) == 0 and self.prior_adapt_fallback_all:
             adapt = [p for _, p in named]
+            adapt_names = [n for n, _ in named]
             frozen = []
         for p in frozen:
             p.requires_grad = False
         for p in adapt:
             p.requires_grad = True
         self.prior_adapt_params = adapt
+        self.prior_adapt_names = set(adapt_names)
 
     # ========= Distribution / Evaluate =========
     def _dist(self, state: torch.Tensor):
@@ -404,7 +407,7 @@ class FedguideAgent(nn.Module):
             out["prior_adapt"] = {
                 k: v.detach().cpu()
                 for k, v in self.prior.state_dict().items()
-                if any(tag in k.lower() for tag in ("lora", "adapter", "head"))
+                if k in self.prior_adapt_names
             }
         if self.guidance is not None:
             out["guidance"] = {k: v.detach().cpu() for k, v in self.guidance.state_dict().items()}
