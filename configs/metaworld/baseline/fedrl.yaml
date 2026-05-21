@@ -7,7 +7,7 @@
 env_type: "d4rl"
 env_name: "metaworld_ml10"
 metadata_path: "data/metaworld/metadata_mild64.json"
-num_clients: 8
+num_clients: 10
 random_select_clients: false
 
 algorithm: "fedrl"
