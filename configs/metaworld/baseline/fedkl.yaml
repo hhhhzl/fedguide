@@ -3,8 +3,8 @@
 # Environment configuration
 env_type: "d4rl"  # Environment type: "d4rl"
 env_name: "metaworld_ml10"
-metadata_path: "data/metaworld/metadata_mild64.json"  # Path to reacher metadata.json file
-num_clients: 8  # Number of clients to use (selects first N clients from metadata.json, or random if random_select_clients=true)
+metadata_path: "data/metaworld/metadata.json"
+num_clients: 10  # Number of clients to use (selects first N clients from metadata.json, or random if random_select_clients=true)
 random_select_clients: false  # If true, randomly select num_clients from metadata.json; if false, select first num_clients
 
 # Training configuration
