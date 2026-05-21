@@ -3,9 +3,9 @@ env_name: metaworld_ml10
 metadata_path: data/metaworld/metadata.json
 num_clients: 10
 random_select_clients: false
-rounds: 50
+rounds: 100
 cpus_per_client: 2
-n_steps: 2000
+n_steps: 4096
 lambda_local: 0.05
 lambda_guide: 0.5
 lambda_guide_anneal: true
