@@ -6,7 +6,7 @@
 
 env_type: "d4rl"
 env_name: "metaworld_ml10"
-metadata_path: "data/metaworld/metadata_mild64.json"
+metadata_path: "data/metaworld/metadata.json"
 num_clients: 10
 random_select_clients: false
 
@@ -47,8 +47,8 @@ use_wandb: false
 wandb_project: null
 run_name: null
 
-output_dir: "./model/policy/metaworld/fedrl_ddpg_bc"
-metrics_dir: "./metrics/metaworld/fedrl_ddpg_bc"
+output_dir: "./model/policy/metaworld/fedrl_ddpg"
+metrics_dir: "./metrics/metaworld/fedrl_ddpg"
 collect_metrics_every: 5
 
 device: "auto"
