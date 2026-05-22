@@ -78,6 +78,17 @@ def _make_env(
     except Exception:
         pass
 
+    try:
+        from fedguide.envs.metaworld_hetero import make_metaworld_env_if_applicable
+
+        _mw_env = make_metaworld_env_if_applicable(
+            metadata_path, client_id, seed, render_mode,
+        )
+        if _mw_env is not None:
+            return _mw_env
+    except Exception:
+        pass
+
     if env_id.lower() == "reacher":
         env = gym.make("Reacher-v4")
     else:
@@ -675,4 +686,3 @@ def client_fn_builder(
         return client.to_client()
     
     return client_fn
-

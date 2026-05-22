@@ -48,6 +48,13 @@ def make_hetero_metaworld_env_from_metadata(
     seed: Optional[int] = None,
     render_mode: Optional[str] = None,
 ) -> Any:
+    # MuJoCo offscreen renderer needs MUJOCO_GL set before context creation;
+    # otherwise env.render() throws inside federated_render's try/except and
+    # silently produces no frames (so no mp4 ever lands in render_save_dir).
+    from fedguide.utils.mujoco_headless import ensure_mujoco_headless_gl_if_needed
+
+    ensure_mujoco_headless_gl_if_needed()
+
     try:
         import metaworld  # type: ignore
     except ImportError as e:  # pragma: no cover
