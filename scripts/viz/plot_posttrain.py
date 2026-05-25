@@ -46,13 +46,13 @@ _install_numpy_pickle_aliases()
 
 # Display name + color for each algorithm.
 ALGOS = [
-    ("fedavg",     "FedAvg",      "#ca6c0f"),
-    ("fedkl",      "FedKL",       "#888888"),
     ("ppo",        "PPO",         "#444444"),
-    ("fedrl",      "FedRL-DDPG",  "#1f77b4"),
-    ("fedguide_p", "FedGuide-p",  "#6f4ec5"),
-    ("fedguide",   "FedGuide",    "#1f6b3f"),
-    ("fedguide_a", "FedGuide-a",  "#a3214c"),
+    ("fedavg",     "FedAvg",      "#CC79A7"),
+    ("fedkl",      "FedKL",       "#9467bd"),
+    ("fedrl",      "FedRL",  "#2ca02c"),
+    ("fedguide_p", "FedGuide-P",  "#d62728"),
+    ("fedguide",   "FedGuide",    "#1f77b4"),
+    ("fedguide_a", "FedGuide-A",  "#ff7f0e"),
 ]
 
 ENVS_DEFAULT = ["halfcheetah", "walker", "hopper", "reacher", "metaworld"]
@@ -63,8 +63,54 @@ BANDIT2D_ALGOS = [
     ("fedguide", "FedGuide", "#2ca02c"),
 ]
 
+# Main-mode: the 6 algos shipped per env in metrics/<env>/<dir>/seed_*.
+# Tuple is (directory name on disk, display label, color).
+MAIN_ALGOS = [
+    ("fedavg",     "FedAvg",     "#CC79A7"),
+    ("fedkl",      "FedKL",      "#9467bd"),
+    ("fedrl_ddpg", "FedRL",      "#2ca02c"),
+    ("fedguide_a", "FedGuide-A", "#ff7f0e"),
+    ("fedguide_p", "FedGuide-P", "#d62728"),
+    ("fedguide",   "FedGuide",   "#1f77b4"),
+]
+
+MAIN_ENVS = ["reacher", "hopper", "walker", "halfcheetah", "metaworld"]
+
+ENV_DISPLAY = {
+    "reacher":     "Reacher",
+    "hopper":      "Hopper",
+    "walker":      "Walker2D",
+    "halfcheetah": "HalfCheetah",
+    "metaworld":   "MetaWorld10",
+}
+
+# (slug, ylabel, (history attribute, key inside the dict))
+MAIN_METRICS = [
+    ("posttrain_eval_return", "Client Average Return", ("metrics_distributed_fit", "eval/return")),
+    ("global_eval_return",    "Global eval/return",    ("metrics_distributed",     "eval/return")),
+]
+
+# Per-(env, algo) smoothing window. On the 4 MuJoCo envs fedavg/fedkl have ~3-5x
+# lower inherent round-to-round variance than the rest (see analysis), so w=5
+# collapses them into near-flat lines; we relax them to w=1 to match the others
+# visually. On metaworld all algos share similar noise (~0.21-0.25), so w=5 stays
+# for everyone there.
+DEFAULT_SMOOTH_W = 5
+RELAXED_SMOOTH_W = 1
+RELAX_BASELINES_ON = {"reacher", "hopper", "walker", "halfcheetah"}
+RELAXED_BASELINES = {"fedavg", "fedkl"}
+
+
+def smooth_window_for(env: str, algo: str) -> int:
+    # Substring match so that hard / ablation variants (e.g. "hopper_hard",
+    # "reacher/ablation/C") inherit the same baseline-relaxation rule.
+    if algo in RELAXED_BASELINES and any(k in env for k in RELAX_BASELINES_ON):
+        return RELAXED_SMOOTH_W
+    return DEFAULT_SMOOTH_W
+
 METRICS_ROOT = Path("metrics")
 OUT_DIR      = Path("plots/posttrain")
+MAIN_OUT_DIR = Path("plots/posttrain")
 BANDIT2D_METRICS_ROOT = Path("metrics/bandit2d")
 
 
@@ -83,9 +129,29 @@ def load_seed_curve(env: str, algo: str, seed: int):
 
 
 def smooth(x: np.ndarray, w: int = 5):
-    if len(x) < w:
-        return x.copy(), np.arange(len(x))
-    return np.convolve(x, np.ones(w) / w, mode="valid"), np.arange(w - 1, len(x))
+    """Trailing mean with adaptive leading-edge window.
+
+    Output length == len(x), so every algo's curve starts at the same round
+    regardless of its per-algo `w` (see smooth_window_for). Position i
+    averages x[max(0, i-w+1) : i+1] — the first w-1 entries use shrunk
+    windows (1, 2, ..., w-1), then it settles into the full window. With
+    w=1 this is identity.
+
+    Previously this used np.convolve(..., mode='valid'), which trimmed
+    w-1 points off the left and made FedAvg/FedKL (w=1) visually have
+    "extra" early-round data compared to other algos (w=5). Trimming the
+    baselines erased their genuine early-training trend on Walker2D, so
+    we switched to trailing-mean instead.
+    """
+    n = len(x)
+    if n == 0 or w <= 1:
+        return x.copy(), np.arange(n)
+    out = np.empty(n, dtype=float)
+    cumsum = np.concatenate([[0.0], np.cumsum(x, dtype=float)])
+    for i in range(n):
+        start = max(0, i - w + 1)
+        out[i] = (cumsum[i + 1] - cumsum[start]) / (i + 1 - start)
+    return out, np.arange(n)
 
 
 def aggregate_across_seeds(env: str, algo: str, seeds):
@@ -109,6 +175,229 @@ def aggregate_across_seeds(env: str, algo: str, seeds):
     mean = stack.mean(axis=0)
     se = stack.std(axis=0, ddof=1) / np.sqrt(stack.shape[0]) if stack.shape[0] > 1 else np.zeros_like(mean)
     return rounds, mean, se, stack.shape[0]
+
+
+def load_seed_curve_at(env_root: Path, algo_dir: str, seed: int, attr: str, key: str):
+    """Load one (env_root, algo, seed) curve for the requested metric."""
+    p = Path(env_root) / algo_dir / f"seed_{seed}" / "training_history.pkl"
+    if not p.exists():
+        return None
+    try:
+        with open(p, "rb") as f:
+            h = pickle.load(f)
+    except Exception as exc:
+        print(f"[main] could not load {p}: {exc}")
+        return None
+    container = getattr(h, attr, None)
+    if not isinstance(container, dict):
+        return None
+    series = container.get(key, [])
+    if not series:
+        return None
+    rounds = np.asarray([int(r) for (r, _) in series], dtype=int)
+    vals = np.asarray([float(v) for (_, v) in series], dtype=float)
+    return rounds, vals
+
+
+def aggregate_at(env_root: Path, algo_dir: str, seeds, attr: str, key: str):
+    curves = []
+    for s in seeds:
+        c = load_seed_curve_at(env_root, algo_dir, s, attr, key)
+        if c is not None:
+            curves.append(c)
+    if not curves:
+        return None
+    common = sorted(set(curves[0][0]).intersection(*[set(c[0]) for c in curves[1:]]))
+    if not common:
+        return None
+    rounds = np.asarray(common, dtype=int)
+    stack = []
+    for r_arr, v_arr in curves:
+        d = dict(zip(r_arr.tolist(), v_arr.tolist()))
+        stack.append(np.asarray([d[r] for r in common], dtype=float))
+    stack = np.stack(stack, axis=0)
+    mean = stack.mean(axis=0)
+    se = stack.std(axis=0, ddof=1) / np.sqrt(stack.shape[0]) if stack.shape[0] > 1 else np.zeros_like(mean)
+    return rounds, mean, se, stack.shape[0]
+
+
+# Back-compat shims used by the existing --main flow.
+def load_main_seed_curve(env, algo_dir, seed, attr, key):
+    return load_seed_curve_at(METRICS_ROOT / env, algo_dir, seed, attr, key)
+
+def aggregate_main(env, algo_dir, seeds, attr, key):
+    return aggregate_at(METRICS_ROOT / env, algo_dir, seeds, attr, key)
+
+
+def _draw_env_panel(ax, env_root, env_key, display_name, seeds, attr, key, ylabel, yscale="linear"):
+    """Render one env panel with every MAIN_ALGOS curve. Returns {label: Line2D}."""
+    handles: dict[str, object] = {}
+    for algo_dir, label, color in MAIN_ALGOS:
+        agg = aggregate_at(Path(env_root), algo_dir, seeds, attr, key)
+        if agg is None:
+            continue
+        rounds, mean, se, _n_seeds = agg
+        w = smooth_window_for(env_key, algo_dir)
+        smean, idx = smooth(mean, w)
+        sse, _ = smooth(se, w)
+        xs = rounds[idx]
+        line, = ax.plot(xs, smean, color=color, linewidth=2.8, label=label, solid_capstyle="round")
+        if (sse > 0).any():
+            ax.fill_between(xs, smean - sse, smean + sse, color=color, alpha=0.22, linewidth=0)
+        handles[label] = line
+    if not handles:
+        ax.text(0.5, 0.5, "no data", ha="center", va="center", transform=ax.transAxes)
+    if yscale == "symlog":
+        ax.set_yscale("symlog", linthresh=10, linscale=1.0)
+    elif yscale == "log":
+        ax.set_yscale("log")
+    ax.set_title(display_name)
+    ax.set_xlabel("Round")
+    ax.set_ylabel(ylabel)
+    ax.grid(True, alpha=0.3, linewidth=0.9)
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+    for spine in ("left", "bottom"):
+        ax.spines[spine].set_linewidth(1.6)
+    ax.tick_params(width=1.3, length=5)
+    return handles
+
+
+def _legend_handles_in_order(per_panel_handles):
+    merged: dict[str, object] = {}
+    for h in per_panel_handles:
+        for k, v in h.items():
+            merged.setdefault(k, v)
+    ordered = [(lbl, merged[lbl]) for _, lbl, _ in MAIN_ALGOS if lbl in merged]
+    return ordered
+
+
+def _add_rl_legend(fig, ordered_handles, position="top"):
+    """Wide horizontal legend that spans the full figure width."""
+    if not ordered_handles:
+        return
+    if position == "top":
+        # 4-tuple bbox = (x0, y0, width, height) in figure fraction; placed just
+        # above the axes so mode="expand" stretches it across the whole row.
+        bbox = (0.0, 1.005, 1.0, 0.09)
+        loc = "lower left"
+    else:
+        bbox = (0.0, -0.10, 1.0, 0.09)
+        loc = "upper left"
+    leg = fig.legend(
+        [h for _, h in ordered_handles],
+        [l for l, _ in ordered_handles],
+        loc=loc,
+        ncol=len(ordered_handles),
+        bbox_to_anchor=bbox,
+        mode="expand",
+        frameon=True,
+        fancybox=True,
+        framealpha=0.95,
+        edgecolor="0.3",
+        handlelength=4.0,
+        handleheight=1.3,
+        handletextpad=0.9,
+        columnspacing=3.0,
+        borderpad=0.9,
+        borderaxespad=0.0,
+        prop={"size": 26},
+    )
+    leg.get_frame().set_linewidth(1.3)
+    for line in leg.get_lines():
+        line.set_linewidth(4.2)
+
+
+def plot_main_per_env(env, seeds, metric_slug, ylabel, attr, key, out_dir):
+    fig, ax = plt.subplots(1, 1, figsize=(7.2, 4.8))
+    handles = _draw_env_panel(
+        ax, METRICS_ROOT / env, env, ENV_DISPLAY.get(env, env),
+        seeds, attr, key, ylabel,
+    )
+    if handles:
+        ordered = [(lbl, handles[lbl]) for _, lbl, _ in MAIN_ALGOS if lbl in handles]
+        leg = ax.legend(
+            [h for _, h in ordered],
+            [l for l, _ in ordered],
+            loc="best",
+            frameon=True,
+            fancybox=True,
+            framealpha=0.92,
+            edgecolor="0.3",
+            handlelength=2.4,
+            handletextpad=0.6,
+            prop={"size": 16},
+        )
+        leg.get_frame().set_linewidth(1.0)
+        for line in leg.get_lines():
+            line.set_linewidth(3.2)
+    fig.tight_layout()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for ext in ("png", "pdf"):
+        out = out_dir / f"{env}.{ext}"
+        fig.savefig(out, dpi=180 if ext == "png" else None, bbox_inches="tight")
+        print(f"  -> {out}")
+    plt.close(fig)
+
+
+def plot_main_summary(envs, seeds, metric_slug, ylabel, attr, key, out_dir):
+    """1xN grid of envs with all algos overlaid; one bold shared legend below."""
+    n = len(envs)
+    fig, axes = plt.subplots(1, n, figsize=(4.6 * n, 4.4), squeeze=False)
+    per_panel = []
+    for i, env in enumerate(envs):
+        ax = axes[0][i]
+        per_panel.append(_draw_env_panel(
+            ax, METRICS_ROOT / env, env, ENV_DISPLAY.get(env, env),
+            seeds, attr, key, ylabel,
+        ))
+        if i > 0:
+            ax.set_ylabel("")
+    ordered = _legend_handles_in_order(per_panel)
+    fig.tight_layout()
+    _add_rl_legend(fig, ordered, position="bottom")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for ext in ("png", "pdf"):
+        out = out_dir / f"summary_all_algos.{ext}"
+        fig.savefig(out, dpi=180 if ext == "png" else None, bbox_inches="tight")
+        print(f"  -> {out}")
+    plt.close(fig)
+
+
+def _apply_rl_style():
+    plt.rcParams.update({
+        "font.family": "DejaVu Sans",
+        "font.size": 22,
+        "font.weight": "normal",
+        "axes.titlesize": 28,
+        "axes.titleweight": "normal",
+        "axes.labelsize": 24,
+        "axes.labelweight": "normal",
+        "xtick.labelsize": 20,
+        "ytick.labelsize": 20,
+        "legend.fontsize": 26,
+        "axes.linewidth": 1.5,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.grid": True,
+        "grid.alpha": 0.3,
+        "grid.linewidth": 0.9,
+        "lines.linewidth": 2.8,
+        "savefig.bbox": "tight",
+    })
+
+
+def run_main(envs, seeds, base_out: Path = MAIN_OUT_DIR):
+    _apply_rl_style()
+    base_out.mkdir(parents=True, exist_ok=True)
+    for metric_slug, ylabel, (attr, key) in MAIN_METRICS:
+        print(f"\n=== metric: {ylabel} ({metric_slug}) ===")
+        metric_dir = base_out / metric_slug
+        metric_dir.mkdir(parents=True, exist_ok=True)
+        for env in envs:
+            plot_main_per_env(env, seeds, metric_slug, ylabel, attr, key, metric_dir)
+        print(f"-- summary grid for {metric_slug}")
+        plot_main_summary(envs, seeds, metric_slug, ylabel, attr, key, metric_dir)
 
 
 def plot_one_env(env: str, seeds, ax=None):
@@ -368,9 +657,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bandit2d", action="store_true",
                     help="generate the Bandit2D prior, policy-density, diagnostics, and all-seed return plots")
-    ap.add_argument("--envs", type=str, default=",".join(ENVS_DEFAULT),
+    ap.add_argument("--main", action="store_true",
+                    help="plot the 3 main metrics (post-train eval/return, global eval/return, loss) for the 6 algos x 5 envs; one panel per (algo,env) plus one unified-legend summary per metric")
+    ap.add_argument("--envs", type=str, default=",".join(MAIN_ENVS),
                     help="comma-separated env names")
-    ap.add_argument("--seeds", type=str, default="0,1,2",
+    ap.add_argument("--seeds", type=str, default="0,1,2,3,4",
                     help="comma-separated seeds")
     args = ap.parse_args()
 
@@ -381,6 +672,10 @@ def main():
 
     envs  = [e.strip() for e in args.envs.split(",") if e.strip()]
     seeds = _parse_seed_arg(args.seeds)
+
+    if args.main:
+        run_main(envs, seeds)
+        return
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
