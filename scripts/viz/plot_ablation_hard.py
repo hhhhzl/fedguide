@@ -17,7 +17,7 @@ import os
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 MPLCONFIGDIR = Path(os.environ.get("TMPDIR", "/tmp")) / "fedguide-matplotlib"
@@ -27,7 +27,7 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 
 import matplotlib.pyplot as plt
 
-from scripts.plot_posttrain import (
+from scripts.viz.plot_posttrain import (
     MAIN_ALGOS,
     MAIN_METRICS,
     _apply_rl_style,
@@ -43,10 +43,10 @@ from scripts.plot_posttrain import (
 #     Reacher    | Hopper
 #     Walker2D   | HalfCheetah
 ABLATION_ENVS = [
-    ("reacher_hard",     "Reacher",     "metrics/reacher/ablation/C", "symlog"),
-    ("hopper_hard",      "Hopper",      "metrics/hopper_hard",        "linear"),
-    ("walker_hard",      "Walker2D",    "metrics/walker_hard",        "linear"),
-    ("halfcheetah_hard", "HalfCheetah", "metrics/halfcheetah_hard",   "linear"),
+    ("reacher_hard",     "Reacher-Hard",     "metrics/reacher/ablation/C", "symlog"),
+    ("hopper_hard",      "Hopper-Hard",      "metrics/hopper_hard",        "linear"),
+    ("walker_hard",      "Walker2D-Hard",    "metrics/walker_hard",        "linear"),
+    ("halfcheetah_hard", "HalfCheetah-Hard", "metrics/halfcheetah_hard",   "linear"),
 ]
 
 OUT_ROOT = Path("plots/posttrain/ablation_hard")
@@ -71,7 +71,7 @@ def plot_ablation_per_env(env_key, display_name, env_root, yscale,
             edgecolor="0.3",
             handlelength=2.4,
             handletextpad=0.6,
-            prop={"size": 14},
+            prop={"size": 16},
         )
         leg.get_frame().set_linewidth(1.0)
         for line in leg.get_lines():
@@ -86,17 +86,33 @@ def plot_ablation_per_env(env_key, display_name, env_root, yscale,
 
 
 def _add_2x2_legend(fig, ordered_handles):
-    """Bottom legend sized for a 2x2 grid (~12 in wide). Larger font would
-    wrap or clip — the main 1xN legend uses size=21 because the figure is
-    ~20 in wide; here we need a smaller font + tighter spacing."""
+    """Bottom legend spanning the full figure width as a 2 row x 3 col grid.
+
+    Target visual layout:
+        Row 1:  FedAvg       FedKL        FedRL
+        Row 2:  FedGuide-A   FedGuide-P   FedGuide
+
+    Matplotlib fills legends in column-major order with ncol=3, so to land
+    on the target row-major appearance we permute [A, B, C, D, E, F] into
+    [A, D, B, E, C, F]. mode='expand' stretches the legend across the bbox
+    width so it fills the column rather than being a centered narrow box.
+    """
     if not ordered_handles:
         return
+    n = len(ordered_handles)
+    ncol = 3
+    if n == 6:
+        # transpose 2x3 row-major -> column-major
+        permuted = [ordered_handles[i] for i in (0, 3, 1, 4, 2, 5)]
+    else:
+        permuted = ordered_handles
     leg = fig.legend(
-        [h for _, h in ordered_handles],
-        [l for l, _ in ordered_handles],
-        loc="upper center",
-        ncol=len(ordered_handles),
-        bbox_to_anchor=(0.5, -0.005),
+        [h for _, h in permuted],
+        [l for l, _ in permuted],
+        loc="upper left",
+        ncol=ncol,
+        bbox_to_anchor=(0.0, -0.06, 1.0, 0.09),
+        mode="expand",
         frameon=True,
         fancybox=True,
         framealpha=0.95,
@@ -104,10 +120,10 @@ def _add_2x2_legend(fig, ordered_handles):
         handlelength=3.0,
         handleheight=1.2,
         handletextpad=0.7,
-        columnspacing=2.0,
+        columnspacing=2.5,
         borderpad=0.7,
         borderaxespad=0.0,
-        prop={"size": 16},
+        prop={"size": 26},  # match posttrain summary legend (plot_posttrain._add_rl_legend)
     )
     leg.get_frame().set_linewidth(1.2)
     for line in leg.get_lines():

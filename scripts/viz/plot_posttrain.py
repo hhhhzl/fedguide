@@ -301,7 +301,7 @@ def _add_rl_legend(fig, ordered_handles, position="top"):
         columnspacing=3.0,
         borderpad=0.9,
         borderaxespad=0.0,
-        prop={"size": 21},
+        prop={"size": 26},
     )
     leg.get_frame().set_linewidth(1.3)
     for line in leg.get_lines():
@@ -326,7 +326,7 @@ def plot_main_per_env(env, seeds, metric_slug, ylabel, attr, key, out_dir):
             edgecolor="0.3",
             handlelength=2.4,
             handletextpad=0.6,
-            prop={"size": 14},
+            prop={"size": 16},
         )
         leg.get_frame().set_linewidth(1.0)
         for line in leg.get_lines():
@@ -367,15 +367,15 @@ def plot_main_summary(envs, seeds, metric_slug, ylabel, attr, key, out_dir):
 def _apply_rl_style():
     plt.rcParams.update({
         "font.family": "DejaVu Sans",
-        "font.size": 17,
+        "font.size": 22,
         "font.weight": "normal",
-        "axes.titlesize": 22,
+        "axes.titlesize": 28,
         "axes.titleweight": "normal",
-        "axes.labelsize": 18,
+        "axes.labelsize": 24,
         "axes.labelweight": "normal",
-        "xtick.labelsize": 15,
-        "ytick.labelsize": 15,
-        "legend.fontsize": 21,
+        "xtick.labelsize": 20,
+        "ytick.labelsize": 20,
+        "legend.fontsize": 26,
         "axes.linewidth": 1.5,
         "axes.spines.top": False,
         "axes.spines.right": False,
