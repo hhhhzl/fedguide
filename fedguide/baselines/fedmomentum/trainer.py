@@ -55,6 +55,7 @@ class SVRPGTrainer:
         # SVRPG-specific parameters
         reference_update_freq: int = 5,  # Update reference policy every K rounds (paper: 5-10)
         use_svrpg: bool = True,  # If False, use vanilla policy gradient
+        local_momentum_beta: float = 0.0,
         writer: Optional[Any] = None,
         render_eval: bool = False,
         render_mode: str = "video",
@@ -88,6 +89,7 @@ class SVRPGTrainer:
         # SVRPG-specific
         self.reference_update_freq = reference_update_freq
         self.use_svrpg = use_svrpg
+        self.local_momentum_beta = max(0.0, min(0.999, float(local_momentum_beta)))
         
         # Reference policy (snapshot)
         self.reference_policy = None
@@ -96,6 +98,7 @@ class SVRPGTrainer:
         # Smooth reference gradient (accumulated over reference period)
         self.smooth_reference_gradient = None
         self.reference_gradient_count = 0
+        self.local_momentum_gradient = None
         
         # Current round counter (for reference update)
         self.round_count = 0
@@ -111,6 +114,34 @@ class SVRPGTrainer:
         
         # Store last computed policy gradient (for client to return)
         self.last_policy_gradient = None
+
+    def _apply_local_momentum(
+        self,
+        gradient: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+        """Smooth the client upload direction with FedMomentum's local beta."""
+        beta = self.local_momentum_beta
+        if beta <= 0.0:
+            self.local_momentum_gradient = {
+                k: v.detach().clone() for k, v in gradient.items()
+            }
+            return gradient
+
+        if self.local_momentum_gradient is None:
+            self.local_momentum_gradient = {
+                k: v.detach().clone() for k, v in gradient.items()
+            }
+        else:
+            updated = {}
+            for key, value in gradient.items():
+                prev = self.local_momentum_gradient.get(key)
+                if prev is None or prev.shape != value.shape:
+                    updated[key] = value.detach().clone()
+                else:
+                    updated[key] = beta * prev.to(value.device) + (1.0 - beta) * value.detach()
+            self.local_momentum_gradient = updated
+
+        return {k: v.clone() for k, v in self.local_momentum_gradient.items()}
 
     def set_server_round(self, rnd: int):
         self.server_round = int(rnd)
@@ -399,6 +430,7 @@ class SVRPGTrainer:
         policy_gradient = self._compute_svrpg_gradient(
             states, actions, advantages, logps_old
         )
+        policy_gradient = self._apply_local_momentum(policy_gradient)
         
         # Store gradient for client to return
         self.last_policy_gradient = policy_gradient
@@ -435,6 +467,7 @@ class SVRPGTrainer:
         }
         if isinstance(logs, dict):
             out.update({f"train/{k}": float(v) for k, v in logs.items()})
+        out["train/local_momentum_beta"] = float(self.local_momentum_beta)
         
         # Log to writer if available
         if self.writer is not None:
@@ -492,6 +525,12 @@ class SVRPGTrainer:
                 k: v.detach().cpu().clone()
                 for k, v in self.smooth_reference_gradient.items()
             }
+        local_momentum = None
+        if self.local_momentum_gradient is not None:
+            local_momentum = {
+                k: v.detach().cpu().clone()
+                for k, v in self.local_momentum_gradient.items()
+            }
         return {
             "round_count": int(self.round_count),
             "reference_policy": (
@@ -506,6 +545,7 @@ class SVRPGTrainer:
             ),
             "smooth_reference_gradient": smooth,
             "reference_gradient_count": int(self.reference_gradient_count),
+            "local_momentum_gradient": local_momentum,
             "obs": np.asarray(self._obs, dtype=np.float32),
         }
 
@@ -538,6 +578,12 @@ class SVRPGTrainer:
         )
         self.reference_gradient_count = int(
             state.get("reference_gradient_count", self.reference_gradient_count)
+        )
+        local_momentum = state.get("local_momentum_gradient")
+        self.local_momentum_gradient = (
+            {k: v.detach().clone().to(self.agent.device) for k, v in local_momentum.items()}
+            if isinstance(local_momentum, dict)
+            else None
         )
         if "obs" in state and state["obs"] is not None:
             self._obs = np.asarray(state["obs"], dtype=np.float32)

@@ -1,0 +1,93 @@
+# FedMomentum / FedSVRPG-M hard ablation for Walker2d.
+# Mirrors configs/walker/baseline/fedmomentum.yaml, but uses the hard
+# Walker2d metadata/output roots used by the ablation suite.
+
+env_type: "d4rl"
+env_name: "Walker2d-v4"
+metadata_path: "data/walker/metadata_hard.json"
+num_clients: 8
+random_select_clients: false
+
+algorithm: "fedmomentum"
+algorithm_type: "svrpg"
+
+rounds: 100
+cpus_per_client: 2
+
+use_server_momentum: false
+momentum_beta: 0.5          # legacy server EMA only if use_server_momentum=true
+local_momentum_beta: 0.5    # paper-style client upload smoothing used by practical SVRPG path
+server_lr: 1.0
+# Three-stage server step cap (mirrors HC):
+#   r01-r20: 0.2   warm-up/exploration
+#   r21-r30: 0.075
+#   r31+   : 0.01  bounded long-run step for hard ablation comparison
+server_max_step_norm: 0.2
+server_late_max_step_norm: 0.075
+server_late_step_start_round: 21
+server_tail_max_step_norm: 0.01
+server_tail_step_start_round: 31
+
+# Strict Algorithm-1 is kept available in the implementation, but this ablation
+# uses the practical PPO/SVRPG client-gradient path used by the repo baselines.
+use_fedsvrpgm_strict: false
+fedsvrpgm_eta: 0.75
+fedsvrpgm_beta: 0.5
+local_steps_k: 10
+fedsvrpgm_max_horizon: 120
+fedsvrpgm_optimizer: "sgd"
+fedsvrpgm_grad_clip_norm: 1.0
+fedsvrpgm_center_returns: true
+fedsvrpgm_reset_each_trajectory: true
+fedsvrpgm_is_weight_clip: [0.001, 10.0]
+
+n_steps: 4096
+update_epochs: 4
+minibatch_size: 64
+clip_eps: 0.1
+entropy_coef: 0.01
+value_coef: 0.5
+max_grad_norm: 0.5
+gamma: 0.99
+gae_lambda: 0.95
+
+hidden_dim: 256
+policy_activation: "tanh"
+init_log_std: -0.5
+lr: 1e-4
+
+reference_update_freq: 5
+use_svrpg: true
+
+hessian_alpha: 0.1
+use_diagonal_approx: true
+fisher_update_freq: 1
+use_fisher_info: true
+
+eval_episodes: 10
+
+use_wandb: false
+wandb_project: null
+run_name: null
+
+output_dir: "./model/policy/walker_hard/fedmomentum"
+metrics_dir: "./metrics/walker_hard/fedmomentum"
+
+device: "auto"
+gpus_per_client: 0.125
+
+seed: [0]
+
+render_eval: true
+render_mode: "video"
+render_save_dir: "./plots/walker_hard/fedmomentum"
+render_every_n_rounds: 20
+render_all_clients: true
+render_episodes: 3
+
+# Per-client policy snapshots every 20 rounds -> metrics_dir/policies/client_*/round_XXXX.pth
+policy_save_every: 20
+
+bc_root: ./model/bc_policy
+bc_env_name: Walker2D
+bc_blend_alpha: 0.3                       

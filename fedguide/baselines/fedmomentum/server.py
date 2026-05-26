@@ -23,6 +23,8 @@ from flwr.server.client_proxy import ClientProxy
 from flwr.server.client_manager import ClientManager
 from flwr.server.strategy import Strategy
 import json
+import os
+import pickle
 import numpy as np
 
 
@@ -43,6 +45,11 @@ class FedMomentumStrategy(Strategy):
         # Momentum parameters
         momentum_beta: float = 0.9,  # Only if use_server_momentum=True (not FedSVRPG-M server)
         server_lr: float = 0.001,  # λ in arxiv:2405.19499 (global step on aggregated direction)
+        server_max_step_norm: Optional[float] = None,
+        server_late_max_step_norm: Optional[float] = None,
+        server_late_step_start_round: Optional[int] = None,
+        server_tail_max_step_norm: Optional[float] = None,
+        server_tail_step_start_round: Optional[int] = None,
         use_server_momentum: bool = False,  # FedSVRPG-M uses θ←θ+λu, not Polyak momentum on server
         # FedSVRPG-M strict (Algorithm 1 + Eq. (4)): clients send Δ; u = (1/(ηNK))ΣΔ; θ←θ+λu
         use_fedsvrpgm_strict: bool = False,
@@ -61,10 +68,37 @@ class FedMomentumStrategy(Strategy):
         initial_parameters: Optional[Parameters] = None,
         init_parameters: Optional[Parameters] = None,  # Alias for backward compatibility
         use_gradient_aggregation: bool = True,  # If False, fallback to parameter aggregation (FedAvg)
+        policy_save_dir: Optional[str] = None,
+        total_rounds: Optional[int] = None,
     ):
         # Momentum parameters
         self.momentum_beta = momentum_beta
         self.server_lr = server_lr
+        self.server_max_step_norm = (
+            float(server_max_step_norm)
+            if server_max_step_norm is not None and float(server_max_step_norm) > 0.0
+            else None
+        )
+        self.server_late_max_step_norm = (
+            float(server_late_max_step_norm)
+            if server_late_max_step_norm is not None and float(server_late_max_step_norm) > 0.0
+            else None
+        )
+        self.server_late_step_start_round = (
+            int(server_late_step_start_round)
+            if server_late_step_start_round is not None and int(server_late_step_start_round) > 0
+            else None
+        )
+        self.server_tail_max_step_norm = (
+            float(server_tail_max_step_norm)
+            if server_tail_max_step_norm is not None and float(server_tail_max_step_norm) > 0.0
+            else None
+        )
+        self.server_tail_step_start_round = (
+            int(server_tail_step_start_round)
+            if server_tail_step_start_round is not None and int(server_tail_step_start_round) > 0
+            else None
+        )
         self.use_server_momentum = use_server_momentum
         self.use_gradient_aggregation = use_gradient_aggregation
         self.use_fedsvrpgm_strict = use_fedsvrpgm_strict
@@ -92,13 +126,82 @@ class FedMomentumStrategy(Strategy):
         
         # Handle both initial_parameters and init_parameters for compatibility
         self.init_parameters = initial_parameters or init_parameters
-    
+
+        # Mirrors fedkl/fedavg: dump aggregated global θ at the final round
+        # so downstream eval/viz can load a single flat policy.
+        self.policy_save_dir = policy_save_dir
+        self.total_rounds = int(total_rounds) if total_rounds is not None else None
+
+    def _maybe_save_final_global(
+        self,
+        server_round: int,
+        arrays: List[np.ndarray],
+        tag: str = "",
+    ) -> None:
+        if (
+            self.policy_save_dir
+            and self.total_rounds is not None
+            and int(server_round) == self.total_rounds
+            and arrays
+        ):
+            try:
+                os.makedirs(self.policy_save_dir, exist_ok=True)
+                path = os.path.join(self.policy_save_dir, "final_global_policy_flat.pkl")
+                with open(path, "wb") as f:
+                    pickle.dump(arrays, f)
+                print(
+                    f"[FedMomentumStrategy] Saved final global policy "
+                    f"({len(arrays)} tensors{(' ' + tag) if tag else ''}) to {path}",
+                    flush=True,
+                )
+            except Exception as e:
+                print(f"[FedMomentumStrategy] Warning: could not save final policy: {e}")
+
     def __repr__(self) -> str:
         return (
             f"FedMomentumStrategy(server_lr={self.server_lr}, "
+            f"server_max_step_norm={self.server_max_step_norm}, "
+            f"server_late_max_step_norm={self.server_late_max_step_norm}, "
+            f"server_late_step_start_round={self.server_late_step_start_round}, "
+            f"server_tail_max_step_norm={self.server_tail_max_step_norm}, "
+            f"server_tail_step_start_round={self.server_tail_step_start_round}, "
             f"use_server_momentum={self.use_server_momentum}, "
             f"use_fedsvrpgm_strict={self.use_fedsvrpgm_strict})"
         )
+
+    @staticmethod
+    def _array_list_norm(xs: List[np.ndarray]) -> float:
+        return float(np.sqrt(sum(float(np.sum(np.square(x))) for x in xs)))
+
+    def _effective_max_step_norm(self, server_round: Optional[int]) -> Optional[float]:
+        if (
+            server_round is not None
+            and self.server_tail_max_step_norm is not None
+            and self.server_tail_step_start_round is not None
+            and int(server_round) >= self.server_tail_step_start_round
+        ):
+            return self.server_tail_max_step_norm
+        if (
+            server_round is not None
+            and self.server_late_max_step_norm is not None
+            and self.server_late_step_start_round is not None
+            and int(server_round) >= self.server_late_step_start_round
+        ):
+            return self.server_late_max_step_norm
+        return self.server_max_step_norm
+
+    def _clip_step_arrays(
+        self,
+        step: List[np.ndarray],
+        server_round: Optional[int] = None,
+    ) -> Tuple[List[np.ndarray], float, float, Optional[float]]:
+        """Apply server-side max-norm clipping to a full parameter update."""
+        raw_norm = self._array_list_norm(step)
+        max_step_norm = self._effective_max_step_norm(server_round)
+        if max_step_norm is None or raw_norm <= max_step_norm:
+            return step, raw_norm, 1.0, max_step_norm
+        scale = float(max_step_norm) / (raw_norm + 1e-12)
+        return [np.asarray(x * scale, dtype=np.float32) for x in step], raw_norm, scale, max_step_norm
 
     @staticmethod
     def _ordered_gradient_keys(grad_dict: Dict[str, np.ndarray]) -> list:
@@ -183,10 +286,19 @@ class FedMomentumStrategy(Strategy):
 
         denom = float(self.eta * n * self.local_steps_k)
         u_next = [x / denom for x in delta_sum]
-        theta_new = [
-            theta_old[i] + float(self.server_lr) * u_next[i]
-            for i in range(len(theta_old))
-        ]
+        raw_step = [float(self.server_lr) * u_next[i] for i in range(len(theta_old))]
+        step, raw_step_norm, step_scale, max_step_norm = self._clip_step_arrays(raw_step, server_round)
+        theta_new = [theta_old[i] + step[i] for i in range(len(theta_old))]
+
+        delta_mean = [x / float(n) for x in delta_sum]
+        aggregated_metrics["fedmomentum/server_delta_mean_norm"] = self._array_list_norm(delta_mean)
+        aggregated_metrics["fedmomentum/server_u_norm"] = self._array_list_norm(u_next)
+        aggregated_metrics["fedmomentum/server_step_raw_norm"] = raw_step_norm
+        aggregated_metrics["fedmomentum/server_step_norm"] = self._array_list_norm(step)
+        aggregated_metrics["fedmomentum/server_step_clip_scale"] = step_scale
+        if max_step_norm is not None:
+            aggregated_metrics["fedmomentum/server_max_step_norm"] = max_step_norm
+        aggregated_metrics["fedmomentum/server_param_norm"] = self._array_list_norm(theta_old)
 
         self._theta_prev_flat = [np.copy(x) for x in theta_old]
         self._u_next_flat = [np.copy(x) for x in u_next]
@@ -196,6 +308,17 @@ class FedMomentumStrategy(Strategy):
             f"[Round {server_round}] FedSVRPG-M strict: θ update θ←θ+λu, "
             f"λ={self.server_lr}, η={self.eta}, N={n}, K={self.local_steps_k}"
         )
+        print(
+            "  norms: "
+            f"mean_delta={aggregated_metrics['fedmomentum/server_delta_mean_norm']:.6f}, "
+            f"u={aggregated_metrics['fedmomentum/server_u_norm']:.6f}, "
+            f"step={aggregated_metrics['fedmomentum/server_step_norm']:.6f}, "
+            f"raw_step={aggregated_metrics['fedmomentum/server_step_raw_norm']:.6f}, "
+            f"clip_scale={aggregated_metrics['fedmomentum/server_step_clip_scale']:.6f}, "
+            f"max_step={max_step_norm}, "
+            f"theta={aggregated_metrics['fedmomentum/server_param_norm']:.6f}"
+        )
+        self._maybe_save_final_global(server_round, theta_new, tag="strict")
         return ndarrays_to_parameters(theta_new)
 
     def configure_fit(
@@ -429,7 +552,8 @@ class FedMomentumStrategy(Strategy):
                 server_round,
                 results,
                 client_gradients,
-                gradient_weights
+                gradient_weights,
+                aggregated_metrics,
             )
             
             if aggregated_params is not None:
@@ -461,7 +585,8 @@ class FedMomentumStrategy(Strategy):
         if weighted_params:
             aggregated_arrays = self._fedavg_arrays(weighted_params)
             aggregated_parameters = ndarrays_to_parameters(aggregated_arrays)
-            
+            self._maybe_save_final_global(server_round, aggregated_arrays, tag="fedavg-fallback")
+
             print(f"[Round {server_round}] Aggregated metrics:")
             print(f"  loss: {aggregated_metrics.get('loss', 'N/A'):.6f}")
             print(f"  success: {aggregated_metrics.get('success', 'N/A'):.3f}")
@@ -480,6 +605,7 @@ class FedMomentumStrategy(Strategy):
         results: List[Tuple[ClientProxy, FitRes]],
         client_gradients: List[Dict[str, np.ndarray]],
         gradient_weights: List[int],
+        aggregated_metrics: Optional[Dict[str, Scalar]] = None,
     ) -> Optional[Parameters]:
         """
         Global policy update from client policy gradients.
@@ -574,10 +700,30 @@ class FedMomentumStrategy(Strategy):
 
             momentum_arrays.append(np.asarray(step_dir, dtype=np.float32))
 
+        raw_step = [float(self.server_lr) * m for m in momentum_arrays]
+        step, raw_step_norm, step_scale, max_step_norm = self._clip_step_arrays(raw_step, server_round)
         updated_param_arrays = [
-            param_array + self.server_lr * m
-            for param_array, m in zip(current_param_arrays, momentum_arrays)
+            param_array + step[i]
+            for i, param_array in enumerate(current_param_arrays)
         ]
+        step_norm = self._array_list_norm(step)
+        grad_norm = self._array_list_norm(momentum_arrays)
+        param_norm = self._array_list_norm(current_param_arrays)
+        if aggregated_metrics is not None:
+            aggregated_metrics["fedmomentum/server_grad_norm"] = grad_norm
+            aggregated_metrics["fedmomentum/server_step_raw_norm"] = raw_step_norm
+            aggregated_metrics["fedmomentum/server_step_norm"] = step_norm
+            aggregated_metrics["fedmomentum/server_step_clip_scale"] = step_scale
+            if max_step_norm is not None:
+                aggregated_metrics["fedmomentum/server_max_step_norm"] = max_step_norm
+            aggregated_metrics["fedmomentum/server_param_norm"] = param_norm
+        print(
+            f"  gradient norms: g={grad_norm:.6f}, "
+            f"step={step_norm:.6f}, raw_step={raw_step_norm:.6f}, "
+            f"clip_scale={step_scale:.6f}, max_step={max_step_norm}, "
+            f"theta={param_norm:.6f}"
+        )
+        self._maybe_save_final_global(server_round, updated_param_arrays, tag="momentum")
         return ndarrays_to_parameters(updated_param_arrays)
     
     def _fedavg_arrays(
@@ -736,6 +882,9 @@ def run_fedmomentum_server(
     evaluate_fn: Optional[Callable] = None,
     momentum_beta: float = 0.9,
     server_lr: float = 0.001,
+    server_max_step_norm: Optional[float] = None,
+    server_late_max_step_norm: Optional[float] = None,
+    server_late_step_start_round: Optional[int] = None,
 ):
     """
     Run FedMomentum server.
@@ -751,6 +900,9 @@ def run_fedmomentum_server(
         evaluate_fn: Optional evaluation function for metrics collection
         momentum_beta: Momentum coefficient (default: 0.9)
         server_lr: Server learning rate for parameter updates (default: 0.001)
+        server_max_step_norm: Optional max-norm clip for the global server step
+        server_late_max_step_norm: Optional lower max step after a warmup phase
+        server_late_step_start_round: First round using the lower late max step
     """
     
     # Create strategy with evaluation enabled if evaluate_fn provided
@@ -766,6 +918,9 @@ def run_fedmomentum_server(
         accept_failures=True,
         momentum_beta=momentum_beta,
         server_lr=server_lr,
+        server_max_step_norm=server_max_step_norm,
+        server_late_max_step_norm=server_late_max_step_norm,
+        server_late_step_start_round=server_late_step_start_round,
         use_server_momentum=False,
         use_gradient_aggregation=True,
     )
@@ -793,4 +948,3 @@ def run_fedmomentum_server(
 
 # Alias for compatibility
 FedMomentumServer = FedMomentumStrategy
-

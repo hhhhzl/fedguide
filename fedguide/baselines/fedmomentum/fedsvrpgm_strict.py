@@ -18,11 +18,17 @@ from fedguide.utils.federated_render import maybe_save_federated_eval_video
 
 
 def _discounted_returns_from_t(rewards: torch.Tensor, gamma: float) -> torch.Tensor:
+    """Paper Eq. (policy gradient): sum_{h=t}^{H-1} gamma^h r_h.
+
+    This differs from the common reward-to-go convention gamma^(h-t) r_h.
+    FEDSVRPG-M defines the objective with discounts from the trajectory start,
+    so keep the absolute exponent here for the strict paper path.
+    """
     T = rewards.shape[0]
     G = torch.zeros(T, dtype=rewards.dtype, device=rewards.device)
     for t in range(T):
         for h in range(t, T):
-            G[t] = G[t] + (gamma ** (h - t)) * rewards[h]
+            G[t] = G[t] + (gamma ** h) * rewards[h]
     return G
 
 
@@ -33,6 +39,7 @@ def _policy_grad_dict_from_trajectory(
     rewards: torch.Tensor,
     gamma: float,
     grad_clip_norm: float = 10.0,
+    center_returns: bool = True,
 ) -> Dict[str, torch.Tensor]:
     """REINFORCE-style policy gradient.
 
@@ -56,7 +63,7 @@ def _policy_grad_dict_from_trajectory(
     # scale (~O(50-100)) with η=5e-4 gives effective step ~0.025-0.05 per
     # weight — within the upstream "works" regime. Grad-clip below bounds
     # the worst spikes.
-    A = (G - G.mean()).detach()
+    A = (G - G.mean()).detach() if center_returns else G.detach()
 
     logps, _, _, _ = agent.evaluate(states, actions)
     loss = -(A * logps).sum() / max(1, A.numel())
@@ -65,7 +72,8 @@ def _policy_grad_dict_from_trajectory(
     loss.backward()
     # Clip to bound the per-trajectory step magnitude.
     all_params = list(agent.policy.parameters()) + [agent.log_std]
-    torch.nn.utils.clip_grad_norm_(all_params, max_norm=grad_clip_norm)
+    if grad_clip_norm and grad_clip_norm > 0:
+        torch.nn.utils.clip_grad_norm_(all_params, max_norm=grad_clip_norm)
 
     params_by_name = {n: p for n, p in agent.policy.named_parameters()}
     out: Dict[str, torch.Tensor] = {}
@@ -180,7 +188,11 @@ class FedSVRPGMStrictTrainer:
         local_steps_k: int = 5,
         max_horizon: int = 500,
         eval_episodes: int = 1,
-        is_w_clip: Tuple[float, float] = (1e-8, 1e4),
+        is_w_clip: Tuple[float, float] = (1e-3, 10.0),
+        step_optimizer: str = "sgd",
+        grad_clip_norm: float = 1.0,
+        center_returns: bool = True,
+        reset_each_trajectory: bool = True,
         render_eval: bool = False,
         render_mode: str = "video",
         render_save_dir: Optional[str] = None,
@@ -198,6 +210,10 @@ class FedSVRPGMStrictTrainer:
         self.max_horizon = max_horizon
         self.eval_episodes = eval_episodes
         self.is_w_clip = is_w_clip
+        self.step_optimizer = str(step_optimizer).lower()
+        self.grad_clip_norm = float(grad_clip_norm)
+        self.center_returns = bool(center_returns)
+        self.reset_each_trajectory = bool(reset_each_trajectory)
         self.server_round = 0
         self.render_eval = render_eval
         self.render_mode = render_mode
@@ -207,14 +223,10 @@ class FedSVRPGMStrictTrainer:
         self.render_client_tag = render_client_tag
         self.n_steps = int(local_steps_k * max_horizon)
 
-        # FedSVRPG-M's Algorithm 1 writes the update as plain SGD:
+        # FedSVRPG-M Algorithm 1 is plain ascent:
         #   θ_{r,k+1} = θ_{r,k} + η · u_{r,k}.
-        # Upstream MFPO's reference impl (MFPO-INFOCOM24/code/agent/worker_continuous.py:64-66)
-        # instead applies u via Adam (lr=1e-4, eps=1e-5, weight_decay=1e-6). Adam's per-weight
-        # normalization is crucial for stability on dense-reward MuJoCo: with raw G ~ 1e3 and SGD,
-        # any η in a useful range will overshoot or undershoot. Adam normalizes the step magnitude
-        # to ~lr per weight, which is what makes upstream actually learn on HalfCheetah.
-        # We follow the upstream practical recipe here, applying u via Adam over policy+log_std.
+        # Keep an Adam option for ablations, but default to SGD so the strict
+        # path is the paper path.
         self._step_optimizer = torch.optim.Adam(
             list(self.agent.policy.parameters()) + [self.agent.log_std],
             lr=float(self.eta),
@@ -251,7 +263,12 @@ class FedSVRPGMStrictTrainer:
 
     def _sample_trajectory(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         obs_list, act_list, rew_list = [], [], []
-        obs = self._obs
+        if self.reset_each_trajectory:
+            reset_result = self.env.reset()
+            obs = reset_result[0] if isinstance(reset_result, tuple) else reset_result
+            self._obs = obs
+        else:
+            obs = self._obs
         for _ in range(self.max_horizon):
             a, _lp, _v = self.agent.select_action(obs, deterministic=False)
             a = np.asarray(a, dtype=np.float32).reshape(-1)
@@ -309,7 +326,13 @@ class FedSVRPGMStrictTrainer:
             train_ep_returns.append(float(rewards.sum().item()))
 
             g_ck = _policy_grad_dict_from_trajectory(
-                self.agent, states, actions, rewards, self.gamma
+                self.agent,
+                states,
+                actions,
+                rewards,
+                self.gamma,
+                grad_clip_norm=self.grad_clip_norm,
+                center_returns=self.center_returns,
             )
             logp_ck = _log_prob_sum(self.agent, states, actions)
 
@@ -318,7 +341,13 @@ class FedSVRPGMStrictTrainer:
             self.agent.log_std.data.copy_(tp["log_std"])
             try:
                 g_r1 = _policy_grad_dict_from_trajectory(
-                    self.agent, states, actions, rewards, self.gamma
+                    self.agent,
+                    states,
+                    actions,
+                    rewards,
+                    self.gamma,
+                    grad_clip_norm=self.grad_clip_norm,
+                    center_returns=self.center_returns,
                 )
                 logp_old = _log_prob_sum(self.agent, states, actions)
             finally:
@@ -335,7 +364,10 @@ class FedSVRPGMStrictTrainer:
                     u_r[key] + g_ck[key] - w * g_r1[key]
                 )
 
-            _apply_parameter_step_adam(self.agent, u_step, self._step_optimizer)
+            if self.step_optimizer == "adam":
+                _apply_parameter_step_adam(self.agent, u_step, self._step_optimizer)
+            else:
+                _apply_parameter_step_sgd(self.agent, u_step, self.eta)
 
         theta_end_snap, theta_end_ls = self._save_policy_snapshot()
 
@@ -354,6 +386,17 @@ class FedSVRPGMStrictTrainer:
         # Surrogate loss for logging (maximize return ⇔ minimize negative return)
         loss_surrogate = -train_mean
 
+        def _flat_norm(xs: List[np.ndarray]) -> float:
+            return float(np.sqrt(sum(float(np.sum(np.square(x))) for x in xs)))
+
+        last_u_norm = 0.0
+        if "u_step" in locals():
+            last_u_norm = float(
+                torch.sqrt(
+                    sum(torch.sum(v.detach().float() ** 2) for v in u_step.values())
+                ).detach().cpu().item()
+            )
+
         # Also report post-train local eval (deterministic policy) so the
         # client / Flower history captures it under metrics_distributed_fit.
         # The "official" FedSVRPG-M eval is still the distributed evaluate()
@@ -371,6 +414,10 @@ class FedSVRPGMStrictTrainer:
             "train/return": float(train_mean),
             "eval/return": float(eval_ret_local),
             "time/sec_per_round": float(dur),
+            "fedmomentum/local_delta_norm": _flat_norm(delta_flat),
+            "fedmomentum/local_last_u_norm": last_u_norm,
+            "fedmomentum/local_mean_traj_len": float(self.n_steps / max(1, self.local_steps_k)),
+            "fedmomentum/strict_optimizer": 1.0 if self.step_optimizer == "adam" else 0.0,
         }
         self.n_steps = int(self.local_steps_k * self.max_horizon)
 
