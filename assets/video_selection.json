@@ -1,0 +1,1385 @@
+{
+  "round": 100,
+  "seed_selection": "client_specific when client-level eval/return metrics exist; otherwise env_algo_average using tail-10 metrics_distributed_fit eval/return",
+  "algorithms": [
+    "FedGuide-A",
+    "FedGuide-P",
+    "FedGuide"
+  ],
+  "environments": {
+    "reacher": {
+      "display": "Reacher",
+      "mode": "ghost",
+      "clients": {
+        "0": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": -15.62500471976259,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide_a/seed_1/client_0/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 0
+          },
+          "fedguide_p": {
+            "seed": 0,
+            "score": -11.629923294010158,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide_p/seed_0/client_0/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 0
+          },
+          "fedguide": {
+            "seed": 3,
+            "score": -11.1745161141568,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide/seed_3/client_0/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 0
+          }
+        },
+        "1": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": -15.62500471976259,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide_a/seed_1/client_1/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 1
+          },
+          "fedguide_p": {
+            "seed": 0,
+            "score": -11.629923294010158,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide_p/seed_0/client_1/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 1
+          },
+          "fedguide": {
+            "seed": 3,
+            "score": -11.1745161141568,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide/seed_3/client_1/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 1
+          }
+        },
+        "2": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": -15.62500471976259,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide_a/seed_1/client_2/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 2
+          },
+          "fedguide_p": {
+            "seed": 0,
+            "score": -11.629923294010158,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide_p/seed_0/client_2/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 2
+          },
+          "fedguide": {
+            "seed": 3,
+            "score": -11.1745161141568,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide/seed_3/client_2/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 2
+          }
+        },
+        "3": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": -15.62500471976259,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide_a/seed_1/client_3/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 3
+          },
+          "fedguide_p": {
+            "seed": 0,
+            "score": -11.629923294010158,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide_p/seed_0/client_3/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 3
+          },
+          "fedguide": {
+            "seed": 3,
+            "score": -11.1745161141568,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide/seed_3/client_3/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 3
+          }
+        },
+        "4": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": -15.62500471976259,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide_a/seed_1/client_4/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 4
+          },
+          "fedguide_p": {
+            "seed": 0,
+            "score": -11.629923294010158,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide_p/seed_0/client_4/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 4
+          },
+          "fedguide": {
+            "seed": 3,
+            "score": -11.1745161141568,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide/seed_3/client_4/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 4
+          }
+        },
+        "5": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": -15.62500471976259,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide_a/seed_1/client_5/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 5
+          },
+          "fedguide_p": {
+            "seed": 0,
+            "score": -11.629923294010158,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide_p/seed_0/client_5/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 5
+          },
+          "fedguide": {
+            "seed": 3,
+            "score": -11.1745161141568,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide/seed_3/client_5/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 5
+          }
+        },
+        "6": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": -15.62500471976259,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide_a/seed_1/client_6/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 6
+          },
+          "fedguide_p": {
+            "seed": 0,
+            "score": -11.629923294010158,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide_p/seed_0/client_6/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 6
+          },
+          "fedguide": {
+            "seed": 3,
+            "score": -11.1745161141568,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide/seed_3/client_6/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 6
+          }
+        },
+        "7": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": -15.62500471976259,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide_a/seed_1/client_7/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 7
+          },
+          "fedguide_p": {
+            "seed": 0,
+            "score": -11.629923294010158,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide_p/seed_0/client_7/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 7
+          },
+          "fedguide": {
+            "seed": 3,
+            "score": -11.1745161141568,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/reacher/fedguide/seed_3/client_7/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 7
+          }
+        }
+      }
+    },
+    "hopper": {
+      "display": "Hopper",
+      "mode": "ghost",
+      "clients": {
+        "0": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": 510.2976247702275,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide_a/seed_1/client_0/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 0
+          },
+          "fedguide_p": {
+            "seed": 2,
+            "score": 533.7930686208523,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide_p/seed_2/client_0/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 0
+          },
+          "fedguide": {
+            "seed": 0,
+            "score": 654.3282554566292,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide/seed_0/client_0/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 0
+          }
+        },
+        "1": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": 510.2976247702275,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide_a/seed_1/client_1/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 1
+          },
+          "fedguide_p": {
+            "seed": 2,
+            "score": 533.7930686208523,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide_p/seed_2/client_1/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 1
+          },
+          "fedguide": {
+            "seed": 0,
+            "score": 654.3282554566292,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide/seed_0/client_1/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 1
+          }
+        },
+        "2": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": 510.2976247702275,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide_a/seed_1/client_2/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 2
+          },
+          "fedguide_p": {
+            "seed": 2,
+            "score": 533.7930686208523,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide_p/seed_2/client_2/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 2
+          },
+          "fedguide": {
+            "seed": 0,
+            "score": 654.3282554566292,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide/seed_0/client_2/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 2
+          }
+        },
+        "3": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": 510.2976247702275,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide_a/seed_1/client_3/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 3
+          },
+          "fedguide_p": {
+            "seed": 2,
+            "score": 533.7930686208523,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide_p/seed_2/client_3/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 3
+          },
+          "fedguide": {
+            "seed": 0,
+            "score": 654.3282554566292,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide/seed_0/client_3/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 3
+          }
+        },
+        "4": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": 510.2976247702275,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide_a/seed_1/client_4/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 4
+          },
+          "fedguide_p": {
+            "seed": 2,
+            "score": 533.7930686208523,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide_p/seed_2/client_4/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 4
+          },
+          "fedguide": {
+            "seed": 0,
+            "score": 654.3282554566292,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide/seed_0/client_4/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 4
+          }
+        },
+        "5": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": 510.2976247702275,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide_a/seed_1/client_5/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 5
+          },
+          "fedguide_p": {
+            "seed": 2,
+            "score": 533.7930686208523,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide_p/seed_2/client_5/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 5
+          },
+          "fedguide": {
+            "seed": 0,
+            "score": 654.3282554566292,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide/seed_0/client_5/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 5
+          }
+        },
+        "6": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": 510.2976247702275,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide_a/seed_1/client_6/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 6
+          },
+          "fedguide_p": {
+            "seed": 2,
+            "score": 533.7930686208523,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide_p/seed_2/client_6/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 6
+          },
+          "fedguide": {
+            "seed": 0,
+            "score": 654.3282554566292,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide/seed_0/client_6/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 6
+          }
+        },
+        "7": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": 510.2976247702275,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide_a/seed_1/client_7/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 7
+          },
+          "fedguide_p": {
+            "seed": 2,
+            "score": 533.7930686208523,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide_p/seed_2/client_7/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 7
+          },
+          "fedguide": {
+            "seed": 0,
+            "score": 654.3282554566292,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/hopper/fedguide/seed_0/client_7/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 7
+          }
+        }
+      }
+    },
+    "walker": {
+      "display": "Walker2D",
+      "mode": "ghost",
+      "clients": {
+        "0": {
+          "fedguide_a": {
+            "seed": 2,
+            "score": 459.2055883578787,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide_a/seed_2/client_0/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 0
+          },
+          "fedguide_p": {
+            "seed": 1,
+            "score": 399.3704378657309,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide_p/seed_1/client_0/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 0
+          },
+          "fedguide": {
+            "seed": 2,
+            "score": 501.4232113197215,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide/seed_2/client_0/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 0
+          }
+        },
+        "1": {
+          "fedguide_a": {
+            "seed": 2,
+            "score": 459.2055883578787,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide_a/seed_2/client_1/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 1
+          },
+          "fedguide_p": {
+            "seed": 1,
+            "score": 399.3704378657309,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide_p/seed_1/client_1/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 1
+          },
+          "fedguide": {
+            "seed": 2,
+            "score": 501.4232113197215,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide/seed_2/client_1/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 1
+          }
+        },
+        "2": {
+          "fedguide_a": {
+            "seed": 2,
+            "score": 459.2055883578787,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide_a/seed_2/client_2/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 2
+          },
+          "fedguide_p": {
+            "seed": 1,
+            "score": 399.3704378657309,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide_p/seed_1/client_2/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 2
+          },
+          "fedguide": {
+            "seed": 2,
+            "score": 501.4232113197215,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide/seed_2/client_2/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 2
+          }
+        },
+        "3": {
+          "fedguide_a": {
+            "seed": 2,
+            "score": 459.2055883578787,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide_a/seed_2/client_3/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 3
+          },
+          "fedguide_p": {
+            "seed": 1,
+            "score": 399.3704378657309,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide_p/seed_1/client_3/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 3
+          },
+          "fedguide": {
+            "seed": 2,
+            "score": 501.4232113197215,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide/seed_2/client_3/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 3
+          }
+        },
+        "4": {
+          "fedguide_a": {
+            "seed": 2,
+            "score": 459.2055883578787,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide_a/seed_2/client_4/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 4
+          },
+          "fedguide_p": {
+            "seed": 1,
+            "score": 399.3704378657309,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide_p/seed_1/client_4/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 4
+          },
+          "fedguide": {
+            "seed": 2,
+            "score": 501.4232113197215,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide/seed_2/client_4/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 4
+          }
+        },
+        "5": {
+          "fedguide_a": {
+            "seed": 2,
+            "score": 459.2055883578787,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide_a/seed_2/client_5/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 5
+          },
+          "fedguide_p": {
+            "seed": 1,
+            "score": 399.3704378657309,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide_p/seed_1/client_5/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 5
+          },
+          "fedguide": {
+            "seed": 2,
+            "score": 501.4232113197215,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide/seed_2/client_5/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 5
+          }
+        },
+        "6": {
+          "fedguide_a": {
+            "seed": 2,
+            "score": 459.2055883578787,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide_a/seed_2/client_6/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 6
+          },
+          "fedguide_p": {
+            "seed": 1,
+            "score": 399.3704378657309,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide_p/seed_1/client_6/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 6
+          },
+          "fedguide": {
+            "seed": 2,
+            "score": 501.4232113197215,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide/seed_2/client_6/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 6
+          }
+        },
+        "7": {
+          "fedguide_a": {
+            "seed": 2,
+            "score": 459.2055883578787,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide_a/seed_2/client_7/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 7
+          },
+          "fedguide_p": {
+            "seed": 1,
+            "score": 399.3704378657309,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide_p/seed_1/client_7/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 7
+          },
+          "fedguide": {
+            "seed": 2,
+            "score": 501.4232113197215,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/walker/fedguide/seed_2/client_7/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 7
+          }
+        }
+      }
+    },
+    "halfcheetah": {
+      "display": "HalfCheetah",
+      "mode": "ghost",
+      "clients": {
+        "0": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": 1654.804018642279,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide_a/seed_1/client_0/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 0
+          },
+          "fedguide_p": {
+            "seed": 0,
+            "score": 2311.9311666442413,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide_p/seed_0/client_0/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 0
+          },
+          "fedguide": {
+            "seed": 0,
+            "score": 2325.8986377835063,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide/seed_0/client_0/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 0
+          }
+        },
+        "1": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": 1654.804018642279,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide_a/seed_1/client_1/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 1
+          },
+          "fedguide_p": {
+            "seed": 0,
+            "score": 2311.9311666442413,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide_p/seed_0/client_1/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 1
+          },
+          "fedguide": {
+            "seed": 0,
+            "score": 2325.8986377835063,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide/seed_0/client_1/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 1
+          }
+        },
+        "2": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": 1654.804018642279,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide_a/seed_1/client_2/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 2
+          },
+          "fedguide_p": {
+            "seed": 0,
+            "score": 2311.9311666442413,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide_p/seed_0/client_2/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 2
+          },
+          "fedguide": {
+            "seed": 0,
+            "score": 2325.8986377835063,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide/seed_0/client_2/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 2
+          }
+        },
+        "3": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": 1654.804018642279,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide_a/seed_1/client_3/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 3
+          },
+          "fedguide_p": {
+            "seed": 0,
+            "score": 2311.9311666442413,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide_p/seed_0/client_3/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 3
+          },
+          "fedguide": {
+            "seed": 0,
+            "score": 2325.8986377835063,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide/seed_0/client_3/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 3
+          }
+        },
+        "4": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": 1654.804018642279,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide_a/seed_1/client_4/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 4
+          },
+          "fedguide_p": {
+            "seed": 0,
+            "score": 2311.9311666442413,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide_p/seed_0/client_4/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 4
+          },
+          "fedguide": {
+            "seed": 0,
+            "score": 2325.8986377835063,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide/seed_0/client_4/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 4
+          }
+        },
+        "5": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": 1654.804018642279,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide_a/seed_1/client_5/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 5
+          },
+          "fedguide_p": {
+            "seed": 0,
+            "score": 2311.9311666442413,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide_p/seed_0/client_5/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 5
+          },
+          "fedguide": {
+            "seed": 0,
+            "score": 2325.8986377835063,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide/seed_0/client_5/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 5
+          }
+        },
+        "6": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": 1654.804018642279,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide_a/seed_1/client_6/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 6
+          },
+          "fedguide_p": {
+            "seed": 0,
+            "score": 2311.9311666442413,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide_p/seed_0/client_6/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 6
+          },
+          "fedguide": {
+            "seed": 0,
+            "score": 2325.8986377835063,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide/seed_0/client_6/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 6
+          }
+        },
+        "7": {
+          "fedguide_a": {
+            "seed": 1,
+            "score": 1654.804018642279,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide_a/seed_1/client_7/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 7
+          },
+          "fedguide_p": {
+            "seed": 0,
+            "score": 2311.9311666442413,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide_p/seed_0/client_7/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 7
+          },
+          "fedguide": {
+            "seed": 0,
+            "score": 2325.8986377835063,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/halfcheetah/fedguide/seed_0/client_7/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 7
+          }
+        }
+      }
+    },
+    "metaworld": {
+      "display": "MetaWorld10",
+      "mode": "ghost",
+      "clients": {
+        "0": {
+          "fedguide_a": {
+            "seed": 3,
+            "score": 922.9384499358748,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide_a/seed_3/client_0/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 0
+          },
+          "fedguide_p": {
+            "seed": 2,
+            "score": 953.4517579188147,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide_p/seed_2/client_0/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 0
+          },
+          "fedguide": {
+            "seed": 2,
+            "score": 1042.0297740595902,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide/seed_2/client_0/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 0
+          }
+        },
+        "1": {
+          "fedguide_a": {
+            "seed": 3,
+            "score": 922.9384499358748,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide_a/seed_3/client_1/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 1
+          },
+          "fedguide_p": {
+            "seed": 2,
+            "score": 953.4517579188147,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide_p/seed_2/client_1/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 1
+          },
+          "fedguide": {
+            "seed": 2,
+            "score": 1042.0297740595902,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide/seed_2/client_1/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 1
+          }
+        },
+        "2": {
+          "fedguide_a": {
+            "seed": 3,
+            "score": 922.9384499358748,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide_a/seed_3/client_2/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 2
+          },
+          "fedguide_p": {
+            "seed": 2,
+            "score": 953.4517579188147,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide_p/seed_2/client_2/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 2
+          },
+          "fedguide": {
+            "seed": 2,
+            "score": 1042.0297740595902,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide/seed_2/client_2/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 2
+          }
+        },
+        "3": {
+          "fedguide_a": {
+            "seed": 3,
+            "score": 922.9384499358748,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide_a/seed_3/client_3/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 3
+          },
+          "fedguide_p": {
+            "seed": 2,
+            "score": 953.4517579188147,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide_p/seed_2/client_3/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 3
+          },
+          "fedguide": {
+            "seed": 2,
+            "score": 1042.0297740595902,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide/seed_2/client_3/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 3
+          }
+        },
+        "4": {
+          "fedguide_a": {
+            "seed": 3,
+            "score": 922.9384499358748,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide_a/seed_3/client_4/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 4
+          },
+          "fedguide_p": {
+            "seed": 2,
+            "score": 953.4517579188147,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide_p/seed_2/client_4/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 4
+          },
+          "fedguide": {
+            "seed": 2,
+            "score": 1042.0297740595902,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide/seed_2/client_4/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 4
+          }
+        },
+        "5": {
+          "fedguide_a": {
+            "seed": 3,
+            "score": 922.9384499358748,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide_a/seed_3/client_5/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 5
+          },
+          "fedguide_p": {
+            "seed": 2,
+            "score": 953.4517579188147,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide_p/seed_2/client_5/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 5
+          },
+          "fedguide": {
+            "seed": 2,
+            "score": 1042.0297740595902,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide/seed_2/client_5/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 5
+          }
+        },
+        "6": {
+          "fedguide_a": {
+            "seed": 3,
+            "score": 922.9384499358748,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide_a/seed_3/client_6/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 6
+          },
+          "fedguide_p": {
+            "seed": 2,
+            "score": 953.4517579188147,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide_p/seed_2/client_6/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 6
+          },
+          "fedguide": {
+            "seed": 2,
+            "score": 1042.0297740595902,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide/seed_2/client_6/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 6
+          }
+        },
+        "7": {
+          "fedguide_a": {
+            "seed": 3,
+            "score": 922.9384499358748,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide_a/seed_3/client_7/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 7
+          },
+          "fedguide_p": {
+            "seed": 2,
+            "score": 953.4517579188147,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide_p/seed_2/client_7/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 7
+          },
+          "fedguide": {
+            "seed": 2,
+            "score": 1042.0297740595902,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide/seed_2/client_7/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 7
+          }
+        },
+        "8": {
+          "fedguide_a": {
+            "seed": 3,
+            "score": 922.9384499358748,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide_a/seed_3/client_8/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 8
+          },
+          "fedguide_p": {
+            "seed": 2,
+            "score": 953.4517579188147,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide_p/seed_2/client_8/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 8
+          },
+          "fedguide": {
+            "seed": 2,
+            "score": 1042.0297740595902,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide/seed_2/client_8/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 8
+          }
+        },
+        "9": {
+          "fedguide_a": {
+            "seed": 3,
+            "score": 922.9384499358748,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide_a/seed_3/client_9/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-A",
+            "client": 9
+          },
+          "fedguide_p": {
+            "seed": 2,
+            "score": 953.4517579188147,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide_p/seed_2/client_9/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide-P",
+            "client": 9
+          },
+          "fedguide": {
+            "seed": 2,
+            "score": 1042.0297740595902,
+            "score_source": "metrics_distributed_fit:eval/return:tail10",
+            "selection_mode": "env_algo_average",
+            "video": "plots/metaworld/fedguide/seed_2/client_9/round_0100.mp4",
+            "episode": 0,
+            "algorithm": "FedGuide",
+            "client": 9
+          }
+        }
+      }
+    }
+  }
+}

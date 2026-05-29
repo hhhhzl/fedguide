@@ -61,6 +61,30 @@ def _make_env(
     if _hc_env is not None:
         return _hc_env
 
+    # Walker2D / Hopper / Ant (shared locomotion-hetero loader, same as fedkl)
+    try:
+        from fedguide.envs.mujoco_locomotion_hetero import make_locomotion_env_if_applicable
+
+        _loc_env = make_locomotion_env_if_applicable(
+            metadata_path, client_id, seed, render_mode, render_eval=(render_mode is not None),
+        )
+        if _loc_env is not None:
+            return _loc_env
+    except Exception:
+        pass
+
+    # MetaWorld ML10 (same as fedkl)
+    try:
+        from fedguide.envs.metaworld_hetero import make_metaworld_env_if_applicable
+
+        _mw_env = make_metaworld_env_if_applicable(
+            metadata_path, client_id, seed, render_mode,
+        )
+        if _mw_env is not None:
+            return _mw_env
+    except Exception:
+        pass
+
     env = gym.make(env_id)
     try:
         env.reset(seed=seed)

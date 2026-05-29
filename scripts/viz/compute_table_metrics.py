@@ -1,6 +1,6 @@
 """Compute and print the FedGuide main results table to stdout.
 
-Two pure-performance metrics (apples-to-apples across all 6 algos):
+Two pure-performance metrics (apples-to-apples across all 7 algos):
     1. Final Return  (mean +- seed std, last-10-round mean) — endpoint performance
        with seed-robustness embedded.
     2. Worst-Seed    (min over 5 seeds of last-10-round mean) — hard per-seed
@@ -60,12 +60,13 @@ ENVS = [
 MAIN_BLOCK_SIZE = 5
 
 ALGOS = [
-    ("fedavg",     "FedAvg"),
-    ("fedkl",      "FedKL"),
-    ("fedrl_ddpg", "FedRL"),
-    ("fedguide_a", "FedGuide-A"),
-    ("fedguide_p", "FedGuide-P"),
-    ("fedguide",   "FedGuide"),
+    ("fedavg",      "FedAvg"),
+    ("fedkl",       "FedKL"),
+    ("fedrl_ddpg",  "FedRL"),
+    ("fedmomentum", "FedSVRPG-M"),
+    ("fedguide_a",  "FedGuide-A"),
+    ("fedguide_p",  "FedGuide-P"),
+    ("fedguide",    "FedGuide"),
 ]
 
 SEEDS = [0, 1, 2, 3, 4]
