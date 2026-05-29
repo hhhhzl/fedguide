@@ -1,5 +1,5 @@
 env_type: "reacher_hetero"
-metadata_path: "data/reacher/metadata.json"
+metadata_path: "data/reacher/metadata_B.json"
 num_clients: 8
 random_select_clients: false
 
@@ -22,8 +22,8 @@ max_grad_norm: 0.5
 algorithm: "fedmomentum"
 algorithm_type: "svrpg"
 
-# BC warm-start (same checkpoint FedGuide uses)
-bc_root: "./model/bc_policy"
+# BC warm-start (same checkpoint FedGuide uses, ablation B branch)
+bc_root: "./model/bc_policy_ablation/B"
 bc_env_name: "Reacher"
 bc_blend_alpha: 0.3
 
@@ -35,8 +35,8 @@ use_wandb: false
 wandb_project: null
 run_name: null
 
-output_dir: "./model/policy/reacher/fedmomentum"
-metrics_dir: "./metrics/reacher/fedmomentum"
+output_dir: "./model/policy/reacher/ablation/B/fedmomentum"
+metrics_dir: "./metrics/reacher/ablation/B/fedmomentum"
 
 device: "auto"
 gpus_per_client: 0.125
@@ -44,7 +44,7 @@ seed: [0]
 
 render_eval: true
 render_mode: "video"
-render_save_dir: "./plots/reacher/fedmomentum"
+render_save_dir: "./plots/reacher/ablation/B/fedmomentum"
 render_every_n_rounds: 20
 render_all_clients: true                   # render every client, not just client 0
 render_episodes: 10

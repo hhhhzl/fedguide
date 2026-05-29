@@ -66,12 +66,13 @@ BANDIT2D_ALGOS = [
 # Main-mode: the 6 algos shipped per env in metrics/<env>/<dir>/seed_*.
 # Tuple is (directory name on disk, display label, color).
 MAIN_ALGOS = [
-    ("fedavg",     "FedAvg",     "#CC79A7"),
-    ("fedkl",      "FedKL",      "#9467bd"),
-    ("fedrl_ddpg", "FedRL",      "#2ca02c"),
-    ("fedguide_a", "FedGuide-A", "#ff7f0e"),
-    ("fedguide_p", "FedGuide-P", "#d62728"),
-    ("fedguide",   "FedGuide",   "#1f77b4"),
+    ("fedavg",      "FedAvg",     "#CC79A7"),
+    ("fedkl",       "FedKL",      "#9467bd"),
+    ("fedrl_ddpg",  "FedRL",      "#2ca02c"),
+    ("fedmomentum", "FedSVRPG-M", "#17becf"),
+    ("fedguide_a",  "FedGuide-A", "#ff7f0e"),
+    ("fedguide_p",  "FedGuide-P", "#d62728"),
+    ("fedguide",    "FedGuide",   "#1f77b4"),
 ]
 
 MAIN_ENVS = ["reacher", "hopper", "walker", "halfcheetah", "metaworld"]
@@ -272,13 +273,84 @@ def _legend_handles_in_order(per_panel_handles):
     return ordered
 
 
+def _compose_multirow_legend(
+    fig, ordered_handles, row1_n, *,
+    pos_y, pos_loc,
+    row_sep=14, entry_sep=46,
+    line_len=70, line_height=14,
+    text_size=26, line_width=4.2,
+    frame_edgecolor="0.3", frame_linewidth=1.3,
+    frame_alpha=0.95, frame_pad=0.7,
+):
+    """Single-frame multi-row legend via VPacker/HPacker.
+
+    Each row is an HPacker with `align='center'` so the 3-item bottom row is
+    visually centered relative to the 4-item top row, all inside one frame.
+    Matplotlib's standard `legend()` with `ncol=4` cannot do this — it uses
+    uniform column widths so a 3-item bottom row always leaves a visible
+    one-column gap on one side. The custom artist sidesteps that by letting
+    each HPacker size itself to its own content and then aligning the rows.
+    """
+    from matplotlib.offsetbox import (
+        HPacker, VPacker, AnchoredOffsetbox, TextArea, DrawingArea,
+    )
+    from matplotlib.lines import Line2D
+
+    if not ordered_handles:
+        return None
+
+    def make_entry(handle, label):
+        color = handle.get_color() if hasattr(handle, "get_color") else "0.2"
+        da = DrawingArea(line_len, line_height, 0, 0)
+        ln = Line2D(
+            [0, line_len], [line_height / 2, line_height / 2],
+            color=color, linewidth=line_width, solid_capstyle="round",
+        )
+        da.add_artist(ln)
+        text = TextArea(label, textprops=dict(size=text_size))
+        return HPacker(children=[da, text], sep=8, align="center")
+
+    top = ordered_handles[:row1_n]
+    bot = ordered_handles[row1_n:]
+    rows = [HPacker(
+        children=[make_entry(h, l) for l, h in top],
+        sep=entry_sep, align="center",
+    )]
+    if bot:
+        rows.append(HPacker(
+            children=[make_entry(h, l) for l, h in bot],
+            sep=entry_sep, align="center",
+        ))
+    box = VPacker(children=rows, sep=row_sep, align="center")
+
+    anchored = AnchoredOffsetbox(
+        loc=pos_loc, child=box,
+        pad=frame_pad, borderpad=0.0,
+        frameon=True,
+        bbox_to_anchor=(0.5, pos_y),
+        bbox_transform=fig.transFigure,
+    )
+    # Match the original legend style (rounded fancybox, soft edge).
+    anchored.patch.set_boxstyle("round,pad=0.25,rounding_size=0.25")
+    anchored.patch.set_edgecolor(frame_edgecolor)
+    anchored.patch.set_linewidth(frame_linewidth)
+    anchored.patch.set_facecolor("white")
+    anchored.patch.set_alpha(frame_alpha)
+
+    fig.add_artist(anchored)
+    return anchored
+
+
 def _add_rl_legend(fig, ordered_handles, position="top"):
-    """Wide horizontal legend that spans the full figure width."""
+    """Single-row legend that spans the full figure width.
+
+    Spacing params are tuned so all 7 algos (incl. FedSVRPG-M) fit on one
+    row without overlapping. Font size kept at 26; only line-handle length
+    and inter-column / handle-text padding are shrunk to make room.
+    """
     if not ordered_handles:
         return
     if position == "top":
-        # 4-tuple bbox = (x0, y0, width, height) in figure fraction; placed just
-        # above the axes so mode="expand" stretches it across the whole row.
         bbox = (0.0, 1.005, 1.0, 0.09)
         loc = "lower left"
     else:
@@ -295,11 +367,11 @@ def _add_rl_legend(fig, ordered_handles, position="top"):
         fancybox=True,
         framealpha=0.95,
         edgecolor="0.3",
-        handlelength=4.0,
-        handleheight=1.3,
-        handletextpad=0.9,
-        columnspacing=3.0,
-        borderpad=0.9,
+        handlelength=1.8,
+        handleheight=1.2,
+        handletextpad=0.45,
+        columnspacing=1.2,
+        borderpad=0.55,
         borderaxespad=0.0,
         prop={"size": 26},
     )

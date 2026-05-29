@@ -32,6 +32,7 @@ from scripts.viz.plot_posttrain import (
     MAIN_METRICS,
     _apply_rl_style,
     _add_rl_legend,
+    _compose_multirow_legend,
     _draw_env_panel,
     _legend_handles_in_order,
     _parse_seed_arg,
@@ -86,48 +87,61 @@ def plot_ablation_per_env(env_key, display_name, env_root, yscale,
 
 
 def _add_2x2_legend(fig, ordered_handles):
-    """Bottom legend spanning the full figure width as a 2 row x 3 col grid.
+    """Bottom legend below the 2x2 grid.
 
-    Target visual layout:
-        Row 1:  FedAvg       FedKL        FedRL
-        Row 2:  FedGuide-A   FedGuide-P   FedGuide
-
-    Matplotlib fills legends in column-major order with ncol=3, so to land
-    on the target row-major appearance we permute [A, B, C, D, E, F] into
-    [A, D, B, E, C, F]. mode='expand' stretches the legend across the bbox
-    width so it fills the column rather than being a centered narrow box.
+    For >4 algos, uses a single-frame multi-row layout via
+    `_compose_multirow_legend` (first 4 on top, rest centered below, all in
+    one box). 6-algo (legacy) and ≤4-algo paths preserved.
     """
     if not ordered_handles:
         return
     n = len(ordered_handles)
-    ncol = 3
-    if n == 6:
-        # transpose 2x3 row-major -> column-major
-        permuted = [ordered_handles[i] for i in (0, 3, 1, 4, 2, 5)]
-    else:
-        permuted = ordered_handles
-    leg = fig.legend(
-        [h for _, h in permuted],
-        [l for l, _ in permuted],
-        loc="upper left",
-        ncol=ncol,
-        bbox_to_anchor=(0.0, -0.06, 1.0, 0.09),
-        mode="expand",
-        frameon=True,
-        fancybox=True,
-        framealpha=0.95,
+    style_kw = dict(
+        frameon=True, fancybox=True, framealpha=0.95,
         edgecolor="0.3",
-        handlelength=3.0,
-        handleheight=1.2,
-        handletextpad=0.7,
-        columnspacing=2.5,
-        borderpad=0.7,
-        borderaxespad=0.0,
-        prop={"size": 26},  # match posttrain summary legend (plot_posttrain._add_rl_legend)
+        handlelength=3.0, handleheight=1.2, handletextpad=0.7,
+        columnspacing=2.5, borderpad=0.7, borderaxespad=0.0,
+        prop={"size": 26},
     )
-    leg.get_frame().set_linewidth(1.2)
-    for line in leg.get_lines():
-        line.set_linewidth(3.6)
+
+    def _polish(leg):
+        leg.get_frame().set_linewidth(1.2)
+        for line in leg.get_lines():
+            line.set_linewidth(3.6)
+
+    if n <= 4:
+        leg = fig.legend(
+            [h for _, h in ordered_handles],
+            [l for l, _ in ordered_handles],
+            loc="upper left", ncol=n,
+            bbox_to_anchor=(0.0, -0.06, 1.0, 0.09),
+            mode="expand",
+            **style_kw,
+        )
+        _polish(leg)
+        return
+
+    if n == 6:
+        # Legacy 3+3 column-major permutation (kept for back-compat).
+        permuted = [ordered_handles[i] for i in (0, 3, 1, 4, 2, 5)]
+        leg = fig.legend(
+            [h for _, h in permuted],
+            [l for l, _ in permuted],
+            loc="upper left", ncol=3,
+            bbox_to_anchor=(0.0, -0.06, 1.0, 0.09),
+            mode="expand",
+            **style_kw,
+        )
+        _polish(leg)
+        return
+
+    _compose_multirow_legend(
+        fig, ordered_handles, row1_n=4,
+        pos_y=-0.005, pos_loc="upper center",
+        text_size=26, line_width=3.6,
+        frame_linewidth=1.2,
+        row_sep=10, entry_sep=40, frame_pad=0.55,
+    )
 
 
 def plot_ablation_summary_2x2(seeds, attr, key, ylabel, out_dir: Path):

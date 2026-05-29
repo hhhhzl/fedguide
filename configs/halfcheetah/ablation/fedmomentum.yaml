@@ -1,11 +1,10 @@
-# FedMomentum / FedSVRPG-M (arxiv:2405.19499, ICML 2024).
-# Strict path follows Algorithm 1: clients send Δ=θ_{r,K}-θ_r, server builds
-# u_{r+1}=1/(ηNK)ΣΔ, then θ_{r+1}=θ_r+λu_{r+1}. Momentum β lives in the
-# local VR estimator (Eq. 4), not as Polyak momentum on the server.
+# FedMomentum / FedSVRPG-M hard ablation for HalfCheetah.
+# Mirrors configs/halfcheetah/baseline/fedmomentum.yaml, but uses the hard
+# HalfCheetah metadata/output roots used by the ablation suite.
 
 env_type: "d4rl"
 env_name: "HalfCheetah-v4"
-metadata_path: "data/halfcheetah/metadata_mild64.json"
+metadata_path: "data/halfcheetah/metadata.json"
 num_clients: 8
 random_select_clients: false
 
@@ -22,18 +21,15 @@ server_lr: 1.0
 # Three-stage server step cap used for HalfCheetah:
 #   r01-r20: 0.2   warm-up/exploration
 #   r21-r30: 0.075 lift post-train return above FedRL
-#   r31+   : 0.01  keep the long run bounded; FedMomentum may still drift,
-#                  which is the intended contrast against FedGuide robustness.
+#   r31+   : 0.01  bounded long-run step for hard ablation comparison
 server_max_step_norm: 0.2
 server_late_max_step_norm: 0.075
 server_late_step_start_round: 21
 server_tail_max_step_norm: 0.01
 server_tail_step_start_round: 31
 
-# The strict Algorithm-1 implementation is kept available below, but the
-# HalfCheetah baseline uses the PPO/SVRPG client-gradient path used elsewhere in
-# this repo. The strict paper loop assumes a small pure Gaussian policy-gradient
-# setup and is much higher variance with the 256-dim BC-warm-started policy here.
+# Strict Algorithm-1 is kept available in the implementation, but this ablation
+# uses the practical PPO/SVRPG client-gradient path used by the repo baselines.
 use_fedsvrpgm_strict: false
 fedsvrpgm_eta: 0.75
 fedsvrpgm_beta: 0.5
@@ -74,22 +70,20 @@ use_wandb: false
 wandb_project: null
 run_name: null
 
-output_dir: "./model/policy/halfcheetah/fedmomentum"
-metrics_dir: "./metrics/halfcheetah/fedmomentum"
-collect_metrics_every: 1
+output_dir: "./model/policy/halfcheetah_hard/fedmomentum"
+metrics_dir: "./metrics/halfcheetah_hard/fedmomentum"
+collect_metrics_every: 5
 
-# Device configuration
-device: "auto"  # "auto", "cpu", or "cuda"
-# Ray Flower VCE: GPU fraction per virtual client (match fedavg; smaller => more parallel actors)
+device: "auto"
 gpus_per_client: 0.125
 
 seed: [0, 1, 2, 3, 4]
 
 render_eval: true
 render_mode: "video"
-render_save_dir: "./plots/halfcheetah/fedmomentum"
+render_save_dir: "./plots/halfcheetah_hard/fedmomentum"
 render_every_n_rounds: 20
-render_all_clients: true                   # render every client, not just client 0
+render_all_clients: true
 render_episodes: 3
 
 # Per-client policy snapshots every 20 rounds -> metrics_dir/policies/client_*/round_XXXX.pth

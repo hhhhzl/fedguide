@@ -780,6 +780,12 @@ def _create_fedmomentum_client_fn(config: Dict[str, Any], **kwargs):
         algorithm=config.get('algorithm_type', 'svrpg'),
         reference_update_freq=int(config.get('reference_update_freq', 5)),
         use_svrpg=bool(config.get('use_svrpg', True)),
+        local_momentum_beta=float(
+            config.get(
+                'local_momentum_beta',
+                config.get('fedsvrpgm_beta', config.get('momentum_beta', 0.0)),
+            )
+        ),
         hessian_alpha=float(config.get('hessian_alpha', 0.1)),
         use_diagonal_approx=bool(config.get('use_diagonal_approx', True)),
         fisher_update_freq=int(config.get('fisher_update_freq', 1)),
@@ -809,10 +815,20 @@ def _create_fedmomentum_client_fn(config: Dict[str, Any], **kwargs):
         fedsvrpgm_beta=float(config.get('fedsvrpgm_beta', 0.2)),
         local_steps_k=int(config.get('local_steps_k', 5)),
         fedsvrpgm_max_horizon=int(config.get('fedsvrpgm_max_horizon', config.get('max_horizon', 500))),
+        fedsvrpgm_optimizer=str(config.get('fedsvrpgm_optimizer', 'sgd')),
+        fedsvrpgm_grad_clip_norm=float(config.get('fedsvrpgm_grad_clip_norm', 1.0)),
+        fedsvrpgm_center_returns=bool(config.get('fedsvrpgm_center_returns', True)),
+        fedsvrpgm_reset_each_trajectory=bool(config.get('fedsvrpgm_reset_each_trajectory', True)),
+        fedsvrpgm_is_weight_clip=config.get('fedsvrpgm_is_weight_clip'),
         bc_root=config.get('bc_root'),
         bc_env_name=config.get('bc_env_name'),
         bc_blend_alpha=float(config.get('bc_blend_alpha', 1.0)),
         client_state_dir=config.get('client_state_dir'),
+        policy_save_dir=config.get('policy_save_dir') or (
+            os.path.join(config['metrics_dir'], 'policies') if config.get('metrics_dir') else None
+        ),
+        policy_save_every=int(config.get('policy_save_every', 0)),
+        seed=int(config.get('seed', 42)),
     )
 
 
@@ -1014,6 +1030,11 @@ def _create_fedmomentum_server(config: Dict[str, Any], **kwargs):
     return FedMomentumStrategy(
         momentum_beta=float(config.get('momentum_beta', 0.9)),
         server_lr=float(config.get('server_lr', 0.001)),
+        server_max_step_norm=config.get('server_max_step_norm'),
+        server_late_max_step_norm=config.get('server_late_max_step_norm'),
+        server_late_step_start_round=config.get('server_late_step_start_round'),
+        server_tail_max_step_norm=config.get('server_tail_max_step_norm'),
+        server_tail_step_start_round=config.get('server_tail_step_start_round'),
         use_server_momentum=bool(config.get('use_server_momentum', False)),
         use_fedsvrpgm_strict=bool(config.get('use_fedsvrpgm_strict', False)),
         eta=float(config.get('fedsvrpgm_eta', 0.01)),
@@ -1025,6 +1046,8 @@ def _create_fedmomentum_server(config: Dict[str, Any], **kwargs):
         min_available_clients=num_clients,
         on_fit_config_fn=lambda rnd: {"server_round": rnd},
         evaluate_fn=evaluate_fn,
+        policy_save_dir=config.get("metrics_dir"),
+        total_rounds=int(config.get("rounds", 60)),
     )
 
 

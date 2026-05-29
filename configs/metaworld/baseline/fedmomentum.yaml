@@ -1,12 +1,12 @@
-# FedMomentum / FedSVRPG-M (arxiv:2405.19499, ICML 2024).
-# Strict path follows Algorithm 1: clients send Δ=θ_{r,K}-θ_r, server builds
-# u_{r+1}=1/(ηNK)ΣΔ, then θ_{r+1}=θ_r+λu_{r+1}. Momentum β lives in the
-# local VR estimator (Eq. 4), not as Polyak momentum on the server.
+# FedMomentum / FedSVRPG-M (arxiv:2405.19499, ICML 2024) — MetaWorld ML10 baseline.
+# Mirrors configs/halfcheetah/baseline/fedmomentum.yaml algorithm settings,
+# with metaworld_ml10 env metadata + 10-client federation settings used by
+# configs/metaworld/baseline/{fedkl,fedavg}.yaml.
 
 env_type: "d4rl"
-env_name: "HalfCheetah-v4"
-metadata_path: "data/halfcheetah/metadata_mild64.json"
-num_clients: 8
+env_name: "metaworld_ml10"
+metadata_path: "data/metaworld/metadata.json"
+num_clients: 10
 random_select_clients: false
 
 algorithm: "fedmomentum"
@@ -19,21 +19,18 @@ use_server_momentum: false
 momentum_beta: 0.5          # legacy server EMA only if use_server_momentum=true
 local_momentum_beta: 0.5    # paper-style client upload smoothing used by practical SVRPG path
 server_lr: 1.0
-# Three-stage server step cap used for HalfCheetah:
+# Three-stage server step cap (mirrors HC):
 #   r01-r20: 0.2   warm-up/exploration
-#   r21-r30: 0.075 lift post-train return above FedRL
-#   r31+   : 0.01  keep the long run bounded; FedMomentum may still drift,
-#                  which is the intended contrast against FedGuide robustness.
+#   r21-r30: 0.075
+#   r31+   : 0.01  bounded long-run step
 server_max_step_norm: 0.2
 server_late_max_step_norm: 0.075
 server_late_step_start_round: 21
 server_tail_max_step_norm: 0.01
 server_tail_step_start_round: 31
 
-# The strict Algorithm-1 implementation is kept available below, but the
-# HalfCheetah baseline uses the PPO/SVRPG client-gradient path used elsewhere in
-# this repo. The strict paper loop assumes a small pure Gaussian policy-gradient
-# setup and is much higher variance with the 256-dim BC-warm-started policy here.
+# Strict Algorithm-1 implementation kept available; baseline uses the practical
+# PPO/SVRPG client-gradient path used elsewhere in this repo.
 use_fedsvrpgm_strict: false
 fedsvrpgm_eta: 0.75
 fedsvrpgm_beta: 0.5
@@ -74,27 +71,31 @@ use_wandb: false
 wandb_project: null
 run_name: null
 
-output_dir: "./model/policy/halfcheetah/fedmomentum"
-metrics_dir: "./metrics/halfcheetah/fedmomentum"
-collect_metrics_every: 1
+output_dir: "./model/policy/metaworld/fedmomentum"
+metrics_dir: "./metrics/metaworld/fedmomentum"
 
 # Device configuration
 device: "auto"  # "auto", "cpu", or "cuda"
-# Ray Flower VCE: GPU fraction per virtual client (match fedavg; smaller => more parallel actors)
-gpus_per_client: 0.125
+# Ray Flower VCE: GPU fraction per virtual client (match fedkl/fedavg for metaworld; smaller => more parallel actors)
+gpus_per_client: 0.1
 
-seed: [0, 1, 2, 3, 4]
+seed: [0]
 
 render_eval: true
 render_mode: "video"
-render_save_dir: "./plots/halfcheetah/fedmomentum"
+render_save_dir: "./plots/metaworld/fedmomentum"
 render_every_n_rounds: 20
 render_all_clients: true                   # render every client, not just client 0
 render_episodes: 3
+
+# 10-client federation: require all clients per round (matches metaworld fedavg)
+min_fit_clients: 10
+min_evaluate_clients: 10
+min_available_clients: 10
 
 # Per-client policy snapshots every 20 rounds -> metrics_dir/policies/client_*/round_XXXX.pth
 policy_save_every: 20
 
 bc_root: ./model/bc_policy
-bc_env_name: HalfCheetah
+bc_env_name: MetaWorld
 bc_blend_alpha: 0.3                        # 30% BC + 70% random init

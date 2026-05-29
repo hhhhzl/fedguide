@@ -61,6 +61,30 @@ def _make_env(
     if _hc_env is not None:
         return _hc_env
 
+    # Walker2D / Hopper / Ant (shared locomotion-hetero loader, same as fedkl)
+    try:
+        from fedguide.envs.mujoco_locomotion_hetero import make_locomotion_env_if_applicable
+
+        _loc_env = make_locomotion_env_if_applicable(
+            metadata_path, client_id, seed, render_mode, render_eval=(render_mode is not None),
+        )
+        if _loc_env is not None:
+            return _loc_env
+    except Exception:
+        pass
+
+    # MetaWorld ML10 (same as fedkl)
+    try:
+        from fedguide.envs.metaworld_hetero import make_metaworld_env_if_applicable
+
+        _mw_env = make_metaworld_env_if_applicable(
+            metadata_path, client_id, seed, render_mode,
+        )
+        if _mw_env is not None:
+            return _mw_env
+    except Exception:
+        pass
+
     env = gym.make(env_id)
     try:
         env.reset(seed=seed)
@@ -97,6 +121,9 @@ class FedMomentumClient(BaseFedRLClient):
         logger_level: int = None,
         metrics_collector: Optional[Any] = None,  # Bandit2DMetricsCollector instance
         state_path: Optional[str] = None,
+        mapped_client_id: Optional[int] = None,
+        policy_save_dir: Optional[str] = None,
+        policy_save_every: int = 0,
     ):
         super().__init__(
             agent=agent,
@@ -113,6 +140,9 @@ class FedMomentumClient(BaseFedRLClient):
         )
         self.metrics_collector = metrics_collector
         self.state_path = state_path
+        self._mapped_client_id = mapped_client_id
+        self._policy_save_dir = policy_save_dir
+        self._policy_save_every = int(policy_save_every or 0)
 
     def _move_optimizer_state_to_device(self) -> None:
         """Torch keeps optimizer state tensors on their load device."""
@@ -420,7 +450,36 @@ class FedMomentumClient(BaseFedRLClient):
         # Eval/save
         success = self.trainer.save_eval(cid, rnd)
         samples = int(getattr(self.trainer, "n_steps", 0))
-        
+
+        # Per-client policy checkpoint at fixed cadence (mirrors fedkl/fedavg).
+        # Saved AFTER local training so the snapshot reflects this client's
+        # locally updated policy, not the broadcast global one.
+        if (
+            self._policy_save_dir
+            and self._policy_save_every > 0
+            and rnd > 0
+            and (rnd % self._policy_save_every == 0)
+        ):
+            try:
+                mid = self._mapped_client_id if self._mapped_client_id is not None else cid
+                client_dir = os.path.join(self._policy_save_dir, f"client_{mid}")
+                os.makedirs(client_dir, exist_ok=True)
+                ckpt_path = os.path.join(client_dir, f"round_{int(rnd):04d}.pth")
+                policy_state = {k: v.detach().cpu() for k, v in self.agent.policy.state_dict().items()}
+                payload = {
+                    "round": int(rnd),
+                    "mapped_client_id": mid,
+                    "cid": str(cid),
+                    "policy_state_dict": policy_state,
+                }
+                log_std = getattr(self.agent, "log_std", None)
+                if log_std is not None and hasattr(log_std, "detach"):
+                    payload["log_std"] = log_std.detach().cpu()
+                torch.save(payload, ckpt_path)
+                print(f"  [FedMomentumClient {mid}] Saved policy snapshot to {ckpt_path}", flush=True)
+            except Exception as e:
+                print(f"  [FedMomentumClient] Warning: failed to save policy snapshot: {e}", flush=True)
+
         # Print client metrics for debugging
         print(f"[FedMomentumClient {cid}] Round {rnd}: loss = {loss:.6f}, "
               f"train_return = {train_return}, eval_return = {eval_return}, "
@@ -577,6 +636,7 @@ def client_fn_builder(
     # SVRPG-specific parameters
     reference_update_freq: int = 5,
     use_svrpg: bool = True,  # Only used if algorithm="svrpg"
+    local_momentum_beta: Optional[float] = None,
     # HAPG-specific parameters
     hessian_alpha: float = 0.1,
     use_diagonal_approx: bool = True,
@@ -606,10 +666,18 @@ def client_fn_builder(
     fedsvrpgm_beta: float = 0.2,
     local_steps_k: int = 5,
     fedsvrpgm_max_horizon: int = 500,
+    fedsvrpgm_optimizer: str = "sgd",
+    fedsvrpgm_grad_clip_norm: float = 1.0,
+    fedsvrpgm_center_returns: bool = True,
+    fedsvrpgm_reset_each_trajectory: bool = True,
+    fedsvrpgm_is_weight_clip: Optional[Iterable[float]] = None,
     bc_root: Optional[str] = None,
     bc_env_name: Optional[str] = None,
     bc_blend_alpha: float = 1.0,
     client_state_dir: Optional[str] = None,
+    policy_save_dir: Optional[str] = None,
+    policy_save_every: int = 0,
+    seed: int = 42,
 ):
     """
     Build client function for FedMomentum (SVRPG-based).
@@ -648,8 +716,10 @@ def client_fn_builder(
                 h = int(hashlib.sha256(str(cid).encode()).hexdigest()[:8], 16)
                 mapped_client_id = h % num_c
         
-        stable_hash = int(hashlib.sha256(str(cid).encode()).hexdigest()[:8], 16)
-        base = 42 + (stable_hash % 10000)
+        # Flower VCE cids are runtime-generated long strings and change across
+        # runs. Seed by mapped client id instead so a YAML seed produces a
+        # reproducible federated experiment.
+        base = int(seed) + 1000 * int(mapped_client_id)
         random.seed(base)
         np.random.seed(base)
         torch.manual_seed(base)
@@ -734,6 +804,15 @@ def client_fn_builder(
         if use_fedsvrpgm_strict:
             from fedguide.baselines.fedmomentum.fedsvrpgm_strict import FedSVRPGMStrictTrainer
 
+            is_w_clip = (1e-3, 10.0)
+            if fedsvrpgm_is_weight_clip is not None:
+                try:
+                    vals = list(fedsvrpgm_is_weight_clip)
+                    if len(vals) == 2:
+                        is_w_clip = (float(vals[0]), float(vals[1]))
+                except Exception:
+                    pass
+
             trainer = FedSVRPGMStrictTrainer(
                 agent=agent,
                 env=env,
@@ -744,6 +823,11 @@ def client_fn_builder(
                 local_steps_k=local_steps_k,
                 max_horizon=fedsvrpgm_max_horizon,
                 eval_episodes=eval_episodes,
+                step_optimizer=fedsvrpgm_optimizer,
+                grad_clip_norm=fedsvrpgm_grad_clip_norm,
+                center_returns=fedsvrpgm_center_returns,
+                reset_each_trajectory=fedsvrpgm_reset_each_trajectory,
+                is_w_clip=is_w_clip,
                 render_eval=render_eval,
                 render_mode=render_mode,
                 render_save_dir=render_save_dir,
@@ -782,6 +866,11 @@ def client_fn_builder(
                     render_client_tag=str(mapped_client_id),
                 )
             else:
+                beta_for_practical_path = (
+                    float(fedsvrpgm_beta)
+                    if local_momentum_beta is None
+                    else float(local_momentum_beta)
+                )
                 trainer = SVRPGTrainer(
                     agent=agent,
                     env=env,
@@ -798,6 +887,7 @@ def client_fn_builder(
                     eval_episodes=eval_episodes,
                     reference_update_freq=reference_update_freq,
                     use_svrpg=use_svrpg,
+                    local_momentum_beta=beta_for_practical_path,
                     render_eval=render_eval,
                     render_mode=render_mode,
                     render_save_dir=render_save_dir,
@@ -834,6 +924,9 @@ def client_fn_builder(
                 if client_state_dir
                 else None
             ),
+            mapped_client_id=mapped_client_id,
+            policy_save_dir=policy_save_dir,
+            policy_save_every=policy_save_every,
         )
         # Store client_id for metrics collection
         client.cid = cid
