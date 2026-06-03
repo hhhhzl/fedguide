@@ -1,16 +1,4 @@
 """OT-MoE aggregation utilities.
-
-Two transport modes are supported:
-- "sinkhorn" (default): entropic-regularized OT producing soft client->expert
-  assignments. With M=1 expert this gracefully reduces to a uniform
-  FedAvg over clients. With M=N it gives a soft permutation that is
-  near-uniform when client priors are similar.
-- "hungarian" (legacy): exact bipartite assignment via the Hungarian
-  algorithm. Kept for backward compatibility / ablation only.
-
-In both cases each expert is updated as a convex combination of client
-parameters using the column-normalized transport plan, so the result is
-always a valid weighted average (no parameter scaling artefacts).
 """
 
 from __future__ import annotations

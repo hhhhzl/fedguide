@@ -2,10 +2,10 @@
 # Run online federated learning experiments across all (env, algorithm, seed).
 #
 # Algorithms (all start from BC warm-start by default):
-#   fedavg, fedkl, ppo, fedrl, fedguide, fedguide_a, fedguide_p
+#   fedavg, fedkl, fedrl, fedmomentum, fedguide, fedguide_a, fedguide_p
 #
 # Optional algorithms (kept supported, run only if requested):
-#   fedmomentum, fedrep, fmarl, mfpo, sac
+#   ppo, fedrep, fmarl, mfpo, sac
 #
 # Outputs:  ./metrics/<env>_phase1/<algo>/seed_<s>/training_history.pkl
 #
@@ -20,7 +20,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 ENVS="halfcheetah walker hopper reacher metaworld"
-ALGOS="fedavg fedkl ppo fedrl fedguide fedguide_a fedguide_p"
+ALGOS="fedavg fedkl fedrl fedmomentum fedguide fedguide_a fedguide_p"
 SEEDS="0 1 2"
 ROUNDS=""  # empty = use config's rounds
 
