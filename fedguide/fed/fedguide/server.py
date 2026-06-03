@@ -691,9 +691,6 @@ class FedGuideStrategy(Strategy):
                         ]
                         routed_per_cid[cid][moe_key] = layers
 
-                # Fallback "global" merged expert for clients we cannot route
-                # (e.g. configure_fit sees a cid that wasn't in the last
-                # aggregate_fit call — first round, or client churn).
                 merged = self._fedavg_arrays([(e, 1) for e in new_experts])
                 new_global[moe_key] = merged
 

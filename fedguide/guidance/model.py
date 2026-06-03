@@ -5,6 +5,8 @@ import copy
 from collections import defaultdict
 import math
 
+# https://github.com/maoliyuan/diffusion-DICE-Pytorch/blob/master/diffusion_DICE/model.py
+
 try:
     import wandb
     _HAS_WANDB = True

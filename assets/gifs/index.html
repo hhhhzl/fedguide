@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FedGuide — Policy Rollout Gallery</title>
+<style>
+  :root { --bg:#0f1115; --card:#1a1d24; --fg:#e6e6e6; --muted:#9aa0aa; --accent:#6ea8fe; --border:#2a2e37; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  header { padding:28px 24px 8px; }
+  h1 { margin:0 0 4px; font-size:24px; }
+  .sub { color:var(--muted); font-size:14px; }
+  nav { position:sticky; top:0; background:rgba(15,17,21,.92); backdrop-filter:blur(6px);
+        padding:12px 24px; border-bottom:1px solid var(--border); z-index:10; display:flex; gap:10px; flex-wrap:wrap; }
+  nav a { color:var(--accent); text-decoration:none; font-size:14px; padding:4px 10px;
+          border:1px solid var(--border); border-radius:999px; }
+  nav a:hover { background:var(--card); }
+  section { padding:24px; }
+  h2 { font-size:20px; margin:0 0 4px; }
+  .envmeta { color:var(--muted); font-size:13px; margin-bottom:16px; }
+  .envmeta { max-width:980px; }
+  .legend-table { border-collapse:collapse; margin:0 0 18px; }
+  .legend-table th, .legend-table td { padding:7px 14px; text-align:center; font-size:14px;
+        border-bottom:1px solid var(--border); }
+  .legend-table thead th { background:var(--card); }
+  .legend-table .envname { text-align:left; font-weight:600; }
+  .score { display:block; color:var(--muted); font-size:11px; font-weight:400; margin-top:2px; }
+  .cell { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:8px; display:inline-block; }
+  .cell img { width:100%; max-width:1198px; border-radius:5px; display:block; }
+  footer { color:var(--muted); font-size:12px; padding:24px; text-align:center; }
+</style></head><body>
+<header><h1>FedGuide — Policy Rollout Gallery</h1>
+<div class="sub">Round 100 · seed selection: client_specific when client-level eval/return metrics exist; otherwise env_algo_average using tail-10 metrics_distributed_fit eval/return</div></header>
+<section>
+<div class="envmeta">Columns in the GIF are methods (FedGuide, FedGuide-A, FedGuide-P); rows are clients (c0…), grouped by environment. Selected seed and tail-10 eval return per cell:</div>
+<table class="legend-table"><thead><tr><th>Environment</th>
+<th>FedGuide</th>
+<th>FedGuide-A</th>
+<th>FedGuide-P</th>
+</tr></thead><tbody>
+<tr><td class="envname">Reacher<span class="score">8 clients</span></td>
+<td>seed 3<span class="score">return -11.17</span></td>
+<td>seed 1<span class="score">return -15.63</span></td>
+<td>seed 0<span class="score">return -11.63</span></td>
+</tr>
+<tr><td class="envname">Hopper<span class="score">8 clients</span></td>
+<td>seed 0<span class="score">return 654.33</span></td>
+<td>seed 1<span class="score">return 510.30</span></td>
+<td>seed 2<span class="score">return 533.79</span></td>
+</tr>
+<tr><td class="envname">Walker2D<span class="score">8 clients</span></td>
+<td>seed 2<span class="score">return 501.42</span></td>
+<td>seed 2<span class="score">return 459.21</span></td>
+<td>seed 1<span class="score">return 399.37</span></td>
+</tr>
+<tr><td class="envname">HalfCheetah<span class="score">8 clients</span></td>
+<td>seed 0<span class="score">return 2325.90</span></td>
+<td>seed 1<span class="score">return 1654.80</span></td>
+<td>seed 0<span class="score">return 2311.93</span></td>
+</tr>
+<tr><td class="envname">MetaWorld10<span class="score">10 clients</span></td>
+<td>seed 2<span class="score">return 1042.03</span></td>
+<td>seed 3<span class="score">return 922.94</span></td>
+<td>seed 2<span class="score">return 953.45</span></td>
+</tr>
+</tbody></table>
+<div class="cell"><img src="all_envs.gif" alt="All environments × clients × methods"></div>
+</section>
+<footer>Generated from video_selection.json · single combined GIF: assets/gifs/all_envs.gif</footer>
+</body></html>
