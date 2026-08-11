@@ -105,8 +105,9 @@ class Bandit2DMetricsCollector:
         metrics = {}
         
         # 1. Prior log probability
-        if hasattr(agent, 'prior') and agent.prior is not None:
-            if hasattr(agent.prior, 'log_prob'):
+        active_prior = getattr(agent, 'routing_prior', None) or getattr(agent, 'prior', None)
+        if active_prior is not None:
+            if hasattr(active_prior, 'log_prob'):
                 with torch.no_grad():
                     try:
                         # For DiffusionGuidance (UNet-based), it expects trajectory format
@@ -114,7 +115,7 @@ class Bandit2DMetricsCollector:
                         # However, looking at the code, _make_traj creates [B, 1, 4] which gets passed to UNet
                         # The UNet then processes it, but the input format is wrong
                         # For grid evaluation with single points, we need to create proper trajectories
-                        if hasattr(agent.prior, 'model') and hasattr(agent.prior, 'horizon'):
+                        if hasattr(active_prior, 'model') and hasattr(active_prior, 'horizon'):
                             # This is DiffusionGuidance with UNet
                             # The issue is that _make_traj creates [B, 1, traj_dim] but UNet expects [B, traj_dim, horizon]
                             # Actually, looking at UNet1DModel, it might accept [B, C, L] where C=channels, L=length
@@ -130,7 +131,7 @@ class Bandit2DMetricsCollector:
                             prior_logp = np.zeros(grid_tensor.shape[0])
                         else:
                             # SimpleDiffusionPrior or other prior types - direct call
-                            prior_logp = agent.prior.log_prob(grid_tensor, states)
+                            prior_logp = active_prior.log_prob(grid_tensor, states)
                             if isinstance(prior_logp, torch.Tensor):
                                 prior_logp = prior_logp.cpu().numpy()
                         
@@ -286,4 +287,3 @@ class Bandit2DMetricsCollector:
         collector.X = data['X']
         collector.Y = data['Y']
         return collector
-

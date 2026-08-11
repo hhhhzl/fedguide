@@ -15,6 +15,7 @@ log
 /metrics
 /results
 /plots
+/latex
 
 .claude
 .vscode/

@@ -14,7 +14,7 @@ import pickle
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 MPLCONFIGDIR = Path(os.environ.get("TMPDIR", "/tmp")) / "fedguide-matplotlib"
@@ -113,6 +113,32 @@ METRICS_ROOT = Path("metrics")
 OUT_DIR      = Path("plots/posttrain")
 MAIN_OUT_DIR = Path("plots/posttrain")
 BANDIT2D_METRICS_ROOT = Path("metrics/bandit2d")
+
+BANDIT2D_REVIEW_SWEEPS = {
+    "expert_count": [
+        ("fedguide_m1", "M=1", "#1f77b4"),
+        ("fedguide_m2", "M=2", "#ff7f0e"),
+        ("fedguide_m4", "M=4", "#2ca02c"),
+        ("fedguide_m8", "M=8", "#d62728"),
+        ("fedguide_m12", "M=12", "#9467bd"),
+        ("fedguide_m16", "M=16", "#17becf"),
+    ],
+    "sinkhorn_eta": [
+        ("fedguide_eta001", r"$\eta$=0.01", "#1f77b4"),
+        ("fedguide_m4", r"$\eta$=0.05", "#2ca02c"),
+        ("fedguide_eta02", r"$\eta$=0.2", "#d62728"),
+    ],
+    "prior_weight": [
+        ("fedguide_lambda0", r"$\lambda_2$=0", "#1f77b4"),
+        ("fedguide_lambda01", r"$\lambda_2$=0.1", "#ff7f0e"),
+        ("fedguide_m4", r"$\lambda_2$=0.5", "#2ca02c"),
+        ("fedguide_lambda1", r"$\lambda_2$=1", "#d62728"),
+    ],
+    "origin_ood": [
+        ("origin_local", "Local PPO", "#444444"),
+        ("origin_fedguide", "FedGuide", "#d62728"),
+    ],
+}
 
 
 def load_seed_curve(env: str, algo: str, seed: int):
@@ -599,7 +625,7 @@ def _smooth_stack(stack: np.ndarray, w: int = 3):
 
 def plot_bandit2d_returns(seeds: list[int], out_dir: Path = OUT_DIR):
     out_dir.mkdir(parents=True, exist_ok=True)
-    metrics = [("eval/return", "eval/return"), ("train/return", "train/return")]
+    metrics = [("eval/return", "eval/return")]
     plt.rcParams.update({
         "font.size": 10,
         "axes.spines.top": False,
@@ -608,7 +634,7 @@ def plot_bandit2d_returns(seeds: list[int], out_dir: Path = OUT_DIR):
         "grid.alpha": 0.25,
         "grid.linewidth": 0.8,
     })
-    fig, axes = plt.subplots(1, 2, figsize=(11.0, 3.8), squeeze=False)
+    fig, axes = plt.subplots(1, 1, figsize=(5.5, 3.8), squeeze=False)
 
     for ax, (metric, title) in zip(axes.ravel(), metrics):
         plotted = 0
@@ -640,11 +666,6 @@ def plot_bandit2d_returns(seeds: list[int], out_dir: Path = OUT_DIR):
         ax.set_title(f"Bandit2D {title}")
         ax.set_xlabel("Round")
         ax.set_ylabel(title)
-        if metric == "eval/return":
-            ax.axhline(1.0, color="0.35", alpha=0.8, linestyle="--", linewidth=1.0)
-            ax.text(0.99, 0.96, "upper bound = 1", color="0.25",
-                    ha="right", va="top", transform=ax.transAxes, fontsize=8)
-
     handles, labels = axes[0, 0].get_legend_handles_labels()
     if handles:
         fig.legend(handles, labels, loc="lower center", ncol=4, frameon=False,
@@ -660,8 +681,124 @@ def plot_bandit2d_returns(seeds: list[int], out_dir: Path = OUT_DIR):
     return paths
 
 
+def plot_bandit2d_review_sweep(
+    sweep_name: str,
+    seeds: list[int],
+    out_dir: Path = OUT_DIR,
+):
+    """Reviewer sweeps using the exact Bandit2D return-plot convention.
+
+    This deliberately mirrors ``plot_bandit2d_returns``: 15-round moving
+    average, mean line, across-seed min/max envelope, and the same fonts,
+    grid, legend, and PNG/PDF save settings.
+    """
+    conditions = BANDIT2D_REVIEW_SWEEPS[sweep_name]
+    origin = sweep_name == "origin_ood"
+    metrics = [
+        ("eval/return/client_4", "Return")
+        if origin else ("eval/return", "Return")
+    ]
+    display = {
+        "expert_count": "Expert Count",
+        "sinkhorn_eta": "Sinkhorn Temperature",
+        "prior_weight": "Prior Weight",
+        "origin_ood": "Origin OOD Client",
+    }[sweep_name]
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    plt.rcParams.update({
+        "font.size": 14,
+        "axes.labelsize": 18,
+        "xtick.labelsize": 14,
+        "ytick.labelsize": 14,
+        "legend.fontsize": 14,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.grid": True,
+        "grid.alpha": 0.25,
+        "grid.linewidth": 0.8,
+    })
+    fig, axes = plt.subplots(1, 1, figsize=(6.2, 4.4), squeeze=False)
+    for ax, (metric, title) in zip(axes.ravel(), metrics):
+        plotted = 0
+        for algo_dir, label, color in conditions:
+            curves = []
+            used_seeds = []
+            for seed in seeds:
+                c = load_bandit2d_curve(algo_dir, seed, metric)
+                if c is not None:
+                    curves.append(c)
+                    used_seeds.append(seed)
+            aligned = _align_curves(curves)
+            if aligned is None:
+                continue
+            rounds, stack = aligned
+            smoothed, idx = _smooth_stack(stack, w=15)
+            xs = rounds[idx]
+            mean = smoothed.mean(axis=0)
+            lo = smoothed.min(axis=0)
+            hi = smoothed.max(axis=0)
+            ax.fill_between(xs, lo, hi, color=color, alpha=0.16, linewidth=0)
+            ax.plot(xs, mean, color=color, linewidth=2.5,
+                    label=label)
+            plotted += 1
+        if plotted == 0:
+            ax.text(0.5, 0.5, "no data", ha="center", va="center",
+                    transform=ax.transAxes)
+        ax.set_title(f"Bandit2D {display}")
+        ax.set_xlabel("Round")
+        ax.set_ylabel(title)
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            legend_ncol = 2 if sweep_name in {"expert_count", "prior_weight"} else 1
+            ax.legend(
+                handles,
+                labels,
+                loc="lower right" if sweep_name == "expert_count" else "upper right",
+                ncol=legend_ncol,
+                frameon=True,
+                framealpha=0.88,
+                edgecolor="0.8",
+                borderpad=0.35,
+                handlelength=1.8,
+                columnspacing=0.8,
+            )
+    fig.tight_layout()
+    paths = []
+    for ext in ("png", "pdf"):
+        out = out_dir / f"bandit2d_{sweep_name}.{ext}"
+        fig.savefig(out, dpi=180 if ext == "png" else None, bbox_inches="tight")
+        print(f"  -> {out}")
+        paths.append(out)
+    plt.close(fig)
+    return paths
+
+
+def run_bandit2d_reviewer(seeds: list[int]):
+    for sweep_name in BANDIT2D_REVIEW_SWEEPS:
+        print(f"=== bandit2d reviewer sweep: {sweep_name} ===")
+        plot_bandit2d_review_sweep(sweep_name, seeds, OUT_DIR)
+
+    # Use the existing Bandit2D density renderer for the actual personalized
+    # prior received by the held-out origin client.
+    viz_priors, _ = _import_bandit2d_viz_modules()
+    viz_priors.plot_origin_ood_prior(
+        metrics_path="metrics/bandit2d/origin_fedguide/seed_0/bandit2d_metrics.pkl",
+        metadata="data/bandit2d/metadata.json",
+        out="plots/bandit2d_priors/origin_ood.png",
+        client_id=4,
+        write_pdf=True,
+    )
+    viz_priors.plot_origin_client_suite(
+        metrics_path="metrics/bandit2d/origin_fedguide/seed_0/bandit2d_metrics.pkl",
+        metadata="data/bandit2d/metadata.json",
+        out_dir="plots/bandit2d_priors",
+        write_pdf=True,
+    )
+
+
 def _import_bandit2d_viz_modules():
-    bandit_script_dir = Path(__file__).resolve().parent / "envs" / "bandit2d"
+    bandit_script_dir = Path(__file__).resolve().parents[1] / "envs" / "bandit2d"
     if str(bandit_script_dir) not in sys.path:
         sys.path.insert(0, str(bandit_script_dir))
     import viz_priors
@@ -729,6 +866,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bandit2d", action="store_true",
                     help="generate the Bandit2D prior, policy-density, diagnostics, and all-seed return plots")
+    ap.add_argument("--bandit2d-reviewer", action="store_true",
+                    help="plot the Bandit2D reviewer sweeps with the existing Bandit2D style")
     ap.add_argument("--main", action="store_true",
                     help="plot the 3 main metrics (post-train eval/return, global eval/return, loss) for the 6 algos x 5 envs; one panel per (algo,env) plus one unified-legend summary per metric")
     ap.add_argument("--envs", type=str, default=",".join(MAIN_ENVS),
@@ -740,6 +879,10 @@ def main():
     if args.bandit2d:
         seeds = _parse_seed_arg(args.seeds) if seeds_explicit else discover_bandit2d_seeds()
         run_bandit2d(seeds)
+        return
+    if args.bandit2d_reviewer:
+        seeds = _parse_seed_arg(args.seeds)
+        run_bandit2d_reviewer(seeds)
         return
 
     envs  = [e.strip() for e in args.envs.split(",") if e.strip()]

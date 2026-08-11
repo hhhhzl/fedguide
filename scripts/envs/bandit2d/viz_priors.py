@@ -54,6 +54,22 @@ def _last_server_prior(metrics: dict) -> tuple[np.ndarray, np.ndarray, np.ndarra
     return None
 
 
+def _last_client_prior(
+    metrics: dict, client_id: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    for item in reversed(metrics.get("metrics_history", [])):
+        clients = item.get("client_metrics", {})
+        client = clients.get(client_id, clients.get(str(client_id), {}))
+        if "prior_logprob" not in client:
+            continue
+        return (
+            np.asarray(metrics["X"], dtype=float),
+            np.asarray(metrics["Y"], dtype=float),
+            np.asarray(client["prior_logprob"], dtype=float),
+        )
+    return None
+
+
 def _density_from_logprob(logp: np.ndarray) -> np.ndarray:
     logp = np.nan_to_num(np.asarray(logp, dtype=float), nan=-np.inf,
                          posinf=-np.inf, neginf=-np.inf)
@@ -94,6 +110,24 @@ def _ring_prior_grid(metadata: str | Path, grid: int, bound: float):
     z = np.exp(-((radius - 1.0) ** 2) / (2.0 * radial_sigma ** 2))
     z /= max(float(z.max()), 1e-12)
     return xx, yy, z
+
+
+def _origin_density(xx: np.ndarray, yy: np.ndarray, sigma: float) -> np.ndarray:
+    return np.exp(-(xx ** 2 + yy ** 2) / (2.0 * sigma ** 2))
+
+
+def _ring_with_origin_grid(metadata: str | Path, grid: int, bound: float):
+    xx, yy, ring = _ring_prior_grid(metadata, grid, bound)
+    with open(metadata, "r") as handle:
+        sigma = float(json.load(handle)["sigma"])
+    density = np.maximum(ring, _origin_density(xx, yy, sigma))
+    return xx, yy, density
+
+
+def _include_origin_mu(mu: np.ndarray, include_origin: bool) -> np.ndarray:
+    if not include_origin:
+        return mu
+    return np.concatenate([mu, np.zeros((1, 2), dtype=float)], axis=0)
 
 
 def _bandit_grid(metadata: str | Path, grid: int, bound: float):
@@ -155,17 +189,27 @@ def plot_ground_truth_distributions(
     grid: int = 240,
     bound: float = 1.5,
     write_pdf: bool = True,
+    include_origin: bool = False,
 ) -> list[Path]:
     meta, mu, sigma, xx, yy, pts = _bandit_grid(metadata, grid, bound)
-    n_clients = int(meta.get("n_clients", len(mu)))
-    _, _, global_density = _ring_prior_grid(metadata, grid, bound)
+    n_ring_clients = int(meta.get("n_clients", len(mu)))
+    n_clients = n_ring_clients + int(include_origin)
+    marker_mu = _include_origin_mu(mu, include_origin)
+    if include_origin:
+        _, _, global_density = _ring_with_origin_grid(metadata, grid, bound)
+    else:
+        _, _, global_density = _ring_prior_grid(metadata, grid, bound)
 
     fig, axes = plt.subplots(1, n_clients + 1, figsize=(3.0 * (n_clients + 1), 3.1),
                              dpi=160, squeeze=False)
     for cid in range(n_clients):
-        density = _client_reward_density(pts, mu, sigma, cid)
-        _draw_bandit_panel(axes[0, cid], xx, yy, density, mu, bound)
-    _draw_bandit_panel(axes[0, -1], xx, yy, global_density, mu, bound)
+        density = (
+            _origin_density(xx, yy, sigma)
+            if include_origin and cid == n_ring_clients
+            else _client_reward_density(pts, mu, sigma, cid)
+        )
+        _draw_bandit_panel(axes[0, cid], xx, yy, density, marker_mu, bound)
+    _draw_bandit_panel(axes[0, -1], xx, yy, global_density, marker_mu, bound)
     fig.tight_layout(pad=0.4, w_pad=0.3)
     paths = _save(fig, out, write_pdf=write_pdf)
     plt.close(fig)
@@ -178,11 +222,15 @@ def plot_ground_truth_peaks(
     grid: int = 240,
     bound: float = 1.5,
     write_pdf: bool = True,
+    include_origin: bool = False,
 ) -> list[Path]:
-    _, mu, _, xx, yy, _ = _bandit_grid(metadata, grid, bound)
+    _, mu, sigma, xx, yy, _ = _bandit_grid(metadata, grid, bound)
     _, _, density = _fallback_reward_grid(metadata, grid, bound)
+    marker_mu = _include_origin_mu(mu, include_origin)
+    if include_origin:
+        density = np.maximum(density, _origin_density(xx, yy, sigma))
     fig, ax = plt.subplots(figsize=(5, 5), dpi=160)
-    _draw_bandit_panel(ax, xx, yy, density, mu, bound)
+    _draw_bandit_panel(ax, xx, yy, density, marker_mu, bound)
     fig.tight_layout()
     paths = _save(fig, out, write_pdf=write_pdf)
     plt.close(fig)
@@ -195,11 +243,16 @@ def plot_ground_truth_ring(
     grid: int = 240,
     bound: float = 1.5,
     write_pdf: bool = True,
+    include_origin: bool = False,
 ) -> list[Path]:
     with open(metadata, "r") as f:
         meta = json.load(f)
     mu = np.asarray(meta["mu"], dtype=float)
-    xx, yy, density = _ring_prior_grid(metadata, grid, bound)
+    mu = _include_origin_mu(mu, include_origin)
+    if include_origin:
+        xx, yy, density = _ring_with_origin_grid(metadata, grid, bound)
+    else:
+        xx, yy, density = _ring_prior_grid(metadata, grid, bound)
     fig, ax = plt.subplots(figsize=(5, 5), dpi=160)
     _draw_bandit_panel(ax, xx, yy, density, mu, bound)
     fig.tight_layout()
@@ -216,10 +269,11 @@ def plot_global_prior(
     bound: float = 1.5,
     source: str = "ring",
     write_pdf: bool = True,
+    include_origin: bool = False,
 ) -> list[Path]:
     with open(metadata, "r") as f:
         meta = json.load(f)
-    mu = np.asarray(meta["mu"], dtype=float)
+    mu = _include_origin_mu(np.asarray(meta["mu"], dtype=float), include_origin)
 
     if source == "ring":
         xx, yy, density = _ring_prior_grid(metadata, grid, bound)
@@ -250,6 +304,96 @@ def plot_global_prior(
     fig.tight_layout()
     paths = _save(fig, out, write_pdf=write_pdf)
     plt.close(fig)
+    return paths
+
+
+def plot_origin_ood_prior(
+    metrics_path: str | Path,
+    metadata: str | Path = "data/bandit2d/metadata.json",
+    out: str | Path = "plots/bandit2d_priors/origin_ood.png",
+    client_id: int = 4,
+    bound: float = 1.5,
+    write_pdf: bool = True,
+) -> list[Path]:
+    """Actual routed prior versus the held-out origin client's reward density.
+
+    Styling intentionally follows the existing Bandit2D prior figures:
+    viridis contours, 30 levels, red/white mode markers, identical bounds,
+    ticks, panel size, and PNG/PDF save settings.
+    """
+    metrics_path = Path(metrics_path)
+    if not metrics_path.is_file():
+        raise FileNotFoundError(metrics_path)
+    loaded = _last_client_prior(_load_pickle(metrics_path), int(client_id))
+    if loaded is None:
+        raise ValueError(f"No prior_logprob found for client {client_id} in {metrics_path}")
+    xx, yy, logp = loaded
+    prior_density = _density_from_logprob(logp)
+    with open(metadata, "r") as handle:
+        meta = json.load(handle)
+    ring_mu = np.asarray(meta["mu"], dtype=float)
+    sigma = float(meta["sigma"])
+    origin = np.zeros((1, 2), dtype=float)
+    reward_density = np.exp(-(xx ** 2 + yy ** 2) / (2.0 * sigma ** 2))
+
+    fig, axes = plt.subplots(1, 2, figsize=(6.0, 3.1), dpi=160, squeeze=False)
+    _draw_bandit_panel(axes[0, 0], xx, yy, prior_density, ring_mu, bound)
+    axes[0, 0].scatter([0.0], [0.0], c="white", marker="*", s=85,
+                       edgecolors="red", linewidths=1.0, zorder=6)
+    axes[0, 0].set_title("Personalized Prior", fontsize=18)
+    _draw_bandit_panel(axes[0, 1], xx, yy, reward_density, origin, bound)
+    axes[0, 1].set_title("Origin Client Reward", fontsize=18)
+    fig.tight_layout(pad=0.4, w_pad=0.3)
+    paths = _save(fig, out, write_pdf=write_pdf)
+    plt.close(fig)
+    return paths
+
+
+def plot_origin_client_suite(
+    metrics_path: str | Path,
+    metadata: str | Path = "data/bandit2d/metadata.json",
+    out_dir: str | Path = "plots/bandit2d_priors",
+    grid: int = 240,
+    bound: float = 1.5,
+    write_pdf: bool = True,
+) -> list[Path]:
+    """Four existing-style prior figures after adding the origin client."""
+    out_dir = Path(out_dir)
+    paths: list[Path] = []
+    paths += plot_ground_truth_ring(
+        metadata=metadata,
+        out=out_dir / "ground_truth_ring_5clients.png",
+        grid=grid,
+        bound=bound,
+        write_pdf=write_pdf,
+        include_origin=True,
+    )
+    paths += plot_ground_truth_peaks(
+        metadata=metadata,
+        out=out_dir / "ground_truth_peaks_5clients.png",
+        grid=grid,
+        bound=bound,
+        write_pdf=write_pdf,
+        include_origin=True,
+    )
+    paths += plot_global_prior(
+        metrics_path=metrics_path,
+        metadata=metadata,
+        out=out_dir / "aggregate_prior_5clients.png",
+        grid=grid,
+        bound=bound,
+        source="server",
+        write_pdf=write_pdf,
+        include_origin=True,
+    )
+    paths += plot_ground_truth_distributions(
+        metadata=metadata,
+        out=out_dir / "ground_truth_distributions_5clients.png",
+        grid=grid,
+        bound=bound,
+        write_pdf=write_pdf,
+        include_origin=True,
+    )
     return paths
 
 
