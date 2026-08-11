@@ -9,6 +9,7 @@ Uses the registry system for automatic discovery of available runners.
 """
 
 import argparse
+import copy
 import os
 import sys
 import yaml
@@ -53,7 +54,12 @@ def normalize_seed(seed: Union[int, List[int]]) -> List[int]:
         raise ValueError(f"seed must be int or list of ints, got {type(seed)}")
 
 
-def run_training(config: Dict[str, Any], seed: int, algorithm: str = None) -> bool:
+def run_training(
+    config: Dict[str, Any],
+    seed: int,
+    algorithm: str = None,
+    skip_complete: bool = False,
+) -> bool:
     """
     Run training for a given seed using the unified runner.
     
@@ -68,6 +74,11 @@ def run_training(config: Dict[str, Any], seed: int, algorithm: str = None) -> bo
     # Import unified runner
     from fedguide.runner.runner import run_training as unified_run_training
     
+    # Keep the caller's base paths intact across a multi-seed run.  The old
+    # implementation mutated ``config`` in-place, producing nested paths such
+    # as seed_0/seed_1 after the first seed.
+    config = copy.deepcopy(config)
+
     # Determine algorithm
     if algorithm is None:
         algorithm = config.get('algorithm', 'ppo')
@@ -81,6 +92,21 @@ def run_training(config: Dict[str, Any], seed: int, algorithm: str = None) -> bo
         if key in config and config[key]:
             base_dir = config[key]
             config[key] = os.path.join(base_dir, f"seed_{seed}")
+
+    history_path = os.path.join(config.get("metrics_dir", "./metrics"), "training_history.pkl")
+    if skip_complete and os.path.isfile(history_path):
+        try:
+            import pickle
+
+            with open(history_path, "rb") as handle:
+                history = pickle.load(handle)
+            expected_rounds = int(config.get("rounds", 0))
+            curve = getattr(history, "metrics_distributed_fit", {}).get("eval/return", [])
+            if expected_rounds > 0 and len(curve) == expected_rounds:
+                print(f"Skipping complete run: {history_path}")
+                return True
+        except Exception:
+            pass
     
     try:
         # Use unified runner directly
@@ -129,6 +155,19 @@ def main():
         default=None,
         help="Override number of federated rounds (default: from YAML)",
     )
+    parser.add_argument(
+        "--set",
+        dest="overrides",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Override an arbitrary YAML key; may be repeated.",
+    )
+    parser.add_argument(
+        "--skip-complete",
+        action="store_true",
+        help="Skip a seed when its training_history.pkl already has all requested rounds.",
+    )
     
     args = parser.parse_args()
     
@@ -148,6 +187,14 @@ def main():
         config["device"] = args.device
     if args.rounds is not None:
         config["rounds"] = int(args.rounds)
+    for item in args.overrides:
+        if "=" not in item:
+            raise ValueError(f"--set expects KEY=VALUE, got: {item}")
+        key, raw_value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise ValueError(f"--set expects a non-empty key, got: {item}")
+        config[key] = yaml.safe_load(raw_value)
     
     # Determine algorithm from config path if not specified
     algorithm = args.algorithm
@@ -204,7 +251,12 @@ def main():
         print(f"# Run {i}/{len(seed_list)}: Seed {seed}")
         print(f"{'#'*80}")
         
-        success = run_training(config, seed, algorithm)
+        success = run_training(
+            config,
+            seed,
+            algorithm,
+            skip_complete=bool(args.skip_complete),
+        )
         results.append((seed, success))
     
     # Print summary
@@ -228,4 +280,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

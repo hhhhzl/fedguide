@@ -27,10 +27,18 @@ def _make_env(
     metadata_path: Optional[str] = None,
     render_mode: Optional[str] = None,
     reward_type: Optional[str] = None,
+    origin_client_id: Optional[int] = None,
 ):
     # Handle custom environments
     if env_id.lower() in ["bandit2d", "bandit_2d", "2dbandit"]:
         from fedguide.envs.bandit2d import Bandit2D
+        if origin_client_id is not None and client_id == int(origin_client_id):
+            env = Bandit2D(K=1, sigma=sigma, seed=seed, preferred_peak=None)
+            env.mu = np.zeros((1, 2), dtype=np.float64)
+            env.peak_weights = np.ones(1, dtype=np.float32)
+            if seed is not None:
+                env.reset(seed=seed)
+            return env
         # Client-specific heterogeneity: each client prefers one peak (client_id % K)
         preferred_peak = (client_id % 4) if (client_id is not None and num_clients is not None) else None
         env = Bandit2D(K=4, sigma=sigma, seed=seed, preferred_peak=preferred_peak)
@@ -241,13 +249,13 @@ class FedGuideClient(FedRLClient):
         elif mode == "policy_value":
             allowed = {"policy", "log_std", "value"}
         elif mode == "prior":
-            allowed = {"prior_adapt"}
+            allowed = {"prior_adapt", "prior_mixture"}
         elif mode in ("policy+prior", "policy_prior", "policy-prior"):
-            allowed = {"policy", "log_std", "prior_adapt"}
+            allowed = {"policy", "log_std", "prior_adapt", "prior_mixture"}
         elif mode in ("prior+guidance", "prior_guidance", "prior-guidance"):
-            allowed = {"prior_adapt", "guidance"}
+            allowed = {"prior_adapt", "prior_mixture", "guidance"}
         elif mode == "all":
-            allowed = {"policy", "log_std", "prior_adapt", "guidance"}
+            allowed = {"policy", "log_std", "prior_adapt", "prior_mixture", "guidance"}
 
         filtered = {k: v for k, v in parameters.items() if k in allowed}
         if filtered:
@@ -268,6 +276,12 @@ class FedGuideClient(FedRLClient):
             count = int(count)
             chunk = flat_params[idx: idx + count]
             idx += count
+            if module_name == "prior_mixture" and count == 3:
+                out[module_name] = [
+                    torch.as_tensor(np.asarray(arr), dtype=torch.float32)
+                    for arr in chunk
+                ]
+                continue
             if module_name not in full:
                 continue
             module_params = full[module_name]
@@ -421,7 +435,8 @@ class FedGuideClient(FedRLClient):
             if output_dir is None:
                 output_dir = config.get("output_dir") if isinstance(config, dict) else None
             if output_dir:
-                client_id_str = str(getattr(self, "mapped_client_id", cid))
+                mapped = getattr(self, "_mapped_client_id", None)
+                client_id_str = str(mapped if mapped is not None else cid)
                 ckpt_dir = _os.path.join(output_dir, f"client_{client_id_str}", "final")
                 _os.makedirs(ckpt_dir, exist_ok=True)
                 policy_sd = self.agent.policy.state_dict() if hasattr(self.agent, "policy") else None
@@ -570,7 +585,8 @@ class FedGuideClient(FedRLClient):
             new_params_list = [np.asarray(new_params_list)] if not isinstance(new_params_list, list) else new_params_list
         
         # Collect actions for metrics visualization (if collector is available)
-        if self.metrics_collector is not None:
+        collect_every = int(config.get("collect_metrics_every", 1) or 1)
+        if self.metrics_collector is not None and rnd % collect_every == 0:
             try:
                 client_id = (
                     self._mapped_client_id
@@ -655,6 +671,7 @@ def client_fn_builder(
     minibatch_size: int = 64,
     lambda_local: float = 0.0,
     lambda_guide: float = 1.0,
+    prior_coef: float = 1.0,
     lambda_guide_anneal: bool = False,
     lambda_guide_decay_rounds: int = 40,
     init_log_std: float = 0.0,
@@ -681,6 +698,9 @@ def client_fn_builder(
     reacher_render_mode: Optional[str] = None,
     policy_save_dir: Optional[str] = None,
     policy_save_every: int = 0,
+    output_dir: Optional[str] = None,
+    origin_client_id: Optional[int] = None,
+    origin_prior_path: Optional[str] = None,
     # Opt-in policy architecture knobs (defaults preserve legacy behaviour).
     policy_activation: str = "tanh",
     action_clamp_low: Optional[float] = None,
@@ -753,6 +773,7 @@ def client_fn_builder(
             metadata_path=metadata_path,
             render_mode=reacher_render_mode,
             reward_type=reward_type,
+            origin_client_id=origin_client_id,
         )
         obs_space, act_space = env.observation_space, env.action_space
         assert _is_box1d(obs_space) and _is_box1d(act_space), "Only Support 1D Box spaces."
@@ -802,9 +823,19 @@ def client_fn_builder(
             client_id = mapped_client_id
             base_dir = prior_dir
             client_dir = os.path.join(base_dir, env_name, f"client_{client_id}", "final")
-
-            prior_path = os.path.join(client_dir, "torch_prior.pth")
-            guidance_path = os.path.join(client_dir, "guidance_sdice.pth")
+            is_origin_client = (
+                origin_client_id is not None
+                and mapped_client_id == int(origin_client_id)
+            )
+            prior_path = (
+                str(origin_prior_path)
+                if is_origin_client and origin_prior_path
+                else os.path.join(client_dir, "torch_prior.pth")
+            )
+            guidance_path = (
+                "" if is_origin_client
+                else os.path.join(client_dir, "guidance_sdice.pth")
+            )
 
             # Load prior if checkpoint exists
             if os.path.isfile(prior_path):
@@ -959,6 +990,7 @@ def client_fn_builder(
             guidance_ckpt=guidance_ckpt,
             actor_ckpt=actor_ckpt,
             init_log_std=init_log_std,
+            prior_coef=prior_coef,
             prior_adapt_fallback_all=prior_adapt_fallback_all,
             policy_activation=policy_activation,
             action_clamp_low=action_clamp_low,
@@ -998,6 +1030,11 @@ def client_fn_builder(
             dice_v_blend_alpha=dice_v_blend_alpha,
             dice_adv_beta=dice_adv_beta,
         )
+        # Federated clients are reconstructed inside Ray actors, so explicitly
+        # attach the configured model directory used by FedGuideClient.fit().
+        # This keeps trained local policies under the same output tree as the
+        # existing YAML runner instead of silently dropping them.
+        trainer.output_dir = output_dir
 
         # Get collector from global variable if not passed directly
         # Note: This works because the module is imported before client_fn is called

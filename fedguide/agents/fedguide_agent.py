@@ -122,6 +122,10 @@ class FedguideAgent(nn.Module):
 
         # -------- Prior ----------
         self.prior = prior
+        # The local prior remains the object uploaded to the server.  For
+        # Bandit2D, the server may additionally broadcast a density-space
+        # mixture used by the policy loss without overwriting that local prior.
+        self.routing_prior = None
         if self.prior is None and prior_ctor is not None:
             self.prior = prior_ctor(**(prior_ctor_kwargs or {}))
         if self.prior is not None:
@@ -421,11 +425,20 @@ class FedguideAgent(nn.Module):
         if "value" in parameters:
             self.value_fn.load_state_dict({k: v.to(self.device) for k, v in parameters["value"].items()}, strict=False)
         if self.prior is not None and "prior_adapt" in parameters:
+            self.routing_prior = None
             sd = self.prior.state_dict()
             for k, v in parameters["prior_adapt"].items():
                 if k in sd:
                     sd[k] = v.to(self.device)
             self.prior.load_state_dict(sd, strict=False)
+        if "prior_mixture" in parameters:
+            mixture = parameters["prior_mixture"]
+            if isinstance(mixture, (list, tuple)) and len(mixture) == 3:
+                from fedguide.guidance.diffusion_prior import GaussianMixtureBehaviorPrior
+
+                self.routing_prior = GaussianMixtureBehaviorPrior(
+                    mixture[0], mixture[1], mixture[2]
+                ).to(self.device)
         if self.guidance is not None and "guidance" in parameters:
             self.guidance.load_state_dict({k: v.to(self.device) for k, v in parameters["guidance"].items()}, strict=False)
 
@@ -512,9 +525,10 @@ class FedguideAgent(nn.Module):
                 # toward zero as the policy approached the prior).
                 prior_loss = torch.tensor(0.0, device=self.device)
                 prior_report = torch.tensor(0.0, device=self.device)  # for logging
-                if (self.prior is not None) and hasattr(self.prior, "log_prob"):
+                active_prior = self.routing_prior if self.routing_prior is not None else self.prior
+                if (active_prior is not None) and hasattr(active_prior, "log_prob"):
                     try:
-                        prior_logp = self.prior.log_prob(mb_a, mb_s)  # [B]
+                        prior_logp = active_prior.log_prob(mb_a, mb_s)  # [B]
                         # Route 3: reshape the prior with DICE Q so the IW
                         # weights reflect log p̃(a|s) = log p(a|s) + β·Q(s,a).
                         # Q is standardized within the minibatch to keep the

@@ -462,6 +462,7 @@ def _create_fedguide_client_fn(config: Dict[str, Any], **kwargs):
         n_steps=config.get('n_steps', 200),
         lambda_local=config.get('lambda_local', 0.05),
         lambda_guide=config.get('lambda_guide', 0.05),
+        prior_coef=float(config.get('prior_coef', 1.0)),
         lambda_guide_anneal=config.get('lambda_guide_anneal', False),
         lambda_guide_decay_rounds=config.get('lambda_guide_decay_rounds', 40),
         init_log_std=config.get('init_log_std', 0.0),
@@ -511,6 +512,12 @@ def _create_fedguide_client_fn(config: Dict[str, Any], **kwargs):
             os.path.join(config['metrics_dir'], 'policies') if config.get('metrics_dir') else None
         ),
         policy_save_every=int(config.get('policy_save_every', 0)),
+        output_dir=config.get('output_dir'),
+        origin_client_id=config.get('origin_client_id'),
+        origin_prior_path=config.get(
+            'origin_prior_path',
+            './model/bandit2d/origin_prior/torch_prior.pth',
+        ),
     )
 
 
@@ -911,7 +918,10 @@ def _create_fedguide_server(config: Dict[str, Any], **kwargs):
         min_fit_clients=min_fit_clients,
         min_evaluate_clients=min_eval_clients,
         min_available_clients=min_available_clients,
-        on_fit_config_fn=lambda rnd: {"server_round": rnd},
+        on_fit_config_fn=lambda rnd: {
+            "server_round": rnd,
+            "collect_metrics_every": int(config.get("collect_metrics_every", 1) or 1),
+        },
         evaluate_fn=evaluate_fn,
         moe_enable=config.get('moe_enable', True),
         num_experts_prior=config.get('num_experts_prior', 1),
@@ -924,6 +934,7 @@ def _create_fedguide_server(config: Dict[str, Any], **kwargs):
         num_clients=num_clients,
         routing_debug=config.get('routing_debug', False),
         policy_agg_every_k=int(config.get('policy_agg_every_k', 1)),
+        routing_only_client_ids=config.get('routing_only_client_ids', []),
     )
 
 

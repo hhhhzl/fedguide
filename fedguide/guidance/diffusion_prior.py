@@ -94,6 +94,58 @@ class GaussianBehaviorPrior(nn.Module):
             self.head_log_sigma.data = sigma.log().detach()
 
 
+class GaussianMixtureBehaviorPrior(nn.Module):
+    """A density-space mixture of Bandit2D Gaussian behavior priors.
+
+    OT routing supplies one weight per expert.  Keeping the experts as mixture
+    components is essential here: averaging the component means would collapse
+    four symmetric modes to a single Gaussian at the origin.
+    """
+
+    def __init__(self, component_mu, component_log_sigma, weights):
+        super().__init__()
+        mu = torch.as_tensor(component_mu, dtype=torch.float32)
+        log_sigma = torch.as_tensor(component_log_sigma, dtype=torch.float32)
+        mix_weights = torch.as_tensor(weights, dtype=torch.float32).flatten()
+        if mu.ndim != 2 or log_sigma.shape != mu.shape:
+            raise ValueError("Gaussian-mixture components must have shape [M, action_dim]")
+        if mix_weights.numel() != mu.shape[0]:
+            raise ValueError("Gaussian-mixture weights must have one entry per component")
+        mix_weights = mix_weights.clamp_min(0.0)
+        mix_weights = mix_weights / mix_weights.sum().clamp_min(1e-12)
+        self.register_buffer("component_mu", mu)
+        self.register_buffer("component_log_sigma", log_sigma)
+        self.register_buffer("log_weights", mix_weights.clamp_min(1e-12).log())
+
+    @property
+    def device(self):
+        return self.component_mu.device
+
+    def log_prob(self, actions, states=None):
+        del states
+        a = torch.as_tensor(actions, dtype=torch.float32, device=self.device)
+        if a.ndim == 1:
+            a = a.unsqueeze(0)
+        log_sigma = self.component_log_sigma.clamp(-5.0, 2.0)
+        var = log_sigma.exp().pow(2) + 1e-8
+        diff = a.unsqueeze(1) - self.component_mu.unsqueeze(0)
+        component_logp = -0.5 * (
+            diff.pow(2) / var.unsqueeze(0)
+            + 2.0 * log_sigma.unsqueeze(0)
+            + np.log(2 * np.pi)
+        ).sum(dim=-1)
+        return torch.logsumexp(component_logp + self.log_weights.unsqueeze(0), dim=1)
+
+    @torch.no_grad()
+    def sample(self, states=None, batch_size=1, num_steps=100, noise_scale=0.1):
+        del num_steps, noise_scale
+        count = int(states.shape[0]) if states is not None else int(batch_size)
+        component = torch.distributions.Categorical(logits=self.log_weights).sample((count,))
+        mu = self.component_mu[component]
+        sigma = self.component_log_sigma[component].clamp(-5.0, 2.0).exp()
+        return mu + sigma * torch.randn_like(mu)
+
+
 class SimpleDiffusionPrior(nn.Module):
     """
     Lightweight diffusion-inspired guidance prior for low-dimensional RL trajectories.

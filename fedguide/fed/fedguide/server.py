@@ -94,6 +94,10 @@ class FedGuideStrategy(Strategy):
             # rounds — useful when client dynamics differ enough that
             # FedAvg(policy) destroys per-client adaptation.
             policy_agg_every_k: int = 1,
+            # Client ids listed here are routed against the server experts but
+            # are excluded from expert seeding/update.  This supports the
+            # held-out Bandit2D admission test requested by the reviewers.
+            routing_only_client_ids: Optional[List[int]] = None,
     ):
         # Standard Flower Strategy parameters
         self.fraction_fit = fraction_fit
@@ -124,6 +128,9 @@ class FedGuideStrategy(Strategy):
         self.num_clients = int(num_clients)
         self.routing_debug = bool(routing_debug)
         self.policy_agg_every_k = max(1, int(policy_agg_every_k))
+        self.routing_only_client_ids = {
+            int(x) for x in (routing_only_client_ids or [])
+        }
 
         # experts_map[module_key] = List[List[np.ndarray]]  # M x L
         self.experts_map: Dict[str, List[List[np.ndarray]]] = {}
@@ -132,6 +139,7 @@ class FedGuideStrategy(Strategy):
         # cid -> {moe_key: List[np.ndarray]} computed from the previous round's
         # OT plan; configure_fit looks this up to send personalized priors.
         self._latest_routed_per_cid: Dict[str, Dict[str, List[np.ndarray]]] = {}
+        self._latest_routing_diagnostics: Dict[str, Scalar] = {}
 
     # ---- Strategy ----
     def __repr__(self) -> str:
@@ -199,7 +207,9 @@ class FedGuideStrategy(Strategy):
                     if k not in self.moe_keys:
                         routed_modules[k] = arrs
                 for moe_key in self.moe_keys:
-                    if moe_key in personalized_modules:
+                    if moe_key == "prior_adapt" and "prior_mixture" in personalized_modules:
+                        routed_modules["prior_mixture"] = personalized_modules["prior_mixture"]
+                    elif moe_key in personalized_modules:
                         routed_modules[moe_key] = personalized_modules[moe_key]
                     elif moe_key in self._latest_global_modules:
                         routed_modules[moe_key] = self._latest_global_modules[moe_key]
@@ -289,12 +299,14 @@ class FedGuideStrategy(Strategy):
         count_train_return = 0
         total_eval_return = 0.0
         count_eval_return = 0
+        client_eval_returns: Dict[int, float] = {}
+        client_train_returns: Dict[int, float] = {}
 
         aggregated_metrics: Dict[str, Scalar] = {"server_round": server_round}
         collected_actions: Dict[int, Any] = {}  # {mapped_client_id: actions}
         collected_client_metrics: Dict[int, Dict[str, Any]] = {}  # {mapped_client_id: {metric_name: value}}
         
-        for _, fitres in results:
+        for client_proxy, fitres in results:
             # Handle both FitRes object and dict (in case of serialization issues)
             if isinstance(fitres, dict):
                 metrics = fitres.get("metrics", {})
@@ -321,6 +333,10 @@ class FedGuideStrategy(Strategy):
                     if train_return == train_return:  # not NaN
                         total_train_return += train_return
                         count_train_return += 1
+                        mapped_id = self._resolve_mapped_client_id(
+                            str(getattr(client_proxy, "cid", "0"))
+                        )
+                        client_train_returns[mapped_id] = train_return
                 except (TypeError, ValueError):
                     pass
 
@@ -330,6 +346,10 @@ class FedGuideStrategy(Strategy):
                     if eval_return == eval_return:  # not NaN
                         total_eval_return += eval_return
                         count_eval_return += 1
+                        mapped_id = self._resolve_mapped_client_id(
+                            str(getattr(client_proxy, "cid", "0"))
+                        )
+                        client_eval_returns[mapped_id] = eval_return
                 except (TypeError, ValueError):
                     pass
             
@@ -396,6 +416,10 @@ class FedGuideStrategy(Strategy):
 
         if count_eval_return > 0:
             aggregated_metrics["eval/return"] = total_eval_return / count_eval_return
+        for mapped_id, value in sorted(client_train_returns.items()):
+            aggregated_metrics[f"train/return/client_{mapped_id}"] = value
+        for mapped_id, value in sorted(client_eval_returns.items()):
+            aggregated_metrics[f"eval/return/client_{mapped_id}"] = value
 
         # add sample count / client count
         aggregated_metrics["total_samples"] = total_examples
@@ -411,6 +435,7 @@ class FedGuideStrategy(Strategy):
         self._collected_client_metrics[server_round] = collected_client_metrics
         
         if modules_list:
+            self._latest_routing_diagnostics = {}
             new_global = self._aggregate_by_modules(modules_list, client_cids=client_cids, server_round=server_round)
             # Policy-aggregation cadence: on non-K rounds, drop policy/log_std
             # from the broadcast so each client keeps its own local PPO state.
@@ -433,6 +458,7 @@ class FedGuideStrategy(Strategy):
             self._latest_global_modules = new_global
             self._latest_layout_json = json.dumps(layout)
             aggregated_metrics["layout"] = json.dumps(layout)
+            aggregated_metrics.update(self._latest_routing_diagnostics)
             return params, aggregated_metrics
 
         # 2) FedAvg
@@ -614,7 +640,14 @@ class FedGuideStrategy(Strategy):
                 if not experts:
                     M = self.num_experts_prior if moe_key == "prior_adapt" else self.num_experts_guidance
                     M = max(1, int(M))
-                    idx = np.linspace(0, len(client_params) - 1, num=M, dtype=int).tolist()
+                    eligible = [
+                        i for i, cid in enumerate(client_cids)
+                        if self._resolve_mapped_client_id(cid) not in self.routing_only_client_ids
+                    ]
+                    if not eligible:
+                        eligible = list(range(len(client_params)))
+                    pos = np.linspace(0, len(eligible) - 1, num=M, dtype=int).tolist()
+                    idx = [eligible[p] for p in pos]
                     experts = [[w.copy() for w in client_params[i]] for i in idx]
                     self.experts_map[moe_key] = experts
 
@@ -631,6 +664,18 @@ class FedGuideStrategy(Strategy):
                     for m in range(M):
                         cost_matrix[i, m] = float(cost_fn(client_params[i], experts[m]))
                 T = compute_ot_matrix(cost_matrix, mode=self.ot_mode, reg=self.ot_reg)
+                if self.routing_only_client_ids:
+                    row_norm_all = T / (T.sum(axis=1, keepdims=True) + 1e-12)
+                    for i, cid in enumerate(client_cids):
+                        mapped_id = self._resolve_mapped_client_id(cid)
+                        if mapped_id in self.routing_only_client_ids:
+                            prefix = f"routing/{moe_key}/client_{mapped_id}"
+                            self._latest_routing_diagnostics[f"{prefix}/weights"] = json.dumps(
+                                row_norm_all[i].tolist()
+                            )
+                            self._latest_routing_diagnostics[f"{prefix}/costs"] = json.dumps(
+                                cost_matrix[i].tolist()
+                            )
 
                 # OT routing diagnostic: log cost / transport / per-client argmax
                 # along with the client cid per row, since Flower returns clients
@@ -656,7 +701,10 @@ class FedGuideStrategy(Strategy):
                 # Update experts as before (column-normalized convex combo).
                 new_experts: List[List[np.ndarray]] = []
                 for m in range(M):
-                    col = T[:, m]
+                    col = T[:, m].copy()
+                    for i, cid in enumerate(client_cids):
+                        if self._resolve_mapped_client_id(cid) in self.routing_only_client_ids:
+                            col[i] = 0.0
                     csum = float(col.sum())
                     if csum <= 1e-12:
                         new_experts.append([w.copy() for w in experts[m]])
@@ -677,19 +725,32 @@ class FedGuideStrategy(Strategy):
                 # matched its own update (preserves multi-modal structure).
                 if self.personalized_routing and client_cids:
                     L = len(new_experts[0])
+                    gaussian_prior = (
+                        moe_key == "prior_adapt"
+                        and L == 2
+                        and all(np.asarray(expert[0]).ndim == 1 for expert in new_experts)
+                        and all(np.asarray(expert[1]).shape == np.asarray(expert[0]).shape for expert in new_experts)
+                    )
                     for i, cid in enumerate(client_cids):
                         row = T[i, :]
                         rsum = float(row.sum())
                         if rsum <= 1e-12:
-                            chosen = new_experts[i % len(new_experts)]
-                            routed_per_cid[cid][moe_key] = [w.copy() for w in chosen]
-                            continue
-                        rw = row / rsum
-                        layers = [
-                            sum(rw[m] * new_experts[m][l] for m in range(M))
-                            for l in range(L)
-                        ]
-                        routed_per_cid[cid][moe_key] = layers
+                            rw = np.zeros(M, dtype=float)
+                            rw[i % M] = 1.0
+                        else:
+                            rw = row / rsum
+                        if gaussian_prior:
+                            routed_per_cid[cid]["prior_mixture"] = [
+                                np.stack([expert[0] for expert in new_experts], axis=0),
+                                np.stack([expert[1] for expert in new_experts], axis=0),
+                                np.asarray(rw, dtype=np.float32),
+                            ]
+                        else:
+                            layers = [
+                                sum(rw[m] * new_experts[m][l] for m in range(M))
+                                for l in range(L)
+                            ]
+                            routed_per_cid[cid][moe_key] = layers
 
                 merged = self._fedavg_arrays([(e, 1) for e in new_experts])
                 new_global[moe_key] = merged
