@@ -1,7 +1,5 @@
 # [CoRL 2026] [FedGuide: Diffusion Prior Alignment and Value Baseline Guidance for Heterogeneous Federated Reinforcement Learning](https://github.com/hhhhzl/fedguide)
 
-Welcome to our repository implementing FedGuide, as presented in:
-
 <table style="border: none;">
 <tr>
 <td style="vertical-align: middle; border: none;">
