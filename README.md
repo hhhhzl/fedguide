@@ -17,17 +17,6 @@
 <p align="center">
   <img src="assets/gifs/all_envs.gif" width="100%" alt="FedGuide policy rollouts across five heterogeneous environments"/>
 </p>
-<p align="center">
-  <sub>
-    Round-100 evaluation rollouts from the <b>same</b> FedGuide run. Rows are environments, columns are
-    federated clients: <b>M = 8</b> for the locomotion suites, one per ML10 task for MetaWorld10. Locomotion
-    clients differ in mass, damping, friction, actuation gain and reward preference; MetaWorld clients differ
-    in the task itself. Each row is a single federation coping with heterogeneity — not a set of
-    independently trained policies.
-  </sub>
-</p>
-
----
 
 ## Updates
 
