@@ -1,23 +1,24 @@
 from setuptools import setup, find_packages
-from codecs import open
 from os import path
 
-
-ext_modules = []
-
 here = path.abspath(path.dirname(__file__))
-requires_list = []
-with open(path.join(here, 'requirements.txt'), encoding='utf-8') as f:
-    for line in f:
-        requires_list.append(str(line))
+with open(path.join(here, 'README.md'), encoding='utf-8') as f:
+    long_description = f.read()
 
-
+# Runtime dependencies are installed from requirements.txt by
+# scripts/setup/setup.sh, which pins CUDA-specific builds and pulls MetaWorld
+# from git; install_requires stays empty so those pins are not re-resolved here.
 setup(
     name='fedguide',
     version="0.0.1",
-    description='',
-    author='anonymous',
-    author_email='',
-    packages=find_packages(),
+    description=('Diffusion Prior Alignment and Value Baseline Guidance for '
+                 'Heterogeneous Federated Reinforcement Learning (CoRL 2026)'),
+    long_description=long_description,
+    long_description_content_type='text/markdown',
+    author='Zhilin He, Gauri Joshi',
+    author_email='hectorh@andrew.cmu.edu',
+    url='https://github.com/hhhhzl/fedguide',
+    packages=find_packages(include=['fedguide', 'fedguide.*']),
+    python_requires='>=3.10',
     install_requires=[],
 )
