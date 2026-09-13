@@ -20,7 +20,7 @@
 
 ## Updates
 
-- **[2026-09-04]** The work has been accepted to CoRL 2026 and open-sourced. 🎉🎉 We will public camera-ready version to shortly.
+- **[2026-09-04]** The work has been accepted to CoRL 2026 and open-sourced. The camera-ready version will be released shortly.
 
 ---
 
@@ -35,9 +35,10 @@ FedGuide moves the synchronization from parameter space to **distribution space*
 
 1. **Diffusion priors as behavior models.** Each client pretrains a diffusion prior over its own
    data-supported action distribution, so a client is represented by *what it does*, not by its weights.
-2. **OT-MoE aggregation.** The server never averages priors. It scores client priors against a bank of
-   experts with a score-MSE cost, solves a Sinkhorn optimal-transport plan, refreshes the expert heads, and
-   routes a *personalized* mixture back to each client — preserving heterogeneous modes instead of blurring them.
+2. **OT-MoE aggregation.** The server never averages policies — only priors are exchanged. It scores client
+   priors against a bank of experts with a score-MSE cost, solves a Sinkhorn optimal-transport plan, refreshes
+   the expert heads, and routes a *personalized* mixture back to each client, preserving heterogeneous modes
+   instead of blurring them.
 3. **DICE value baseline.** A distribution-correction-estimation critic supplies a low-variance,
    return-aware baseline that is blended into GAE, so prior guidance improves the policy rather than merely
    constraining it.
@@ -56,8 +57,8 @@ FedGuide moves the synchronization from parameter space to **distribution space*
                      └─────────────────────────────────────────────────────────────────┘
 ```
 
-Two ablations ship alongside the full method: **FedGuide-A** (aggregation only) and **FedGuide-P**
-(personalized prior only).
+Two ablations ship alongside the full method: **FedGuide-A** adds server-side policy averaging on top of the
+shared prior, and **FedGuide-P** drops the DICE baseline (β = 1) and keeps the personalized prior alone.
 
 ---
 
@@ -107,7 +108,7 @@ improvement, and the prior that ties them together.
 | Diffusion prior | [`fedguide/guidance/diffusion_prior.py`](fedguide/guidance/diffusion_prior.py) | `DiffusionGuidance` score network used as the behavior model. |
 | Prior pretraining | [`fedguide/guidance/pretrain.py`](fedguide/guidance/pretrain.py) | Per-client diffusion prior + SDICE critic warm start. |
 | DICE value baseline | [`fedguide/agents/fedguide_agent.py`](fedguide/agents/fedguide_agent.py) | Distribution-correction baseline blended into GAE. |
-| Heterogeneity split | [`fedguide/datasets/heterogeneity.py`](fedguide/datasets/heterogeneity.py) | Dirichlet trajectory partitioning across clients. |
+| Heterogeneity config | [`fedguide/datasets/heterogeneity.py`](fedguide/datasets/heterogeneity.py) | Builds and loads the per-client heterogeneity metadata each benchmark is instantiated from. |
 | Env variants | [`fedguide/envs/mujoco_locomotion_hetero.py`](fedguide/envs/mujoco_locomotion_hetero.py) | Per-client mass / damping / friction / reward scaling. |
 
 ```
@@ -169,7 +170,8 @@ Online federated training over the (env, algorithm, seed) grid. Algorithms: `fed
 
 > [!NOTE]
 > The full grid is long-running. Start from a single `(env, algo, seed)` triple to validate your setup
-> before launching the sweep.
+> before launching the sweep. The script defaults to 3 seeds; the paper reports 5, so reproducing its
+> numbers needs `--seeds 0,1,2,3,4`.
 
 Outputs:
 - Metrics — `metrics/<env>_phase1/<algo>/seed_<s>/training_history.pkl`
