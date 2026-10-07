@@ -1,12 +1,14 @@
-# [CoRL 2026] [FedGuide: Diffusion Prior Alignment and Value Baseline Guidance for Heterogeneous Federated Reinforcement Learning](https://github.com/hhhhzl/fedguide)
+# [CoRL Spotlight 2026] [FedGuide: Diffusion Prior Alignment and Value Baseline Guidance for Heterogeneous Federated Reinforcement Learning](https://github.com/hhhhzl/fedguide)
 
 <table style="border: none;">
 <tr>
 <td style="vertical-align: middle; border: none;">
+  <a href="https://arxiv.org/abs/2609.18964">
   <img
-    src="https://img.shields.io/badge/CoRL-2026-4B5563.svg?style=for-the-badge"
-    alt="CoRL 2026"
+    src="https://img.shields.io/badge/arXiv-%23B31B1B.svg?style=for-the-badge&logo=arxiv&logoColor=white"
+    alt="arXiv paper"
   >
+  </a>
 </td>
 <td style="vertical-align: middle; border: none;">
   <i>Zhilin He, Gauri Joshi. <strong>FedGuide: Diffusion Prior Alignment and Value Baseline Guidance for Heterogeneous Federated Reinforcement Learning</strong>. Conference on Robot Learning 2026.</i>
@@ -19,8 +21,8 @@
 </p>
 
 ## Updates
-
-- **[2026-09-04]** The work has been accepted to CoRL 2026 and open-sourced. The camera-ready version will be released shortly.
+- **[2026-09-29]** The work has been selected as Spotlight at CoRL 2026.
+- **[2026-09-04]** The work has been accepted to CoRL 2026 and open-sourced.
 
 ---
 
